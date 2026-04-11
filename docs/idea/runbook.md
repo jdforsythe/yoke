@@ -39,11 +39,25 @@ The runbook's default assumption is plain `claude -p < prompt.txt`. Yoke is not 
 
 Either form works anywhere the runbook calls for an agent session.
 
+### Agent personas
+
+Every agent session in this runbook starts with a role identity. Those identities are **not** inlined into prompts — they live in standalone files so they can evolve independently and be cited consistently across phases:
+
+- `docs/agents/architect.md` — cited by Phase β
+- `docs/agents/backend.md` — cited by Phase γ (research + yoke-v0), Phase δ (planner + implementer loop)
+- `docs/agents/frontend.md` — cited by Phase ε (planner + implementer loop)
+- `docs/agents/qa.md` — cited by Phase ζ (planner + implementer loop + acceptance)
+
+When a phase prompt says "Read `docs/agents/<role>.md` in full before proceeding" — that is non-optional. The persona file sets mode, vocabulary, deliverables, decision authority, anti-patterns, and session protocol. Treat it as the first input, before plan-draft3.
+
+If you need to adjust role behavior that applies across multiple sessions, modify the persona file — not the prompt body. Prompt bodies should be task-specific context; persona files should be role-specific identity.
+
 ### Artifact locations
 
 All paths are relative to repo root `/Users/jforsythe/dev/ai/yoke/`.
 
 - Idea docs: `docs/idea/` (plan-draft2.md, plan-draft3.md, change-log.md, runbook.md — this file)
+- Agent personas: `docs/agents/` (architect.md, backend.md, frontend.md, qa.md)
 - Critiques: `docs/critiques/`
 - Design (Phase β output): `docs/design/`
 - Research (Phase γ output): `docs/research/`
@@ -118,14 +132,17 @@ The architect translates plan-draft3 into concrete implementable design artifact
 **Architect prompt (paste into session or pipe via stdin):**
 
 ```
-You are the software architect for Yoke, an open-source agent orchestration harness. Your job: translate the approved plan (docs/idea/plan-draft3.md) into concrete, implementable design artifacts.
+You are the Yoke architect. Before anything else, read docs/agents/architect.md in full — that is your role definition, session protocol, decision authority, and anti-pattern list. Follow it.
+
+Task for this session: translate the approved plan (docs/idea/plan-draft3.md) into concrete, implementable design artifacts.
 
 Read in order:
-1. docs/idea/plan-draft3.md — the authoritative plan (supersedes draft2)
-2. docs/idea/change-log.md — decisions made and why
-3. docs/critiques/architect.md — your own critique from Phase α (your prior observations)
-4. docs/critiques/{backend,frontend,qa}.md — skim for issues that affect the design you're producing
-5. docs/idea/plan-draft2.md — reference only, do not re-litigate
+1. docs/agents/architect.md — your role (non-optional, first)
+2. docs/idea/plan-draft3.md — the authoritative plan (supersedes draft2)
+3. docs/idea/change-log.md — decisions made and why
+4. docs/critiques/architect.md — your own critique from Phase α (your prior observations)
+5. docs/critiques/{backend,frontend,qa}.md — skim for issues that affect the design you're producing
+6. docs/idea/plan-draft2.md — reference only, do not re-litigate
 
 Critical context from Phase α.5 (read change-log.md §Q before starting):
 - Yoke is NOT jig-dependent. Each phase declares `command` and `args` (default `claude`). jig is recommended in docs, never required by harness code.
@@ -229,9 +246,11 @@ This is a 🤖 AGENT task, but it's research, not implementation.
 - [ ] Run this prompt:
 
 ```
-You are a backend engineer doing an empirical research task for Yoke. Your job: determine the exact framing and event vocabulary of Claude Code's --output-format stream-json output, so the parser can be written correctly.
+You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full — that is your role definition, session protocol, and anti-pattern list. Pay particular attention to the "skipping empirical verification" anti-pattern; that is the exact failure this session is designed to prevent.
 
-Read docs/design/protocol-stream-json.md first to understand what the plan expects.
+Task for this session: empirical research only (no code). Determine the exact framing and event vocabulary of Claude Code's --output-format stream-json output, so the parser can be written correctly later.
+
+Read docs/design/protocol-stream-json.md to understand what the plan expects before starting.
 
 Then:
 
@@ -277,7 +296,9 @@ Do not write any Yoke code. This is a research deliverable only. Cite the captur
 - [ ] Run this prompt:
 
 ```
-You are a backend engineer doing an empirical research task for Yoke. Your job: determine the exact semantics of Claude Code hooks, specifically Stop and PreToolUse hooks, so the hook contract can be correctly specified.
+You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. Your anti-patterns and session protocol live there.
+
+Task for this session: empirical research only (no code). Determine the exact semantics of Claude Code hooks, specifically Stop and PreToolUse hooks, so the quality-gate contract can be correctly specified. Note: Yoke does NOT own or install Claude hooks (see D55) — this research informs the optional example templates Yoke ships and the quality-gate contract doc, not a Yoke-owned hook directory.
 
 Read docs/design/hook-contract.md first.
 
@@ -318,7 +339,9 @@ Per D55, Yoke does not depend on jig — `command`/`args` per phase is the spawn
 - [ ] Run this prompt:
 
 ```
-You are a backend engineer doing an empirical research task for Yoke. Your job: determine how jig (the Claude Code profile tool) behaves when spawned as a child process, so the Process Manager can handle it correctly.
+You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full.
+
+Task for this session: empirical research only (no code). Determine how jig (the Claude Code profile tool) behaves when spawned as a child process, so the best-practices doc can describe it accurately. This research is OPTIONAL and does NOT feed the Process Manager design — the Process Manager is command-agnostic by contract (D55). Skip this task entirely if you are not personally using jig.
 
 If jig is not installed or doesn't exist in this environment, write docs/research/jig-semantics.md with a note "jig not available — fallback is direct `claude -p` invocation" and move on.
 
@@ -348,9 +371,12 @@ This is the Tier 0 → 0.5 transition. Write a minimal shell script + prompt tem
 - [ ] Run this prompt:
 
 ```
-You are building yoke-v0, the minimal shell-script bootstrap glue that Yoke will dogfood during its own implementation. This is NOT v1 Yoke — it's a ~200-line shell script that assembles prompts and spawns Claude Code sessions with consistent context, so we can drive the Phase δ implementation work before the real pipeline engine exists.
+You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. This session is an exception to one rule in that file: you are writing shell script + a tiny helper, not TypeScript under src/server/. Everything else in the persona applies — especially "inventing abstractions" and "silently widening scope."
+
+Task for this session: build yoke-v0, the minimal shell-script bootstrap glue that Yoke will dogfood during its own implementation. This is NOT v1 Yoke — it's a ~200-line shell script that assembles prompts and spawns Claude Code sessions with consistent context, so we can drive the Phase δ implementation work before the real pipeline engine exists.
 
 Read first:
+- docs/agents/backend.md (role, non-optional)
 - docs/idea/plan-draft3.md §Build Order and §Operational Rules
 - docs/idea/runbook.md (this file) for how yoke-v0 will be invoked
 - docs/design/prompt-template-spec.md for the template engine contract
@@ -432,7 +458,10 @@ This is where Yoke starts building itself. Use `yoke-v0` to drive feature-by-fea
 - [ ] Ask the planner to decompose the v1 core engine (NOT dashboard, NOT QA) into discrete features:
 
 ```
-You are the planner for Yoke's core engine build. Read:
+You are the Yoke backend engineer, operating in planner mode for this session. Before anything else, read docs/agents/backend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
+
+Read:
+- docs/agents/backend.md (role, non-optional)
 - docs/idea/plan-draft3.md §Requirements §Must Have (v1)
 - docs/design/architecture.md
 - docs/design/state-machine-transitions.md
@@ -476,6 +505,8 @@ Write to docs/idea/yoke-features.json. Print the resulting topological order. St
 - [ ] 👤 Manually pick the first 3 features to implement (typically: config parser, db setup, state-machine)
 
 ### δ.2 — Implement each feature (loop)
+
+The implement prompt template (`prompts/implement.md`, built in γ.4) must include the line "You are the Yoke backend engineer. Read docs/agents/backend.md in full before proceeding." as the first line of the prompt body. If yoke-v0's template doesn't inject that line, fix the template before starting the loop. Same rule applies when Yoke self-hosts in δ.3 — the prompt template in `.yoke.yml` references `docs/agents/backend.md`.
 
 For each feature in topological order:
 
@@ -539,7 +570,10 @@ Now Yoke drives its own frontend build. Use `yoke start` for each feature.
 - [ ] Run this prompt (via `yoke start plan docs/idea/dashboard-spec.md` if you have the planner phase wired up, else manually):
 
 ```
-You are the planner for Yoke's dashboard. Read:
+You are the Yoke frontend engineer, operating in planner mode for this session. Before anything else, read docs/agents/frontend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
+
+Read:
+- docs/agents/frontend.md (role, non-optional)
 - docs/idea/plan-draft3.md §Web Dashboard, §Protocol Layer, §Client Render Model, §Requirements
 - docs/design/protocol-websocket.md
 - docs/design/architecture.md
@@ -566,6 +600,8 @@ Target 12-20 features. Populate depends_on, acceptance_criteria, review_criteria
 - [ ] 📝 `docs/idea/dashboard-features.json` exists and validates
 
 ### ε.2 — Drive dashboard implementation
+
+The dashboard phase's prompt template must inject "You are the Yoke frontend engineer. Read docs/agents/frontend.md in full before proceeding." as the first line. Configure this in `.yoke.yml` (the dashboard workflow's `prompts.implement` template) before starting the loop.
 
 - [ ] `yoke start dashboard-features.json` (or equivalent) — kicks off the full pipeline with plan already done
 - [ ] Watch from the dashboard you're building — **yes, this is recursive; it's fine, use the server API + terminal until the dashboard renders itself**
@@ -598,7 +634,10 @@ The hook-based gates can't verify UX. After each significant dashboard feature:
 - [ ] `/clear` / fresh session
 
 ```
-You are the QA engineer for Yoke v1 release. Read:
+You are the Yoke QA engineer. Before anything else, read docs/agents/qa.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code, no fixtures yet).
+
+Read:
+- docs/agents/qa.md (role, non-optional)
 - docs/idea/plan-draft3.md §Testability, §v1 Acceptance, §Failure Modes
 - docs/critiques/qa.md — your prior observations
 - docs/design/state-machine-transitions.md
@@ -624,6 +663,8 @@ Target 10-15 features. Topo sort. Write to docs/idea/qa-features.json. Stop.
 - [ ] 📝 `docs/idea/qa-features.json` exists and validates
 
 ### ζ.2 — Drive QA implementation
+
+The QA phase's prompt template must inject "You are the Yoke QA engineer. Read docs/agents/qa.md in full before proceeding." as the first line. Configure this in `.yoke.yml` before starting the loop.
 
 - [ ] `yoke start qa-features.json`
 - [ ] For each fixture: verify manually that it replays correctly through ScriptedProcessManager
