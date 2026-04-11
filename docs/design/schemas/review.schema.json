@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yoke.local/schemas/review.schema.json",
+  "title": "reviews/feature-<id>/<angle>.json",
+  "description": "One reviewer subagent's verdict for one feature. Written directly by the subagent via a narrowly-scoped Write tool. The review orchestrator never sees the content; the harness aggregates deterministically with any(fail) → fail (plan-draft3 §Review Architecture, D14). Coverage rule: every planner-defined acceptance_criterion and review_criterion must have a verdict entry; missing coverage → review_invalid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "reviewer",
+    "reviewed_commit",
+    "verdict",
+    "acceptance_criteria_verdicts",
+    "review_criteria_verdicts"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^feat-[a-z0-9][a-z0-9-]*$"
+    },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Reviewer angle label (e.g. security, complexity, best-practices). Must match the <angle>.json file name."
+    },
+    "reviewed_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail"]
+    },
+    "acceptance_criteria_verdicts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/criterionVerdict" }
+    },
+    "review_criteria_verdicts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/criterionVerdict" }
+    },
+    "additional_issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/additionalIssue" }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional free-form summary; not interpreted by the aggregator."
+    }
+  },
+  "$defs": {
+    "criterionVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion", "pass"],
+      "properties": {
+        "criterion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pass": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "additionalIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "category", "description"],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Free-text angle label (e.g. security, perf, style)."
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "suggestion": { "type": "string" }
+      }
+    }
+  }
+}

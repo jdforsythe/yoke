@@ -1,0 +1,450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yoke.local/schemas/yoke-config.schema.json",
+  "title": ".yoke.yml",
+  "description": "User-authored configuration. Mirrors plan-draft3 §Configuration and the pre/post action grammar (§Phase Pre/Post Commands, D50, D53). All object schemas set additionalProperties: false to fail fast on typos.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "project", "pipeline", "phases"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Schema version pin. Must be a quoted string '1' so YAML parsers don't coerce 1.10 → 1.1."
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "pipeline": { "$ref": "#/$defs/pipeline" },
+    "phases": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/phase" }
+    },
+    "worktrees": { "$ref": "#/$defs/worktrees" },
+    "notifications": { "$ref": "#/$defs/notifications" },
+    "github": { "$ref": "#/$defs/github" },
+    "retention": { "$ref": "#/$defs/retention" },
+    "logging": { "$ref": "#/$defs/logging" },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "rate_limit": { "$ref": "#/$defs/rateLimit" },
+    "ui": { "$ref": "#/$defs/ui" },
+    "safety_mode": {
+      "type": "string",
+      "enum": ["strict", "default", "yolo"],
+      "default": "default",
+      "description": "Parameterizes the example safety hook template offered by yoke init. Advisory, not runtime-enforced (plan-draft3 §Threat Model, D51)."
+    }
+  },
+
+  "$defs": {
+
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["phase"],
+            "properties": {
+              "phase": {
+                "type": "string",
+                "description": "Key into the phases map. Node name is a free label, not an enum (plan-draft3 §Core Design Principles #7)."
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "on", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "on": {
+                "type": "string",
+                "description": "Event label the pipeline engine maps onto transitions (e.g. complete, pass, fail). Pre/post actions may override."
+              },
+              "to": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "args", "prompt_template"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Command to spawn. Default in docs is 'claude'; jig is one documented alternative but not required (D55)."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional override; defaults to the worktree path."
+        },
+        "prompt_template": { "type": "string" },
+        "output_artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outputArtifact" }
+        },
+        "max_outer_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 2
+        },
+        "retry_ladder": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh_with_failure_summary",
+              "fresh_with_diff",
+              "awaiting_user"
+            ]
+          }
+        },
+        "on_review_fail": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retry_mode": {
+              "type": "string",
+              "enum": ["continue", "fresh"],
+              "default": "fresh",
+              "description": "D56: review-triggered re-implement mode."
+            }
+          }
+        },
+        "heartbeat": { "$ref": "#/$defs/heartbeat" },
+        "pre": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/prepostCommand" }
+        },
+        "post": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/prepostCommand" }
+        },
+        "max_review_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Used only by review phases (plan-draft3 §Review)."
+        }
+      }
+    },
+
+    "outputArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string" },
+        "schema": { "type": "string", "description": "Relative path to a JSON schema file." },
+        "required": { "type": "boolean", "default": true }
+      }
+    },
+
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "activity_timeout_s": { "type": "integer", "minimum": 1, "default": 90 },
+        "per_tool_budgets": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "Tool-name → wall-clock budget in seconds; used for liveness signal only (plan-draft3 §Heartbeat, D23)."
+        }
+      }
+    },
+
+    "prepostCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "run", "actions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "run": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "argv-form command. Spawned with shell: false."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 900
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "actions": { "$ref": "#/$defs/actionsMap" }
+      }
+    },
+
+    "actionsMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^([0-9]+|\\*)$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/action" },
+      "description": "Exit-code → action. Key is an integer exit code or '*' wildcard. See schemas/pre-post-action-grammar.md for the normative grammar."
+    },
+
+    "action": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": ["continue", "stop-and-ask", "stop"]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["goto"],
+          "properties": {
+            "goto": { "type": "string" },
+            "max_revisits": { "type": "integer", "minimum": 1, "default": 3 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["goto-offset"],
+          "properties": {
+            "goto-offset": { "type": "integer", "not": { "const": 0 } },
+            "max_revisits": { "type": "integer", "minimum": 1, "default": 3 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["retry"],
+          "properties": {
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "max"],
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "continue",
+                    "fresh_with_failure_summary",
+                    "fresh_with_diff"
+                  ]
+                },
+                "max": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fail"],
+          "properties": {
+            "fail": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reason"],
+              "properties": {
+                "reason": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "worktrees": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_dir": { "type": "string", "default": ".worktrees" },
+        "branch_prefix": { "type": "string", "default": "yoke/" },
+        "auto_cleanup": { "type": "boolean", "default": true },
+        "cleanup_tool": {
+          "type": "string",
+          "enum": ["git", "lazyworktree", "custom"],
+          "default": "git"
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "commands": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "teardown": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "script": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "severity_map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["info", "requires_attention"]
+          }
+        },
+        "mechanisms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["browser_push", "macos_native"]
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "auto_pr": { "type": "boolean", "default": true },
+        "pr_target_branch": { "type": "string", "default": "main" },
+        "auth_order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["env:GITHUB_TOKEN", "gh:auth:token"]
+          }
+        },
+        "attach_artifacts_to_pr": { "type": "boolean", "default": false },
+        "link_issues": { "type": "boolean", "default": false }
+      }
+    },
+
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sqlite": {
+          "oneOf": [
+            { "type": "string", "enum": ["forever"] },
+            { "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_age_days": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        },
+        "stream_json_logs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_age_days": { "type": "integer", "minimum": 1, "default": 30 },
+            "max_total_bytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "worktrees": {
+          "type": "string",
+          "enum": ["workflow-completion", "manual", "on-disk-pressure"],
+          "default": "workflow-completion"
+        }
+      }
+    },
+
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "database": { "type": "string", "default": ".yoke/yoke.db" },
+        "session_logs_dir": { "type": "string", "default": ".yoke/logs" },
+        "retain_stream_json": { "type": "boolean", "default": true }
+      }
+    },
+
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keep_awake": {
+          "type": "boolean",
+          "default": false,
+          "description": "D60: when true, the harness spawns caffeinate -i (macOS) or systemd-inhibit (Linux) as a workflow-lifetime child. Windows deferred to v1.1."
+        }
+      }
+    },
+
+    "rateLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handling": {
+          "type": "string",
+          "enum": ["passive"],
+          "default": "passive",
+          "description": "v1 is passive auto-retry only (D61). Active options are v1.1+."
+        },
+        "usage_pause_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "v1.1 only; rejected at load time in v1."
+        }
+      }
+    },
+
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 3456 },
+        "bind": {
+          "type": "string",
+          "const": "127.0.0.1",
+          "description": "Always 127.0.0.1. D57: single-user forever."
+        },
+        "auth": {
+          "type": "boolean",
+          "const": false,
+          "description": "Always false. D57."
+        }
+      }
+    }
+  }
+}

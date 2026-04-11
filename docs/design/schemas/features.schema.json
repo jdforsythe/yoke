@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yoke.local/schemas/features.schema.json",
+  "title": "features.json",
+  "description": "Read-only projection of the SQLite features table, written by the harness into the worktree before each phase and deleted afterward. Implementers may read but not write it (plan-draft3 §File Contract, D10). The canonical store is SQLite. Status updates flow through .yoke/status-updates.jsonl.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "created", "features"],
+  "properties": {
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Project name, copied from workflow config at projection time."
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "needs_more_planning": {
+      "type": "boolean",
+      "description": "Optional planner-emitted flag consumed by a post: check-needs-more-planning command (plan-draft3 §Phase Pre/Post Commands example). Not interpreted by the harness directly; the action grammar decides what it means."
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/feature" }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "acceptance_criteria",
+        "review_criteria",
+        "status",
+        "depends_on"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^feat-[a-z0-9][a-z0-9-]*$",
+          "description": "Stable feature identifier. Matches the SQLite features.id primary key."
+        },
+        "category": {
+          "type": "string",
+          "description": "Grouping label used by the feature board (D44)."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^feat-[a-z0-9][a-z0-9-]*$" },
+          "description": "Feature ids this feature depends on. Must form a DAG (plan-draft3 §Workflow Lifecycle: Plan)."
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Planner-defined acceptance criteria. Each criterion must receive an explicit verdict from every reviewer (review.schema.json)."
+        },
+        "review_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Planner-defined review criteria. Same coverage rule."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "ready",
+            "bootstrapping",
+            "bootstrap_failed",
+            "in_progress",
+            "awaiting_retry",
+            "review",
+            "review_invalid",
+            "rate_limited",
+            "awaiting_user",
+            "blocked",
+            "complete",
+            "abandoned"
+          ],
+          "description": "Mirrors the state machine (plan-draft3 §State Machine)."
+        },
+        "current_phase": {
+          "type": ["string", "null"],
+          "description": "Free-text phase label. Not an enum — phases are user-defined (plan-draft3 §Core Design Principles #7)."
+        },
+        "blocked_reason": {
+          "type": ["string", "null"]
+        },
+        "implemented_in_commit": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "created_by_session_id": {
+          "type": ["string", "null"]
+        },
+        "last_updated_by_session_id": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}
