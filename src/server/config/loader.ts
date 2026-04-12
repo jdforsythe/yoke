@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import Ajv2020 from 'ajv/dist/2020.js';
-import type { ErrorObject } from 'ajv';
+import type { ErrorObject, AnySchema } from 'ajv';
 import { ConfigLoadError, type ValidationError } from './errors.js';
 import { resolveConfig } from './resolve.js';
 import type { RawConfig, ResolvedConfig } from '../../shared/types/config.js';
@@ -33,7 +33,7 @@ const SCHEMA_PATH = fileURLToPath(
 
 // readFileSync here is not a violation of the "no I/O in resolver" rule;
 // this is the loader, and the schema is infrastructure, not user data.
-const SCHEMA_JSON: unknown = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+const SCHEMA_JSON = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8')) as AnySchema;
 
 // allErrors: true — report every violation, not just the first.
 const ajv = new Ajv2020({ allErrors: true });
