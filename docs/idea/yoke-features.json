@@ -1,0 +1,19 @@
+{
+  "project": "yoke",
+  "created": "2026-04-12T00:00:00Z",
+  "features": [
+    {
+      "id": "smoke-test",
+      "category": "test",
+      "description": "SMOKE TEST — yoke-v0 machinery verification. Reply with exactly one line: SMOKE_OK. Do not read files, run commands, or do anything else.",
+      "acceptance_criteria": [
+        "Output contains SMOKE_OK"
+      ],
+      "review_criteria": [
+        "Output is exactly SMOKE_OK"
+      ],
+      "depends_on": [],
+      "priority": 0
+    }
+  ]
+}
