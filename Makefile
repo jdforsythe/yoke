@@ -54,4 +54,12 @@ tail-session-raw:
 	echo "Tailing: $$log"; \
 	tail -f "$$log"
 
-.PHONY: last-status last-output last-logs tail-session tail-session-raw
+# run-implement FEATURE=<id> — run the implement phase for a feature
+run-implement:
+	./yoke-v0 run implement $(FEATURE)
+
+# run-review FEATURE=<id> — run the review phase for a feature
+run-review:
+	./yoke-v0 run review $(FEATURE)
+
+.PHONY: last-status last-output last-logs tail-session tail-session-raw run-implement run-review
