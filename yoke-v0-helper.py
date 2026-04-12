@@ -2,9 +2,10 @@
 """yoke-v0-helper — prompt assembly and session bookkeeping for yoke-v0.
 
 Subcommands:
-  assemble <phase> <feat-id> <config> <prompt-out>   render template, print cfg JSON
-  record   <sessions> <phase> <feat> <log> <ec>      index session, print session_id
-  find-log <sessions> <sid-prefix>                   print log path for session
+  assemble     <phase> <feat-id> <config> <prompt-out>   render template, print cfg JSON
+  record       <sessions> <phase> <feat> <log> <ec>      index session, print session_id
+  find-log     <sessions> <sid-prefix>                   print log path for session
+  last-session <sessions> <phase> <feat-id>              print session_id of last run
 """
 import sys, json, os, re, subprocess
 from datetime import datetime, timezone
@@ -124,7 +125,21 @@ def cmd_find_log(args):
     if last: print(last)
     else: sys.exit(1)
 
-CMDS = {"assemble": cmd_assemble, "record": cmd_record, "find-log": cmd_find_log}
+def cmd_last_session(args):
+    if len(args) != 3: die("last-session: <sessions> <phase> <feat-id>")
+    sessions_file, phase, feat = args; last = None
+    try:
+        with open(sessions_file) as f:
+            for line in f:
+                e = json.loads(line)
+                if e.get("phase") == phase and e.get("feature_id") == feat:
+                    last = e.get("session_id")
+    except Exception: pass
+    if last and last != "unknown": print(last)
+    else: sys.exit(1)
+
+CMDS = {"assemble": cmd_assemble, "record": cmd_record,
+        "find-log": cmd_find_log, "last-session": cmd_last_session}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:

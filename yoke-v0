@@ -17,7 +17,7 @@ usage() {
 yoke-v0  Phase δ bootstrap glue
 
   run      <phase> <feature-id>           assemble + spawn agent
-  continue <phase> <feature-id>           same, resume with -c
+  continue <phase> <feature-id>           same, resume last session (-r <session-id>)
   record   <phase> <feature-id> <label>   run and label the log (fixtures)
   logs     <session-id-prefix>            print captured stream-json log
 
@@ -43,7 +43,7 @@ run_cmds() {
 }
 
 do_run() {
-  local phase="$1" feat="$2" label="${3:-}" use_c="${4:-}"
+  local phase="$1" feat="$2" label="${3:-}" resume_sid="${4:-}"
   ensure_dirs
 
   local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -73,7 +73,7 @@ do_run() {
 
   run_cmds "pre" ${pre[@]+"${pre[@]}"}
 
-  local -a extra=(); [[ -n "$use_c" ]] && extra=("-c")
+  local -a extra=(); [[ -n "$resume_sid" ]] && extra=("-r" "$resume_sid")
   info "spawning: $cmd ${args[*]-}${extra:+ ${extra[*]}}"
   info "log:      $log_path  (tail -f to watch)"
 
@@ -83,8 +83,11 @@ do_run() {
   [[ ! -s "${log_path%.jsonl}.err" ]] && rm -f "${log_path%.jsonl}.err"
 
   local sid; sid=$($H record "$SESSIONS" "$phase" "$feat" "$log_path" "$ec")
-  [[ $ec -ne 0 ]] && info "session exited $ec — check $log_path" \
-                  || info "session complete (session_id=${sid})"
+  if [[ $ec -ne 0 ]]; then
+    info "session exited $ec — check $log_path"
+  else
+    info "session complete (session_id=${sid})"
+  fi
 
   run_cmds "post" ${post[@]+"${post[@]}"}
   return $ec
@@ -94,7 +97,12 @@ do_run() {
 subcmd="${1:-}"; shift || true
 case "$subcmd" in
   run)      [[ $# -ge 2 ]] || usage; do_run "$1" "$2" ;;
-  continue) [[ $# -ge 2 ]] || usage; do_run "$1" "$2" "" "1" ;;
+  continue)
+    [[ $# -ge 2 ]] || usage
+    sid=$($H last-session "$SESSIONS" "$1" "$2") \
+      || die "no prior session for $1/$2 — use 'run' to start fresh"
+    do_run "$1" "$2" "" "$sid"
+    ;;
   record)   [[ $# -ge 3 ]] || usage; do_run "$1" "$2" "$3" ;;
   logs)
     [[ $# -ge 1 ]] || usage
