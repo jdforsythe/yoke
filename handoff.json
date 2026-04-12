@@ -1,7 +1,31 @@
 {
-  "feature": "feat-config-loader",
+  "feature": "feat-db-setup",
   "entries": [
     {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T22:57:00Z",
+      "intended_files": [
+        "src/server/storage/db.ts",
+        "tests/storage/db.test.ts",
+        "package.json",
+        "package-lock.json"
+      ],
+      "deferred_criteria": [
+        "busy_timeout on read-only connections: the PRAGMA is set and verified to return 5000 in tests. However, exercising an actual SQLITE_BUSY contention scenario on a reader (two concurrent processes, one holding a write lock) is not covered — it would require a multi-process fixture. The unit test verifies the PRAGMA value only.",
+        "synchronous=NORMAL is not applied to the reader connection: omitted because setting it on a readonly connection risks SQLITE_READONLY on some builds. Readers don't fsync writes, so this is a no-op concern for them.",
+        "A true multi-slot read-only pool (N pre-opened readers for dashboard concurrency) is not implemented — reader() returns a single pre-opened connection. If the dashboard has concurrent synchronous reads, a larger pool may be needed; that is a separate feature."
+      ],
+      "known_risks": [
+        "better-sqlite3 is a native addon; CI must have the correct prebuilt binary for the Node.js version in use, or must compile from source. If the platform/arch doesn't match, the npm install step will fail with a prebuild-install error.",
+        "reader() returns the same connection object on every call. better-sqlite3 connections are not thread-safe, but Node.js is single-threaded, so this is safe. If Yoke ever moves to worker_threads for I/O, each thread must open its own reader connection.",
+        "openDbPool creates the database file if it does not exist. There is no validation that dbPath's parent directory exists; callers are responsible for creating it (e.g., .yoke/ directory) before calling openDbPool."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-config-loader",
       "phase": "implement",
       "attempt": 0,
       "ts": "2026-04-12T18:26:00Z",
