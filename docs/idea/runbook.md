@@ -510,17 +510,18 @@ The implement prompt template (`prompts/implement.md`, built in γ.4) must inclu
 
 For each feature in topological order:
 
-- [ ] `/clear` / fresh session (if not using `yoke-v0` to drive, otherwise yoke-v0 handles the fresh session)
-- [ ] Invoke: `./yoke-v0 run implement <feature-id>`
-- [ ] Watch the stream-json log (in another terminal: `tail -f .yoke/logs/<latest>.jsonl` or just let yoke-v0 print it)
-- [ ] When the session exits:
+- [x] `/clear` / fresh session (if not using `yoke-v0` to drive, otherwise yoke-v0 handles the fresh session)
+- [x] Invoke: `./yoke-v0 run implement <feature-id>`
+- [x] Watch the stream-json log (in another terminal: `tail -f .yoke/logs/<latest>.jsonl` or just let yoke-v0 print it)
+- [x] When the session exits:
   - ✅ **Clean exit + hook manifest OK** → feature done, mark status in yoke-features.json, append to handoff.json, move to next
   - ❌ **Clean exit + tests failing** → this shouldn't happen if the hook is working. If it does, the hook is broken — diagnose before continuing.
   - ❌ **Hook blocked stop, session gave up** → `./yoke-v0 continue implement <feature-id>` once; if still failing, fresh session with handoff.json updated with failure summary; if still failing after that, flag the feature as blocked and skip (mark `awaiting_user`)
   - ❌ **Process died unexpectedly** → check `.yoke/logs/` for the crash, `./yoke-v0 continue` once, else fresh
 
 - [ ] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
-- [ ] After each feature: run the project's tests manually (`pnpm test`) as a cross-check until the hook infrastructure is trustworthy
+- [ ] After each feature: `./yoke-v0 run review <feature-id>` — review against acceptance and review criteria; if blocking issues found, address then re-implement before moving on
+- [ ] After each feature: `pnpm test` (skip until `package.json` exists; once it does, run after every feature)
 
 ### δ.3 — Self-hosting checkpoint
 
