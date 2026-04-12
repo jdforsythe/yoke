@@ -34,6 +34,10 @@ we add a `prepost_runs` table or we encode the same data as typed
 commit message so reviewers can challenge. The table is purely
 additive and cheap to remove if rejected.
 
+**Resolution (2026-04-12).** Accepted: ship `prepost_runs` table.
+Defined in `schemas/sqlite-schema.sql`. Table now includes `stage`
+column per Issue 1.
+
 ---
 
 ## Q-classifier-inputs — failure classifier inputs are not enumerated
@@ -65,6 +69,9 @@ surface in v1):
   - Anything else → `unknown` → `awaiting_user`.
   User-extensible rules become a v1.1 feature request.
 
+**Resolution (2026-04-12).** Accepted: ship minimal built-in classifier
+with the rules above. No user config surface in v1.
+
 ---
 
 ## Q-multi-feature-parallel-in-review — review phase fan-out per feature
@@ -91,6 +98,10 @@ per workflow in non-terminal state at a time. Plan-draft3 §v1
 Acceptance does not require concurrent features; parallel features
 move to v1.1 alongside parallel workflows (D52).
 
+**Resolution (2026-04-12).** Accepted: per-item serial — at most one
+item in non-terminal state per workflow in v1. Note: with the
+stages/items rename (Issues 1–2), "feature" becomes "item" throughout.
+
 ---
 
 ## Q-events-table-retention — `events` retention is not specified
@@ -109,6 +120,9 @@ schema can't be finalized without knowing.
 "forever"` in v1 and add a best-effort compaction job to v1.1 (new
 config key `retention.events.max_age_days`). Document the
 "events grows without bound" consequence in the config guide.
+
+**Resolution (2026-04-12).** Accepted: `events` retention governed by
+`sqlite: "forever"` in v1. Compaction deferred to v1.1.
 
 ---
 
@@ -131,6 +145,9 @@ schema is larger than a simple JSONL file — it needs a manifest
 `plan-happy-path`, `rate-limit-midstream`, and `hook-fail-then-retry`
 fixtures (plan-draft3 §Testability) are impossible without them, so
 the default is forced.
+
+**Resolution (2026-04-12).** Accepted: fixture manifest includes all
+three signal types. The default is forced by the test requirements.
 
 ---
 
@@ -157,6 +174,16 @@ defines the order as "topological linearization with ties broken by
 `pipeline.nodes` authorship order." Flag this as the architect's
 decision in the PR description; challenge-ready.
 
+**Resolution (2026-04-11).** `goto-offset` is cut entirely from v1.
+The feature was solving the wrong problem: the primary use case (lint/test
+gate on implement → fix it → retry) is covered by `retry: {inject: stderr}`,
+and the rare case of jumping to a different phase is covered more readably
+by named `goto: <phase>`. The relative-numeric-jump form adds config
+complexity and the ordering ambiguity documented above for no practical
+gain. Action grammar for v1 is: `continue`, `goto: <phase>`, `retry`,
+`stop-and-ask`, `stop`, `fail`. `goto-offset` is not a v1.1 candidate
+unless a concrete use case emerges.
+
 ---
 
 ## Q-architecture-proposed-lifecycle — `architecture-proposed.md` flow
@@ -181,6 +208,44 @@ in `docs/templates/config/` includes a `post:` command that checks
 for the file and routes to `stop-and-ask`. No new schema, no new
 dashboard surface. The user can upgrade to option (b) if they want
 when the dashboard grows a generic attention-diff view.
+
+**Resolution (2026-04-11).** The `architecture-proposed.md` artifact and the
+concept of a required planner node are both rejected. Yoke is fully
+configurable — workflows may have no planner node at all (e.g. a bare
+`implement → review` for a simple bug fix). The harness must not assume any
+specific node or output file exists.
+
+**Resolution updated (2026-04-12, Issue 1 — stages replace nodes+edges).**
+With the stages model, edges no longer exist. `needs_approval` moves to a
+stage-level attribute: `needs_approval: true` on a stage causes the harness
+to enter `awaiting_user` before starting that stage, inserting a
+`pending_attention{kind=stage_needs_approval}` row. The user approves via the
+dashboard or CLI, which emits a `stage_approval_granted` event. Example:
+
+```yaml
+pipeline:
+  stages:
+    - id: plan
+      run: once
+      phases: [plan]
+    - id: implementation
+      run: per-item
+      items_from: features.json
+      items_list: $.features
+      items_id: $.id
+      phases: [implement, review]
+      needs_approval: true    # pause before starting this stage
+```
+
+For the *conditional* case (pause only if the planner's structured output
+signals complexity), a `post:` command on the planning phase using `jq` to
+inspect the output JSON and exit non-zero, mapped to `stop-and-ask`, is the
+appropriate mechanism — that is the existing pre/post action grammar and
+requires no new schema.
+
+Action: `needs_approval` added to `schemas/yoke-config.schema.json` stage
+definition. `stage_approval_granted` event and `stage_needs_approval`
+attention kind added to `state-machine-transitions.md`.
 
 ---
 
@@ -207,6 +272,38 @@ user can copy, with an example that denies Write outside
 `reviews/feature-*/`. Do not install it. Call this out in the
 template README.
 
+**Resolution (2026-04-11).** The question's premise is wrong: Yoke has no
+required node types. There is no mandatory "reviewer" phase — users may run
+plan+implement only, implement-only, or any topology they choose. The
+recommendation of plan+implement+review+loop is documentation-level guidance,
+not a harness constraint.
+
+Consequences:
+
+1. **No per-node hook scoping.** Jig profiles and per-node PreToolUse hook
+   setups for reviewer scoping are out of scope for v1. Too complex to
+   configure, too tied to an assumed workflow shape the user may not use.
+
+2. **Hook templates dropped entirely.** `docs/templates/hooks/` is removed.
+   The only two identified use cases were:
+   - Reviewer write-scoping: moot given no required reviewer node.
+   - Stop-quality for static analysis: the user still has to edit the template
+     to name their own toolchain script, so the template provides a scaffold
+     but not a working default. This is better served by a code snippet in the
+     quick start / best practices docs where it can be annotated with context.
+   PreToolUse safety guidance (worktree confinement, secret-read blocking)
+   likewise moves to the quick start docs as a documented pattern rather than
+   a shipped file.
+
+3. **`yoke init` interactive opt-in.** Init may offer an opinionated default
+   workflow config (plan+implement+review+loop) as an interactive prompt. The
+   user chooses whether to accept it. No hooks are installed.
+
+Action: remove `docs/templates/hooks/` from the architecture directory tree;
+remove section 3 from `hook-contract.md`; move safety/quality-gate hook
+examples to the quick start / best practices documentation (Phase ε or ζ
+scope — not a Phase β artifact). Update `runbook.md` artifact locations.
+
 ---
 
 ## Q-keep-awake-windows — Windows users in v1
@@ -224,6 +321,9 @@ loader (breaking platform portability of `.yoke.yml` files).
 **Default if no response.** Accept at config-load time, warn at
 runtime, proceed without keep-awake. This matches "laptop-primary,
 warn don't break" posture.
+
+**Resolution (2026-04-12).** Accepted: accept at config-load time,
+warn at runtime. Proceed without keep-awake on unsupported platforms.
 
 ---
 
@@ -246,6 +346,20 @@ outcome, so a fail still cleans up). On restart, the recovery path
 removes any `features.json` in the worktree before re-projecting.
 This matches "the canonical store is SQLite" strictly.
 
+**Resolution (2026-04-12, Issue 2 + Issue 3).** With opaque items,
+the harness no longer projects a `features.json` file into the
+worktree. Instead:
+- Item data is injected into prompt templates via `{{item}}` (opaque
+  user data) and `{{item_state}}` (harness state). See
+  `prompt-template-spec.md` §3.
+- The item manifest file (`items_from`) is not modified by the harness.
+  A diff check ensures agents don't modify it either.
+- For phases that need the full items listing (e.g., planning), a
+  `{{items_summary}}` template variable provides a harness-generated
+  summary of all items with their current states.
+- The projection concept is replaced by template injection. No
+  per-phase file write/delete cycle.
+
 ---
 
 ## Q-session-log-directory-collisions — session log path when `.yoke/logs` spans workflows
@@ -265,26 +379,83 @@ Multiple instances of Yoke (D57) must not collide.
 paging endpoint does not need to reconstruct it. Multiple instances
 use separate project directories by convention.
 
+**Resolution (2026-04-11).** All persistent yoke data moves to
+`~/.yoke/<fingerprint>/`, where `<fingerprint>` is the SHA of the
+repo's initial commit (first commit reachable from no parent —
+`git rev-list --max-parents=0 HEAD`). A `meta.json` alongside it
+stores the human-readable origin URL for browsability. This layout
+survives worktree deletion, repo path changes, wipe-and-re-clone,
+and external tooling that removes repo directories without invoking
+yoke cleanup.
+
+Canonical layout:
+
+```
+~/.yoke/
+  <initial-commit-sha>/
+    meta.json              ← {"origin": "github.com/owner/repo", "first_seen": "..."}
+    yoke.db                ← single SQLite DB for all workflows in this repo
+    yoke.port              ← port the running server is bound to (runtime, deleted on clean exit)
+    yoke.pid               ← PID of the running server process (runtime, deleted on clean exit)
+    logs/
+      <workflow-id>/
+        <session-id>.jsonl
+```
+
+Multiple instances in different worktrees share the same `yoke.db`
+(SQLite WAL mode; yoke is append-heavy so write contention is
+minimal). Each instance auto-selects a free port at startup, writes
+it to `yoke.port`, and a second instance finding `yoke.port`
+already populated picks the next available port and overwrites it
+— so `yoke.port` always reflects the most recently started instance.
+`yoke open` reads `yoke.port` to know where to point the browser;
+users with two parallel instances open two browser tabs.
+
+`workflow-id + session-id` remains sufficient for uniqueness within
+the DB. No new ID dimension is needed. The `logging.session_logs_dir`
+config key is removed; the path is always derived from the fingerprint
+and is not user-configurable in v1.
+
 ---
 
-## Summary of defaults (what I'll do if silence)
+## Q-cascading-renames — artifacts outside this revision scope need feature→item renames
 
-1. Ship `prepost_runs` table (Q-prepost-table).
-2. Ship minimal built-in classifier (Q-classifier-inputs).
-3. Per-feature serial review (Q-multi-feature-parallel-in-review).
-4. `events` retention governed by `sqlite: "forever"` (Q-events).
-5. Scripted PM fixture manifest covers stream/exit/stderr/prepost
-   (Q-scripted-pm-fidelity).
-6. `goto-offset` order = topological + authorship tiebreak
-   (Q-goto-offset-scope).
-7. `architecture-proposed.md` gated via `post:` + `stop-and-ask`
-   (Q-architecture-proposed-lifecycle).
-8. Reviewer scoping = PreToolUse example template (copy-on-opt-in)
-   (Q-subagent-scoping-in-default-config).
-9. `keep_awake` on Windows warns-and-ignores (Q-keep-awake-windows).
-10. `features.json` projection is per-phase (Q-features-json-timing).
-11. Session log layout is workflow-scoped
-    (Q-session-log-directory-collisions).
+**What I need to know.** Nothing — this is a tracking note, not a
+question. The following artifacts were not in the β.3 revision scope
+but contain stale `feature_id`, `features.json`, or `YOKE_FEATURE_ID`
+references that should be updated in a follow-up pass:
 
-All defaults are flagged in the commit message so reviewers can
-challenge them in the PR thread.
+- `schemas/pre-post-action-grammar.md` — `feature_id` in loop guard
+  description, `features.json` in the ordering section.
+- `threat-model.md` — `features.json` diff check references.
+- `protocol-stream-json.md` — `feature_id` in structured log schema.
+
+**Why it blocks design.** It doesn't block; these are terminology
+inconsistencies, not semantic errors. The documents' meaning is clear
+from context.
+
+**Default if no response.** Fix in the next architect session that
+touches these files.
+
+**Resolution (2026-04-12).** Noted for follow-up. Not blocking.
+
+---
+
+## Resolution summary
+
+All questions now have Resolution blocks. Resolved 2026-04-11 to
+2026-04-12 across two passes.
+
+| Question | Resolution |
+|---|---|
+| Q-prepost-table | **Accepted.** Ship `prepost_runs` table. |
+| Q-classifier-inputs | **Accepted.** Minimal built-in classifier, no user config in v1. |
+| Q-multi-feature-parallel-in-review | **Accepted.** Per-item serial in v1. |
+| Q-events-table-retention | **Accepted.** `sqlite: "forever"` in v1. |
+| Q-scripted-pm-fidelity | **Accepted.** Fixture manifest includes all three signal types. |
+| Q-goto-offset-scope | **Cut from v1.** Named `goto` covers all practical use cases. |
+| Q-architecture-proposed-lifecycle | **Rejected original; updated for stages.** `needs_approval` on stage definition. |
+| Q-subagent-scoping-in-default-config | **Hook templates dropped.** Safety examples move to docs. |
+| Q-keep-awake-windows | **Accepted.** Accept at config-load time, warn at runtime. |
+| Q-features-json-projection-timing | **Replaced by template injection.** `{{item}}` + `{{item_state}}`. |
+| Q-session-log-directory-collisions | **Accepted.** `~/.yoke/<fingerprint>/` layout. |

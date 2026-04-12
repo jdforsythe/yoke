@@ -52,7 +52,10 @@ type ServerFrameType =
   | "workflow.snapshot"
   | "workflow.update"
   | "workflow.index.update"
-  | "feature.update"
+  | "item.state"
+  | "item.data"
+  | "stage.started"
+  | "stage.complete"
   | "session.started"
   | "session.ended"
   | "stream.text"
@@ -86,7 +89,8 @@ Client MUST disconnect if `protocolVersion !== 1`.
 
 ### 2.2 `workflow.snapshot`
 A full workflow state dump, sent in response to `subscribe`. Includes
-feature rows, live session rows, `recoveryState` if set, `githubState`.
+item rows (with state and data separated per Issue 3), stage info,
+live session rows, `recoveryState` if set, `githubState`.
 
 ```ts
 interface WorkflowSnapshotPayload {
@@ -94,18 +98,89 @@ interface WorkflowSnapshotPayload {
     id: string;
     name: string;
     status: string;        // state-machine label
+    currentStage: string | null;  // stage id (Issue 1)
     createdAt: string;
     recoveryState?: RecoveryState | null;
     githubState?: GithubState | null;
   };
-  features: FeatureProjection[];
+  stages: StageProjection[];         // ordered stage list (Issue 1)
+  items: ItemProjection[];           // item state + display fields (Issue 2, 3)
   activeSessions: SessionProjection[];
   pendingAttention: PendingAttention[];
 }
+
+interface StageProjection {
+  id: string;
+  run: "once" | "per-item";
+  phases: string[];
+  status: "pending" | "in_progress" | "complete" | "blocked";
+  needsApproval: boolean;
+}
+
+interface ItemProjection {
+  id: string;
+  stageId: string;
+  state: ItemStateProjection;        // harness state (Issue 3)
+  displayTitle: string | null;       // resolved from items_display config
+  displaySubtitle: string | null;
+}
+
+interface ItemStateProjection {
+  status: string;
+  currentPhase: string | null;
+  retryCount: number;
+  blockedReason: string | null;
+}
 ```
 
-### 2.3 `workflow.update` / `feature.update`
-Partial updates for changed fields.
+Item user data (the opaque blob) is NOT included in the snapshot by
+default — it can be large. The dashboard requests it on demand via
+`item.data` frames when the user opens an item detail view (Issue 3).
+
+### 2.3 `workflow.update` / `item.state` / `item.data`
+`workflow.update`: partial updates for changed workflow-level fields.
+
+`item.state` (replaces `feature.update`): carries the item ID and
+changed harness-state fields only (status, currentPhase, retryCount,
+blockedReason). Does NOT include user data (Issue 3).
+
+```ts
+interface ItemStatePayload {
+  itemId: string;
+  stageId: string;
+  state: Partial<ItemStateProjection>;
+}
+```
+
+`item.data`: carries the opaque user data blob for a specific item.
+Sent on demand when the dashboard requests it, not pushed automatically.
+
+```ts
+interface ItemDataPayload {
+  itemId: string;
+  data: unknown;  // opaque JSON blob from items.data (Issue 2)
+}
+```
+
+### 2.3a `stage.started` / `stage.complete` (Issue 1)
+
+```ts
+interface StageStartedPayload {
+  stageId: string;
+  run: "once" | "per-item";
+  itemCount?: number;  // for per-item stages
+}
+interface StageCompletePayload {
+  stageId: string;
+  nextStageId: string | null;
+  needsApproval: boolean;  // whether next stage requires approval
+  itemSummary?: {
+    complete: number;
+    blocked: number;
+    abandoned: number;
+  };
+}
+```
 
 ### 2.4 `workflow.index.update`
 Lightweight update for the sidebar list — id, name, status,
@@ -272,8 +347,10 @@ interface ControlPayload {
     | "rerun-phase"
     | "inject-context"
     | "unblock"
-    | "retry";
-  featureId?: string;
+    | "retry"
+    | "approve-stage";       // Issue 1: approve a stage with needs_approval
+  itemId?: string;            // renamed from featureId (Issue 2)
+  stageId?: string;           // for approve-stage action (Issue 1)
   extra?: unknown;            // e.g. inject-context text
 }
 interface AckPayload {
@@ -376,7 +453,10 @@ export type ServerFrameType =
   | "workflow.snapshot"
   | "workflow.update"
   | "workflow.index.update"
-  | "feature.update"
+  | "item.state"
+  | "item.data"
+  | "stage.started"
+  | "stage.complete"
   | "session.started"
   | "session.ended"
   | "stream.text"

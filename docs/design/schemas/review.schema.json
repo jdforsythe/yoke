@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yoke.local/schemas/review.schema.json",
-  "title": "reviews/feature-<id>/<angle>.json",
-  "description": "One reviewer subagent's verdict for one feature. Written directly by the subagent via a narrowly-scoped Write tool. The review orchestrator never sees the content; the harness aggregates deterministically with any(fail) → fail (plan-draft3 §Review Architecture, D14). Coverage rule: every planner-defined acceptance_criterion and review_criterion must have a verdict entry; missing coverage → review_invalid.",
+  "title": "reviews/<item-id>/<angle>.json (recommended template)",
+  "description": "Recommended schema for one reviewer subagent's verdict for one item in the default workflow. This is NOT a harness contract — the harness does not read or parse review files (Issue 4). Pass/fail is determined by the review phase's post: commands, not by harness-level aggregation. The default workflow ships a post command that reads these files and checks verdicts. Users with different review models may define their own schema or skip review entirely.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "feature_id",
+    "item_id",
     "reviewer",
     "reviewed_commit",
     "verdict",
@@ -14,9 +14,10 @@
     "review_criteria_verdicts"
   ],
   "properties": {
-    "feature_id": {
+    "item_id": {
       "type": "string",
-      "pattern": "^feat-[a-z0-9][a-z0-9-]*$"
+      "minLength": 1,
+      "description": "The item identifier as extracted by the stage's items_id expression. No pattern enforced (Issue 2)."
     },
     "reviewer": {
       "type": "string",

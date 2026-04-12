@@ -36,7 +36,7 @@ when a root `architecture.md` is introduced later, updates land in
              ▼          ▼       ▼        ▼
     ┌────────────────────────────────────────────┐
     │          Storage layer (SQLite)            │
-    │  workflows · features · sessions · events  │
+    │  workflows · items · sessions · events     │
     │  artifact_writes · pending_attention       │
     │  schema_migrations        (WAL, single DB) │
     └────────────────────────────────────────────┘
@@ -53,7 +53,7 @@ when a root `architecture.md` is introduced later, updates land in
 The Pipeline Engine is the only component that mutates SQLite state.
 Dashboard reads go through a separate read-only connection
 (plan-draft3 §SQLite Schema). No long-lived in-memory representation of
-workflow/feature state exists outside a single transaction's scope
+workflow/item state exists outside a single transaction's scope
 (plan-draft3 §Core Design Principles #6, D03).
 
 ---
@@ -134,7 +134,6 @@ src/
       CrashRecoveryBanner/
       SystemNotice/
 docs/
-  templates/hooks/             # ships as examples; never installed by harness
   design/                      # ← this directory
 ```
 
@@ -161,28 +160,36 @@ Shutdown order (plan-draft3 §Process Management, §Crash Recovery):
 4. fsync SQLite (WAL).
 5. Exit.
 
-All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_FEATURE_ID`,
-`YOKE_PHASE`, `YOKE_SESSION_ID`, `YOKE_ATTEMPT`.
+All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_ITEM_ID`,
+`YOKE_STAGE`, `YOKE_PHASE`, `YOKE_SESSION_ID`, `YOKE_ATTEMPT`.
 
 ---
 
 ## 4. Module responsibilities (one page each)
 
 ### 4.1 Pipeline Engine
-- Inputs: SQLite state, phase graph from `.yoke.yml`, events from Process
-  Manager, Pre/Post Runner, Worktree Manager.
+- Inputs: SQLite state, stage list from `.yoke.yml` (Issue 1), events
+  from Process Manager, Pre/Post Runner, Worktree Manager.
 - Outputs: SQLite writes, side-effect calls to Process / Worktree / Prompt
-  modules, WebSocket `workflow.update` / `feature.update` frames.
+  modules, WebSocket `workflow.update` / `item.update` frames.
 - Responsibilities:
+  - Manage stage sequencing: advance workflows through the ordered stage
+    list, reading item manifests when entering `per-item` stages (Issue 1).
+  - For `per-item` stages: read the manifest via `items_from`, extract
+    items via `items_list` / `items_id`, store opaque item data in SQLite,
+    resolve dependency ordering via `items_depends_on` (Issue 2).
   - Resolve next event from observed input using failure classifier.
   - Look up `(state, event)` in `transitions.ts`; apply guard; commit
     transition inside a single SQLite transaction; emit the corresponding
     `event` row in the `events` table.
-  - Drive the outer retry ladder (§Retry, §Phase Implement).
-  - Enforce the Pipeline `max_revisits` loop guard when a `post:` action
-    is `goto*`.
+  - Drive the outer retry ladder (§Retry).
+  - Enforce the `max_revisits` loop guard when a `post:` action is `goto`.
+  - Advance items through phases within a stage; detect stage completion
+    (all items terminal) and trigger the next stage.
 - Non-responsibilities: not the NDJSON parser, not the child spawner, not
-  the template interpolator, not the artifact validator.
+  the template interpolator, not the artifact validator, not the review
+  aggregator (Issue 4 — review pass/fail is determined by `post:` commands,
+  not by harness-level file parsing).
 - Guarantees: SQLite row is canonical; every transition is durable before
   any external-visible side effect (D03, §Crash Recovery).
 
@@ -221,7 +228,9 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_FEATURE_ID`,
 - Refuses auto-cleanup if the branch has unpushed commits without a PR.
 
 ### 4.5 Session Log Store
-- Append-only per-session JSONL files under `.yoke/logs/<session-id>.jsonl`.
+- Append-only per-session JSONL files under
+  `~/.yoke/<fingerprint>/logs/<workflow-id>/<session-id>.jsonl`
+  (Q-session-log-directory-collisions resolution).
 - Written by the Process Manager (stream-json line copy) and the
   Pre/Post Runner (command output frames).
 - Read by the HTTP paging endpoint (`GET /api/sessions/:id/log`) and the
@@ -232,8 +241,10 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_FEATURE_ID`,
 ### 4.6 Prompt Assembler (pure)
 - Pure function `(template, PromptContext) → string` (D11).
 - PromptContext is constructed by the Pipeline Engine from:
-  Worktree Manager (file reads), SQLite (feature row, handoff entries,
-  recent diff via `simple-git`), configuration, git log.
+  Worktree Manager (file reads), SQLite (item row with opaque `data`
+  blob + harness state, handoff entries, recent diff via `simple-git`),
+  configuration, git log. Injects `{{item}}` (opaque user data) and
+  `{{item_state}}` (harness-tracked state) for per-item phases (Issue 3).
 - No I/O inside the assembler; enables dry-run preview and unit testing.
 
 ### 4.7 Config Loader
@@ -261,29 +272,36 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_FEATURE_ID`,
 
 ---
 
-## 5. Data flow — a single Implement phase
+## 5. Data flow — a single phase within a per-item stage
 
-1. Pipeline Engine reads `workflow`+`feature` rows; `(ready,
-   implement_phase_start)` → `bootstrapping` → `in_progress` (single
-   transaction).
-2. Worktree Manager creates worktree + branch, runs bootstrap commands.
-3. Pipeline Engine builds `PromptContext`, calls Prompt Assembler.
+1. Pipeline Engine reads `workflow`+`item` rows; `(ready,
+   phase_start)` → `bootstrapping` → `in_progress` (single transaction).
+2. Worktree Manager creates worktree + branch (first phase of first
+   per-item stage only), runs bootstrap commands.
+3. Pipeline Engine builds `PromptContext` including `{{item}}` (opaque
+   user data from `items.data`) and `{{item_state}}` (harness state
+   from `items` columns). Calls Prompt Assembler (Issue 2, Issue 3).
 4. Pre/Post Runner executes `pre:` commands; a fail branches per action.
 5. Process Manager `spawn(cmd, args)`, streams stdin buffer, parses stdout
    NDJSON line-by-line, captures stderr, emits typed events.
 6. On child exit, Process Manager raises `session_ok` / `session_fail`.
 7. Pre/Post Runner executes `post:` commands sequentially; each maps exit
-   code → action; the Pipeline Engine executes the action.
+   code → action; the Pipeline Engine executes the action. For a review
+   phase, pass/fail is determined here by user-configured post commands,
+   not by harness-level review aggregation (Issue 4).
 8. Artifact validators (ajv) run against declared `output_artifacts`.
-9. Post-phase diff check rejects disallowed writes to `features.json`
-   (§File Contract, D10).
-10. Final event fires the state transition and unlocks cascades.
+9. Item manifest diff check rejects disallowed writes to the `items_from`
+   file (§File Contract, D10).
+10. If more phases remain in the current stage, the Pipeline Engine
+    advances `current_phase` and re-enters at step 3 for the next phase.
+    If this was the last phase, the item enters `complete` and the
+    Pipeline Engine checks for stage completion (Issue 1).
 
 ---
 
 ## 6. Trust boundaries
 
-- Untrusted: spec content, features.json content, agent-produced files.
+- Untrusted: spec content, item manifest content, agent-produced files.
 - Trusted: harness code, `.yoke.yml` (it's user-authored), the user's own
   Claude hooks.
 - Enforcement of the untrusted→trusted boundary is opt-in (`post:`

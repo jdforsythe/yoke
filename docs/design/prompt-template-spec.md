@@ -20,11 +20,16 @@ Exactly one syntactic form:
 
 ```
 {{variable_name}}
+{{variable_name.field.subfield}}
 ```
 
 Rules:
 
-- A variable reference is `{{` + ASCII identifier (`[A-Za-z_][A-Za-z0-9_]*`) + `}}`.
+- A variable reference is `{{` + dotted identifier (`[A-Za-z_][A-Za-z0-9_.]*`) + `}}`.
+- Dot-separated paths are resolved by walking the context object.
+  `{{item.description}}` looks up `ctx["item"]["description"]` (Issue 2).
+  Missing intermediate keys are a hard error; the template engine does
+  not silently produce `undefined`.
 - Whitespace inside the braces is **not** permitted in v1. `{{ foo }}`
   is a template error at assembly time (caller can `trim()` manually
   if they want spaces).
@@ -45,10 +50,10 @@ Rules:
 PromptTemplateError: unknown variable "foo"
   template: prompts/implement.md
   offset:   line 42 column 7
-  context:  ...to implement {{foo}} for this feat...
-  known:    feature_spec, feature_id, workflow_name, architecture_md,
-            progress_md, handoff_entries, git_log_recent, recent_diff,
-            user_injected_context
+  context:  ...to implement {{foo}} for this item...
+  known:    item, item_id, item_state, workflow_name, stage_id,
+            architecture_md, progress_md, handoff_entries,
+            git_log_recent, recent_diff, user_injected_context
 ```
 
 No empty-string fallback, no silent-substitute default. Plan-draft3:
@@ -68,32 +73,50 @@ missing.
 
 The variable inventory is declared in
 `src/server/prompt/context.ts` (Phase δ) and frozen per plan-draft3
-§Configuration. Availability per phase:
+§Configuration. Revised per Issue 2 and Issue 3: feature-specific
+variables replaced with opaque `item` and `item_state`.
 
-| Variable | Plan phase | Implement phase | Review phase |
-|---|---|---|---|
-| `workflow_name` | ✔ | ✔ | ✔ |
-| `feature_id` | — | ✔ | ✔ |
-| `feature_spec` | — (plan produces it) | ✔ | ✔ |
-| `acceptance_criteria` | — | ✔ (serialized) | ✔ |
-| `review_criteria` | — | ✔ | ✔ |
-| `architecture_md` | ✔ (may be absent → empty string) | ✔ | ✔ |
-| `progress_md` | — | ✔ | ✔ |
-| `handoff_entries` | — | ✔ (JSON array, pretty-printed) | ✔ |
-| `git_log_recent` | ✔ (last 20 commits) | ✔ | ✔ |
-| `recent_diff` | — | ✔ (HEAD vs last review commit, or empty) | ✔ |
-| `user_injected_context` | — | ✔ (string; empty if none) | ✔ |
-| `feature_list` | ✔ (formatted JSON for re-plan) | — | — |
-| `review_angle` | — | — | ✔ (subagent-specific) |
+### 3.1 Variables available in all phases
 
-"Serialized" means the context builder converts arrays/objects to a
-stable pretty-printed string (`JSON.stringify(x, null, 2)` or a purpose
-rendering) before insertion. The template engine itself only
-substitutes strings; non-string values are a context-builder bug.
+| Variable | Description |
+|---|---|
+| `workflow_name` | Project name from config |
+| `stage_id` | Current stage identifier (Issue 1) |
+| `architecture_md` | Contents of `architecture.md` if present, else empty string |
+| `git_log_recent` | Last 20 commits (formatted) |
+| `user_injected_context` | User-injected context string; empty if none (D43) |
+
+### 3.2 Variables available in per-item stage phases
+
+| Variable | Description |
+|---|---|
+| `item` | Opaque user data object from the item manifest (Issue 2). Templates access fields via dot traversal: `{{item.description}}`, `{{item.acceptance_criteria}}`, `{{item.my_custom_field}}`. The harness does not interpret any field names. |
+| `item_id` | The stable item identifier extracted by `items_id` |
+| `item_state` | Harness-tracked state object (Issue 3). Available fields: `item_state.status`, `item_state.current_phase`, `item_state.retry_count`, `item_state.blocked_reason` |
+| `handoff_entries` | JSON array of handoff entries for this item (pretty-printed) |
+| `progress_md` | Contents of `progress.md` for this item if present, else empty string |
+| `recent_diff` | HEAD vs last completed-phase commit, or empty |
+
+### 3.3 Variables available in once-stage phases
+
+| Variable | Description |
+|---|---|
+| `items_summary` | Summary of all items with their current states (for planning/documentation phases that need full context) |
+
+### 3.4 Custom variables
 
 Additional phase-specific variables are allowed and are declared at
 the phase level in `src/server/prompt/context.ts`; the engine itself
 doesn't distinguish standard from custom.
+
+### 3.5 Serialization
+
+Objects and arrays in the context (including `item` and `item_state`)
+are serialized to stable pretty-printed JSON
+(`JSON.stringify(x, null, 2)`) when used at the top level (e.g.,
+`{{item}}`). When accessed via dot traversal (e.g.,
+`{{item.description}}`), the resolved leaf value is inserted as a
+string. Non-string leaf values are serialized as JSON.
 
 ---
 
@@ -102,12 +125,14 @@ doesn't distinguish standard from custom.
 ```ts
 // src/server/prompt/context.ts
 export interface PromptContext {
-  [key: string]: string;
+  [key: string]: string | Record<string, unknown>;
 }
 
 export interface PromptContextInputs {
   workflow: WorkflowRow;                    // from SQLite
-  feature?: FeatureRow;                     // present in implement/review
+  stage: StageConfig;                       // current stage config (Issue 1)
+  item?: ItemRow;                           // present in per-item stages (Issue 2)
+  itemState?: ItemStateProjection;          // harness state for current item (Issue 3)
   handoff?: HandoffFile;                    // parsed handoff.json
   worktreePath: string;
   architectureMdPath?: string;              // absolute path or undefined
@@ -117,7 +142,6 @@ export interface PromptContextInputs {
     diffRange(from: string, to: string): Promise<string>;
   };
   userInjectedContext?: string;
-  reviewAngle?: string;                     // only for review subagents
 }
 
 export async function buildPromptContext(
@@ -130,12 +154,16 @@ The builder:
 
 1. Reads `architecture_md` and `progress_md` from the worktree (or
    returns `""` if absent).
-2. Loads `handoff.json` via the Worktree Manager and serializes the
+2. For per-item stages: populates `item` from `items.data` (opaque
+   JSON blob, Issue 2) and `item_state` from harness-state columns
+   (Issue 3).
+3. Loads `handoff.json` via the Worktree Manager and serializes the
    entries array.
-3. Calls `git.logRecent(20)` and `git.diffRange(...)` as needed.
-4. Returns a plain `PromptContext` (all string values). The Pipeline
-   Engine then calls `assemblePrompt(template, context)` — which is
-   pure.
+4. Calls `git.logRecent(20)` and `git.diffRange(...)` as needed.
+5. Returns a `PromptContext` with string and object values. Object
+   values (e.g., `item`, `item_state`) support dot-traversal in
+   templates. The Pipeline Engine then calls
+   `assemblePrompt(template, context)` — which is pure.
 
 Testing rule: every unit test of prompt assembly uses a hand-rolled
 `PromptContext` literal. There is no "partial context" in production;
@@ -229,13 +257,19 @@ the only difference is it does not spawn a child. Used by the v1.1
 
 ## 9. Example
 
-Template `prompts/implement.md`:
+Template `prompts/implement.md` (using opaque item data, Issue 2):
 
 ```
-You are implementing {{feature_id}} for workflow {{workflow_name}}.
+You are implementing {{item_id}} for workflow {{workflow_name}}.
 
 ## Feature spec
-{{feature_spec}}
+{{item.description}}
+
+## Acceptance criteria
+{{item.acceptance_criteria}}
+
+## Current status
+Phase: {{item_state.current_phase}}, attempt: {{item_state.retry_count}}
 
 ## Architecture
 {{architecture_md}}
@@ -243,13 +277,13 @@ You are implementing {{feature_id}} for workflow {{workflow_name}}.
 ## Progress so far
 {{progress_md}}
 
-## Handoff entries for this feature
+## Handoff entries for this item
 {{handoff_entries}}
 
 ## Recent commits
 {{git_log_recent}}
 
-## Current diff vs last reviewed commit
+## Current diff vs last completed phase
 {{recent_diff}}
 
 ## User-injected guidance
@@ -260,9 +294,23 @@ PromptContext (built by the Pipeline Engine):
 
 ```ts
 {
-  feature_id: "feat-001",
+  item_id: "feat-001",
+  item: {
+    id: "feat-001",
+    description: "User can log in with email and password",
+    acceptance_criteria: ["- accepts email/password", "- returns JWT"],
+    review_criteria: ["- no plaintext passwords", "- rate limiting"],
+    depends_on: [],
+    category: "auth"
+  },
+  item_state: {
+    status: "in_progress",
+    current_phase: "implement",
+    retry_count: 0,
+    blocked_reason: null
+  },
   workflow_name: "add-auth",
-  feature_spec: "User can log in with email and password\n- accepts ...",
+  stage_id: "implementation",
   architecture_md: "# Architecture\n\n...",
   progress_md: "# Progress\n\n- scaffolded routes...",
   handoff_entries: "[\n  {\n    \"phase\": \"implement\", ...",
@@ -274,6 +322,12 @@ PromptContext (built by the Pipeline Engine):
 
 Output: the resolved string, handed to `child.stdin.end(buffer)` by
 the Process Manager.
+
+Note: `{{item.acceptance_criteria}}` resolves to a serialized JSON
+array. The template author controls the rendering — if they want
+bullet points, they write a template that expects bullet-point strings
+in the item object, or they use `{{item}}` for the full JSON blob and
+let the agent parse it.
 
 ---
 

@@ -125,8 +125,8 @@ The architect translates plan-draft3 into concrete implementable design artifact
 
 ### β.1 — Spawn architect session
 
-- [ ] `/clear` in your Claude Code session (or open a fresh one)
-- [ ] Set working directory to repo root
+- [x] `/clear` in your Claude Code session (or open a fresh one)
+- [x] Set working directory to repo root
 - [x] Run the architect prompt below
 
 **Architect prompt (paste into session or pipe via stdin):**
@@ -217,18 +217,18 @@ When done, print a summary listing every file you created with a one-line descri
 
 ### β.3 — User review of design
 
-- [ ] Read `docs/design/open-questions.md` first — if anything is blocking, resolve now
-- [ ] Skim every design artifact for obvious wrongness
-- [ ] Run every schema file through a JSON Schema validator (e.g., `npx ajv compile -s docs/design/schemas/features.schema.json`)
-- [ ] Run the SQLite DDL against an empty in-memory database: `sqlite3 :memory: < docs/design/schemas/sqlite-schema.sql`
+- [x] Read `docs/design/open-questions.md` first — if anything is blocking, resolve now
+- [x] Skim every design artifact for obvious wrongness
+- [x] Run every schema file through a JSON Schema validator (e.g., `npx ajv compile -s docs/design/schemas/features.schema.json`)
+- [x] Run the SQLite DDL against an empty in-memory database: `sqlite3 :memory: < docs/design/schemas/sqlite-schema.sql`
 
 ### 🛑 GATE: Design Approval
 
-- [ ] All 14 design artifacts exist and pass basic syntax checks
-- [ ] Open questions are resolved (either answered, accepted as-is, or deferred to a later phase with explicit note)
-- [ ] SQLite DDL runs clean against an empty database
-- [ ] All JSON Schemas compile
-- [ ] You've spot-checked at least 3 design artifacts and agree with the architect's choices
+- [x] All 14 design artifacts exist and pass basic syntax checks
+- [x] Open questions are resolved (either answered, accepted as-is, or deferred to a later phase with explicit note)
+- [x] SQLite DDL runs clean against an empty database
+- [x] All JSON Schemas compile
+- [x] You've spot-checked at least 3 design artifacts and agree with the architect's choices
 
 **On failure:** loop back to β.1 with a new architect session, brief it with the specific rejection (e.g., "the state machine transitions.md is missing X and Y; fix those and preserve everything else"). Never edit the artifacts by hand — always go through a new agent session so the process stays audit-able.
 
@@ -242,8 +242,8 @@ This phase has two parts: (1) verify the load-bearing assumptions before you bui
 
 This is a 🤖 AGENT task, but it's research, not implementation.
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full — that is your role definition, session protocol, and anti-pattern list. Pay particular attention to the "skipping empirical verification" anti-pattern; that is the exact failure this session is designed to prevent.

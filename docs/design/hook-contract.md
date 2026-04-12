@@ -84,74 +84,31 @@ phase_start event
   ├─ stream-json parse loop until child exits
   ├─ session_ok / session_fail classification
   ├─ artifact validators (ajv) — run regardless of session_ok
-  ├─ features.json diff check (plan-draft3 §File Contract D10)
+  ├─ item manifest diff check (items_from file unchanged, D10)
   └─ post: commands run in order (only if the above all passed)
         each command's exit code → action → state-machine transition
 ```
 
-A phase is **accepted** (moves to the next state-machine state per the
-transition table) iff all five stages succeed. Any `post:` action that
-is not `continue` diverts the state machine — see
-`state-machine-transitions.md` §post_command_action dispatch.
+A phase is **accepted** (advances to the next phase in the stage, or
+marks the item complete if it was the last phase) iff all five stages
+succeed (Issue 1). Any `post:` action that is not `continue` diverts
+the state machine — see `state-machine-transitions.md`
+§post_command_action dispatch.
 
 Yoke does not distinguish "quality gate passed" from "post command
 passed." From the harness's point of view, the latter is the formal
 mechanism; the former is a render-time convention the user may or may
-not have chosen.
+not have chosen. This applies equally to review phases — the harness
+does not parse review output files; pass/fail is driven by `post:`
+commands (Issue 4).
 
 ---
 
-## 3. Example templates (ship under `docs/templates/hooks/`)
-
-Yoke ships example hook templates users can copy into their Claude
-hook directory. They are never installed by the harness; `yoke init`
-offers them on opt-in and never overwrites user files. The set:
-
-### 3.1 `PreToolUse-safety` (plan-draft3 §Threat Model, §Hooks)
-
-A PreToolUse hook denying:
-- Writes outside `${YOKE_WORKTREE_PATH}` (env injected by the harness).
-- Reads of `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.gnupg`.
-- A curated Bash deny-list: `curl ... | sh`, `wget ... | sh`,
-  `rm -rf /`, `chmod -R 777`, writes to `/etc/`.
-
-The template is parameterized by the config flag `safety_mode: strict |
-default | yolo`:
-- `strict` adds a network egress allowlist and denies Bash `sudo`.
-- `default` ships the deny list above.
-- `yolo` scaffolds nothing.
-
-**Templates are files, not code.** They are shell scripts living in
-`docs/templates/hooks/`. Users copy, edit, or ignore.
-
-### 3.2 `Stop-quality` (emits `.yoke/last-check.json`)
-
-A Stop hook that project-type-detects (node / python / rust / …) and
-runs typecheck/lint/test/build, writing the manifest shape in §1 on
-success. Exit code semantics (see §4) are the user's responsibility.
-
-### 3.3 Descriptions (what the template READMEs contain)
-
-Each template directory ships a `README.md` describing:
-- What the template does.
-- Required environment it expects (`YOKE_WORKTREE_PATH`,
-  `YOKE_WORKFLOW_ID`, `YOKE_FEATURE_ID` — these are guaranteed by the
-  Process Manager's env propagation).
-- Exit code expectations (TBD per Phase γ research, see §4).
-- Where to copy the file into the user's Claude hook directory.
-- How to customize or disable.
-
-Template READMEs do **not** claim the hook is "installed" by Yoke —
-they explain the copy-paste workflow explicitly.
-
----
-
-## 4. Exit code expectations for Claude hooks (TBD per research)
+## 3. Exit code expectations for Claude hooks (TBD per research)
 
 Claude Code hook exit code semantics are the user's concern. Yoke does
 not interpret a hook's exit code directly; it only interprets the
-*agent session's* exit code. But for the example templates to be
-correct, we need to know:
+*agent session's* exit code. For reference:
 
 | Question | Answer |
 |---|---|
@@ -166,21 +123,20 @@ correct, we need to know:
 | Invocation granularity (per-session, per-matcher) | **TBD — Phase γ research** |
 
 These are marked as research tasks in `docs/research/hook-semantics.md`
-(produced during Phase γ per the runbook). The example templates ship
-with comments pointing at that research document so updates don't
-require template changes.
+(produced during Phase γ per the runbook).
 
 ---
 
-## 5. What Yoke does NOT do
+## 4. What Yoke does NOT do
 
 Explicit non-behaviors (plan-draft3 §Hooks Integration D55, §What Yoke
-Does NOT Do):
+Does NOT Do, Q-subagent-scoping-in-default-config resolution):
 
-- **Does not install** hooks. `yoke init` may offer to copy example
-  templates on opt-in; the user decides whether to accept.
-- **Does not update** hooks between releases. If a template changes,
-  the user re-runs `yoke init` and reviews a diff before accepting.
+- **Does not install** hooks. `yoke init` may offer an opinionated
+  default workflow config on opt-in; no hooks are installed.
+- **Does not ship** hook templates. Safety/quality-gate hook examples
+  are documented in quick-start/best-practices docs (Phase ε/ζ scope),
+  not shipped as files (Q-subagent-scoping resolution).
 - **Does not verify** hook integrity or tamper-detect hook files
   unless the user wires a `post:` command to do so (e.g.,
   `sha256sum -c .yoke/hook-checksums`). Harness-enforced checksum
@@ -190,10 +146,13 @@ Does NOT Do):
 - **Does not map** exit codes from Claude hooks to Yoke state-machine
   events. The Pipeline Engine only observes the spawned command's
   exit code (which in most setups is `claude` itself, not a hook).
+- **Does not aggregate** review results. Pass/fail for a review phase
+  is determined by the phase's `post:` commands, not by harness-level
+  file parsing (Issue 4).
 
 ---
 
-## 6. Interaction model summary
+## 5. Interaction model summary
 
 | Layer | Owner | Invoked by | Observed by Yoke as |
 |---|---|---|---|
@@ -201,7 +160,7 @@ Does NOT Do):
 | Claude Stop hook | User's project | Claude Code runtime | opaque; Yoke sees only final `claude` exit |
 | Claude PreToolUse hook | User's project | Claude Code runtime | opaque; may abort agent tool calls |
 | Artifact validators | Yoke core | Pipeline Engine after session exit | ajv result |
-| `features.json` diff check | Yoke core | Pipeline Engine after session exit | diff vs pre-phase snapshot |
+| Item manifest diff check | Yoke core | Pipeline Engine after session exit | diff vs pre-phase snapshot |
 | `.yoke/last-check.json` | User's Stop hook (optional) | User's code | display-only in dashboard |
 
 The harness treats user-owned and Yoke-owned gates identically at
@@ -210,7 +169,7 @@ transition table routes to `awaiting_retry` / `awaiting_user`.
 
 ---
 
-## 7. Worked example: user with no hooks at all
+## 6. Worked example: user with no hooks at all
 
 A user with `safety_mode: yolo` and no Claude hooks runs:
 
@@ -240,7 +199,7 @@ chose `post:`-only gating; it is fully supported (plan-draft3
 
 ---
 
-## 8. Worked example: user with a Stop hook AND `post:`
+## 7. Worked example: user with a Stop hook AND `post:`
 
 Same project, but now the user installs the Stop-quality template
 which runs the same checks and writes `.yoke/last-check.json`. Their

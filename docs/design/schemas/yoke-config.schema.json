@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yoke.local/schemas/yoke-config.schema.json",
   "title": ".yoke.yml",
-  "description": "User-authored configuration. Mirrors plan-draft3 §Configuration and the pre/post action grammar (§Phase Pre/Post Commands, D50, D53). All object schemas set additionalProperties: false to fail fast on typos.",
+  "description": "User-authored configuration. Mirrors plan-draft3 §Configuration and the pre/post action grammar (§Phase Pre/Post Commands, D50, D53). Revised per beta3-review-feedback.md Issues 1–4: pipeline uses stages (not nodes+edges), items are opaque, review aggregation is user-owned. All object schemas set additionalProperties: false to fail fast on typos.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "project", "pipeline", "phases"],
@@ -47,38 +47,82 @@
     "pipeline": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["nodes", "edges"],
+      "required": ["stages"],
+      "description": "Pipeline structure using stages (Issue 1). Stage-to-stage flow is always sequential. Within a per-item stage, phase-to-phase transitions use the post: action grammar.",
       "properties": {
-        "nodes": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["phase"],
-            "properties": {
-              "phase": {
-                "type": "string",
-                "description": "Key into the phases map. Node name is a free label, not an enum (plan-draft3 §Core Design Principles #7)."
-              }
-            }
-          }
-        },
-        "edges": {
+        "stages": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["from", "on", "to"],
-            "properties": {
-              "from": { "type": "string" },
-              "on": {
-                "type": "string",
-                "description": "Event label the pipeline engine maps onto transitions (e.g. complete, pass, fail). Pre/post actions may override."
-              },
-              "to": { "type": "string" }
-            }
-          }
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/stage" }
+        }
+      }
+    },
+
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "run", "phases"],
+      "description": "A stage groups an ordered sequence of phases and declares whether they run once (per workflow) or per-item (per item in a manifest). Issue 1.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable stage identifier. Unique within the pipeline."
+        },
+        "run": {
+          "type": "string",
+          "enum": ["once", "per-item"],
+          "description": "once: phases run once for the workflow. per-item: phases run once per item from the manifest file (Issue 1)."
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Ordered list of phase keys (references into the top-level phases map). Within a per-item stage, the post: action grammar applies to phase-to-phase transitions for the same item (Issue 1)."
+        },
+        "needs_approval": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the harness enters awaiting_user before starting this stage, requiring explicit user approval to proceed. Replaces the former edge-level needs_approval (Q-architecture-proposed-lifecycle)."
+        },
+        "items_from": {
+          "type": "string",
+          "description": "Path to the item manifest file, relative to the worktree. Required for per-item stages (Issue 2)."
+        },
+        "items_list": {
+          "type": "string",
+          "description": "JSONPath expression evaluated against items_from to extract the item array (Issue 2). E.g. '$.features'."
+        },
+        "items_id": {
+          "type": "string",
+          "description": "JSONPath expression evaluated per item to extract a stable string identifier (Issue 2). E.g. '$.id'."
+        },
+        "items_depends_on": {
+          "type": "string",
+          "description": "Optional JSONPath expression evaluated per item to extract an array of dependency item IDs for topological ordering (D08). If omitted, items are processed in manifest order with no dependency constraints."
+        },
+        "items_display": { "$ref": "#/$defs/itemsDisplay" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "run": { "const": "per-item" } }, "required": ["run"] },
+          "then": { "required": ["items_from", "items_list", "items_id"] }
+        }
+      ]
+    },
+
+    "itemsDisplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Dashboard rendering hints for items (Issue 2). If omitted, the dashboard shows the raw item ID.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "JSONPath expression per item for the dashboard row label."
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Optional JSONPath expression per item for secondary dashboard text."
         }
       }
     },
@@ -126,18 +170,6 @@
             ]
           }
         },
-        "on_review_fail": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "retry_mode": {
-              "type": "string",
-              "enum": ["continue", "fresh"],
-              "default": "fresh",
-              "description": "D56: review-triggered re-implement mode."
-            }
-          }
-        },
         "heartbeat": { "$ref": "#/$defs/heartbeat" },
         "pre": {
           "type": "array",
@@ -146,12 +178,6 @@
         "post": {
           "type": "array",
           "items": { "$ref": "#/$defs/prepostCommand" }
-        },
-        "max_review_rounds": {
-          "type": "integer",
-          "minimum": 1,
-          "default": 2,
-          "description": "Used only by review phases (plan-draft3 §Review)."
         }
       }
     },
@@ -227,15 +253,6 @@
           "required": ["goto"],
           "properties": {
             "goto": { "type": "string" },
-            "max_revisits": { "type": "integer", "minimum": 1, "default": 3 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["goto-offset"],
-          "properties": {
-            "goto-offset": { "type": "integer", "not": { "const": 0 } },
             "max_revisits": { "type": "integer", "minimum": 1, "default": 3 }
           }
         },
@@ -391,9 +408,8 @@
     "logging": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Database and session log paths are derived from ~/.yoke/<fingerprint>/ and are not user-configurable (Q-session-log-directory-collisions resolution).",
       "properties": {
-        "database": { "type": "string", "default": ".yoke/yoke.db" },
-        "session_logs_dir": { "type": "string", "default": ".yoke/logs" },
         "retain_stream_json": { "type": "boolean", "default": true }
       }
     },

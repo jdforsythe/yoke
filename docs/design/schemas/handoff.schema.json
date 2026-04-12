@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yoke.local/schemas/handoff.schema.json",
   "title": "handoff.json",
-  "description": "Per-feature, append-only structured cross-phase channel (plan-draft3 §File Contract, D13). Replaces free-form progress.md as the contract surface between phases. User-injected context from the dashboard lands here as entries.user_injected_context (D43).",
+  "description": "Per-item, append-only structured cross-phase channel (plan-draft3 §File Contract, D13). Replaces free-form progress.md as the contract surface between phases. User-injected context from the dashboard lands here as entries.user_injected_context (D43). The harness writes entries; agents read. Item ID matches whatever the stage's items_id expression extracts (Issue 2).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["feature_id", "entries"],
+  "required": ["item_id", "entries"],
   "properties": {
-    "feature_id": {
+    "item_id": {
       "type": "string",
-      "pattern": "^feat-[a-z0-9][a-z0-9-]*$"
+      "minLength": 1,
+      "description": "Item identifier as extracted by the stage's items_id expression. No pattern enforced by the harness (Issue 2)."
     },
     "entries": {
       "type": "array",
