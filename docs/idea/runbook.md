@@ -367,8 +367,8 @@ Do not write any Yoke code. Research only.
 
 This is the Tier 0 → 0.5 transition. Write a minimal shell script + prompt template directory so subsequent agent sessions have consistent inputs.
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. This session is an exception to one rule in that file: you are writing shell script + a tiny helper, not TypeScript under src/server/. Everything else in the persona applies — especially "inventing abstractions" and "silently widening scope."
@@ -431,11 +431,11 @@ After writing:
 Commit the script, prompts, and usage doc. Print a summary listing every file you created. Stop.
 ```
 
-- [ ] 📝 `yoke-v0` script exists and is executable
-- [ ] 📝 `prompts/plan.md`, `prompts/implement.md`, `prompts/review.md` exist
-- [ ] 📝 `docs/runbook-addenda/yoke-v0-usage.md` exists
-- [ ] 👤 Smoke test: `./yoke-v0 run plan test-feat` on a throwaway feature — verify log is captured
-- [ ] 👤 Open the captured log and confirm stream-json events are readable
+- [x] 📝 `yoke-v0` script exists and is executable
+- [x] 📝 `prompts/plan.md`, `prompts/implement.md`, `prompts/review.md` exist
+- [x] 📝 `docs/runbook-addenda/yoke-v0-usage.md` exists
+- [x] 👤 Smoke test: `./yoke-v0 run plan test-feat` on a throwaway feature — verify log is captured
+- [x] 👤 Open the captured log and confirm stream-json events are readable
 
 ### 🛑 GATE: Phase γ complete
 
