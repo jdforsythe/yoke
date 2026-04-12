@@ -15,6 +15,24 @@ Added `better-sqlite3` + `@types/better-sqlite3` to package.json. 17
 integration tests in `tests/storage/db.test.ts` cover every acceptance
 criterion; all 48 tests pass, `tsc --noEmit` clean.
 
+## feat-db-schema (2026-04-12)
+
+Implemented `src/server/storage/migrations/0001_core_tables.sql` — DDL for all
+seven core tables (workflows, items, sessions, events, artifact_writes,
+pending_attention, prepost_runs) with all indexes and FK semantics exactly as
+specified in `docs/design/schemas/sqlite-schema.sql`. The partial index
+`idx_pending_attention_open` on `pending_attention(workflow_id) WHERE
+acknowledged_at IS NULL` is present and verified by EXPLAIN QUERY PLAN in tests.
+All FK ON DELETE CASCADE relationships cascade correctly from workflow deletion;
+SET NULL is applied where specified (sessions.item_id, events.item_id,
+events.session_id, prepost_runs.session_id, prepost_runs.item_id). The
+`prepost_runs.when_phase` CHECK constraint (pre|post) is enforced by SQLite.
+`src/server/storage/migrate.ts` provides the `applyMigrations(writer,
+migrationsDir)` forward-only runner: skips already-applied versions, wraps each
+migration in a transaction, records the version in schema_migrations on success.
+42 new integration tests in `tests/storage/schema.test.ts`; all 90 tests pass,
+`tsc --noEmit` clean.
+
 ## feat-config-loader (2026-04-12)
 
 Implemented the synchronous `.yoke.yml` config loader in full. The feature
