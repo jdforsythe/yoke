@@ -104,26 +104,26 @@ commands (Issue 4).
 
 ---
 
-## 3. Exit code expectations for Claude hooks (TBD per research)
+## 3. Exit code expectations for Claude hooks
 
 Claude Code hook exit code semantics are the user's concern. Yoke does
 not interpret a hook's exit code directly; it only interprets the
-*agent session's* exit code. For reference:
+*agent session's* exit code. For reference (empirically verified,
+see `docs/research/hook-semantics.md` for full details):
 
 | Question | Answer |
 |---|---|
-| Exit 0 on Stop hook: does Claude proceed with session termination? | **TBD — Phase γ research** |
-| Exit 2 on Stop hook: does Claude feed stderr back and retry? | **TBD — assumed yes per plan-draft3** |
-| Exit 1 (generic): how does Claude treat it (ignore? block? fatal?) | **TBD — Phase γ research** |
-| Exit on signal: how does Claude report it? | **TBD — Phase γ research** |
-| stdin JSON schema delivered to hooks | **TBD — Phase γ research** |
-| stdout JSON schema honored by Claude from hooks | **TBD — Phase γ research** |
-| Hook wall-clock timeout enforced by Claude | **TBD — Phase γ research** |
-| Can a Stop hook read the session transcript? | **TBD — Phase γ research** |
-| Invocation granularity (per-session, per-matcher) | **TBD — Phase γ research** |
+| Exit 0 on Stop hook: does Claude proceed with session termination? | **Yes.** Session ends with `result.subtype: "success"`. |
+| Exit 2 on Stop hook: does Claude feed stderr back and retry? | **Yes.** Stderr injected as `"Stop hook feedback:\n[path]: msg"`. Claude gets another turn. |
+| Exit 1 (generic): how does Claude treat it (ignore? block? fatal?) | **Non-blocking error.** Logged, session proceeds normally. |
+| Exit on signal / ENOENT: how does Claude report it? | **Non-blocking error.** Same as exit 1. |
+| stdin JSON schema delivered to hooks | Common: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`. Stop adds: `stop_hook_active`, `last_assistant_message`. PreToolUse adds: `tool_name`, `tool_input`, `tool_use_id`. |
+| stdout JSON schema honored by Claude from hooks | Stop: `{"decision":"block","reason":"..."}`. PreToolUse: `{"hookSpecificOutput":{...,"permissionDecision":"deny\|allow",...}}`. |
+| Hook wall-clock timeout enforced by Claude | **Yes.** Default 600s for command hooks. Configurable via `"timeout"` field. Timeout = non-blocking error. |
+| Can a Stop hook read the session transcript? | **Yes.** `transcript_path` in stdin points to session `.jsonl` file. |
+| Invocation granularity (per-session, per-matcher) | Stop: once per turn end. PreToolUse: once per tool call, filtered by matcher. |
 
-These are marked as research tasks in `docs/research/hook-semantics.md`
-(produced during Phase γ per the runbook).
+Full research: `docs/research/hook-semantics.md` (Phase γ, 2026-04-12).
 
 ---
 

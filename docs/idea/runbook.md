@@ -327,9 +327,9 @@ Write findings to docs/research/hook-semantics.md. Include:
 Do not write any Yoke code. Research only. Cite your test scripts and captured outputs.
 ```
 
-- [ ] 📝 `docs/research/hook-semantics.md` exists
-- [ ] 👤 Read and verify
-- [ ] If findings contradict plan-draft3, **loop back to β.1** for architect amendment
+- [x] 📝 `docs/research/hook-semantics.md` exists
+- [x] 👤 Read and verify
+- [x] If findings contradict plan-draft3, **loop back to β.1** for architect amendment
 
 ### γ.3 — Research task: jig invocation specifics (OPTIONAL)
 

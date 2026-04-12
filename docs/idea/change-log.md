@@ -368,3 +368,35 @@ Child killed on workflow terminal state. User sees a "keeping machine awake" chi
 - **Deferred / unchanged:** none.
 
 The draft3 plan (see `plan-draft3.md`) incorporates every decision. The `⚠ needs-confirm` markers have been removed and replaced with the final text.
+
+---
+
+## R. Phase γ empirical corrections (2026-04-12)
+
+Non-blocking corrections from `docs/research/hook-semantics.md`. None
+require architectural amendment; all affect docs/templates scope only.
+
+**R01 — Hook configuration path.**  
+Plan references `.claude/hooks/` directory (lines 473, 477, 944 of
+plan-draft3). Empirically, hooks are JSON entries in
+`.claude/settings.json` under the `"hooks"` key. There is no
+`.claude/hooks/` directory. **Impact:** `yoke init` scaffolding would
+need to (a) copy script files somewhere the user chooses and (b) show
+the user what JSON to merge into `.claude/settings.json`, rather than
+copying files into a hook directory. Affects Phase ε/ζ docs and `yoke
+init` UX, not v1 core engine.
+
+**R02 — Default hook timeout.**  
+Plan says "15 min, same ceiling as hooks" (line 181). Actual default
+for Claude Code command hooks is **600 seconds (10 minutes)**, not 15
+min. The Yoke `post:` command timeout default should be set
+independently (plan already says "configurable per command").
+
+**R03 — `stop_hook_active` replaces counter file.**  
+Plan references "inner retry counter in `.yoke/hook-state.json`"
+(line 145) for Stop hook loop prevention. Claude Code provides a
+simpler built-in mechanism: `stop_hook_active` boolean in the hook's
+stdin JSON. When `true`, the hook has already fired once this turn and
+triggered a continuation — the hook should exit 0 to break the cycle.
+The example templates should use this instead of maintaining a counter
+file. `.yoke/hook-state.json` is unnecessary for this purpose.
