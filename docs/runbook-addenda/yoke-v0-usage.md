@@ -74,8 +74,8 @@ tail -f .yoke/logs/<latest>.jsonl
 
 ### `yoke-v0 continue <phase> <feature-id>`
 
-Same as `run`, but adds `-c` to the Claude invocation to resume the most
-recent session in the current working directory.
+Same as `run`, but resumes the last recorded session for that phase+feature
+using `-r <session-id>` (precise resume by UUID, not `-c`).
 
 ```
 ./yoke-v0 continue implement feat-001
@@ -83,14 +83,17 @@ recent session in the current working directory.
 
 **When to use:** The session exited unexpectedly (crash, SIGTERM, network drop)
 and you want Claude to pick up where it left off rather than starting fresh.
-The runbook cap is 3 `-c` attempts before switching to a fresh session with
+The runbook cap is 3 resume attempts before switching to a fresh `run` with
 updated `handoff.json`.
 
-**Caveat:** `-c` picks the most recent session in the CWD, not necessarily
-the one you intended. If you have an interactive Claude session open in the
-same directory, close it first or use `yoke-v0 run` with an updated
-`handoff.json` instead. This is a known limitation of yoke-v0 (v1 uses
-`-r <session-id>` to resume precisely).
+**How it works:** Looks up the last `session_id` for the given phase+feature
+from `.yoke/sessions.jsonl` and passes `-r <session-id>` to Claude. This is
+precise — it resumes exactly that conversation regardless of what other Claude
+sessions are running in the same directory. (Research finding: `-c` picks the
+most recent CWD session and can silently continue the wrong one.)
+
+**If it fails with "no prior session":** No entry exists in `sessions.jsonl`
+for that phase+feature yet. Use `run` instead.
 
 ---
 
