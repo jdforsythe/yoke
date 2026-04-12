@@ -1,0 +1,32 @@
+{
+  "feature": "feat-config-loader",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T18:26:00Z",
+      "intended_files": [
+        "package.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        ".gitignore",
+        "src/shared/types/config.ts",
+        "src/server/config/errors.ts",
+        "src/server/config/resolve.ts",
+        "src/server/config/loader.ts",
+        "tests/config/resolve.test.ts",
+        "tests/config/loader.test.ts"
+      ],
+      "deferred_criteria": [
+        "The `logging` section in yoke-config.schema.json was simplified relative to plan-draft3 (database/session_logs_dir fields were removed per beta3-review-feedback; schema only has retain_stream_json). If plan-draft3 adds those fields back, the schema and RawConfig.Logging type must be extended together.",
+        "AJV `additionalProperties:false` enforcement at every nested object level is exercised by tests for root, phase, and stage; the prepostCommand and outputArtifact nested objects are covered by schema but not by dedicated tests. A future reviewer may wish to add targeted tests for those.",
+        "The `usage_pause_threshold` field in rate_limit is documented in the schema as v1.1-only but the schema does not yet reject it at runtime — it accepts any number. If the loader should actively reject it in v1, a post-AJV check must be added."
+      ],
+      "known_risks": [
+        "import.meta.url path resolution for yoke-config.schema.json assumes the loader source file stays at src/server/config/loader.ts and the schema stays at docs/design/schemas/yoke-config.schema.json. Moving either without updating the relative URL will cause a startup crash.",
+        "AJV is compiled once at module initialisation by reading the schema file synchronously. If the schema file is missing or malformed the process crashes at import time rather than at loadConfig() call time — appropriate for a startup-critical path, but callers should be aware.",
+        "Ajv2020 imported from ajv/dist/2020.js; if a future ajv 9.x breaking change removes or renames this path, the import and the AnySchema cast will both need updating."
+      ]
+    }
+  ]
+}
