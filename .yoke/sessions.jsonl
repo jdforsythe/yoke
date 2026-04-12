@@ -1,2 +1,3 @@
 {"ts": "2026-04-12T22:00:35.605376+00:00", "phase": "implement", "feature_id": "feat-config-loader", "log_path": ".yoke/logs/20260412T215049Z-implement-feat-config-loader.jsonl", "exit_code": 0, "session_id": "3419be57-f99f-428d-9181-185c2e08a5d4"}
 {"ts": "2026-04-12T22:28:52.040804+00:00", "phase": "implement", "feature_id": "feat-config-loader", "log_path": ".yoke/logs/20260412T221253Z-implement-feat-config-loader.jsonl", "exit_code": 0, "session_id": "3419be57-f99f-428d-9181-185c2e08a5d4"}
+{"ts": "2026-04-12T22:44:23.766279+00:00", "phase": "review", "feature_id": "feat-config-loader", "log_path": ".yoke/logs/20260412T224221Z-review-feat-config-loader.jsonl", "exit_code": 0, "session_id": "5e4f3dc0-2398-48cc-87c2-0239f4015f5e"}
