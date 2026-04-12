@@ -33,6 +33,22 @@ migration in a transaction, records the version in schema_migrations on success.
 42 new integration tests in `tests/storage/schema.test.ts`; all 90 tests pass,
 `tsc --noEmit` clean.
 
+## feat-db-migrations (2026-04-12)
+
+Completed the forward-only migrations runner in `src/server/storage/migrate.ts`.
+The existing `applyMigrations` skeleton (from feat-db-schema) already handled
+discovery, transaction wrapping, and idempotent skip; this session added the two
+missing regression guards: (1) a pre-loop RC-3 check that throws if
+`schema_migrations` contains a version higher than the highest known file — a
+forward-only invariant protecting against deleted or misplaced migration
+directories; (2) a per-file AC-3 check that throws when an unapplied file has a
+version lower than the highest already-applied version, naming both version
+numbers in the error message. The sort comparator was made explicitly numeric
+(`parseInt` subtraction) rather than lexicographic to satisfy RC-2. A dedicated
+`tests/storage/migrate.test.ts` file (18 integration tests) covers all five
+acceptance criteria (AC-1..AC-5) and the three relevant review criteria
+(RC-2..RC-4); all 108 tests pass, `tsc --noEmit` clean.
+
 ## feat-config-loader (2026-04-12)
 
 Implemented the synchronous `.yoke.yml` config loader in full. The feature

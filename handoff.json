@@ -1,7 +1,29 @@
 {
-  "feature": "feat-db-schema",
+  "feature": "feat-db-migrations",
   "entries": [
     {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T23:34:00Z",
+      "intended_files": [
+        "src/server/storage/migrate.ts",
+        "tests/storage/migrate.test.ts"
+      ],
+      "deferred_criteria": [
+        "RC-1 (each migration executes inside db.transaction(fn)()) is implemented and verified by AC-4's rollback test, but there is no explicit test that asserts the transaction boundary via connection-level inspection. The existing tests confirm the observable effect (partial tables do not persist) rather than the mechanism.",
+        "Gap detection (versions in schema_migrations with no corresponding file, other than the maxApplied > maxFileVersion case) is not implemented. If version 2 was applied but file 0002 was deleted while maxFileVersion = 3, no error is raised. The spec does not require gap detection, but it is a potential silent inconsistency.",
+        "The regression guards fire at applyMigrations call time. There is no startup-time validation of the migrations directory — callers are still responsible for calling applyMigrations before using the DB."
+      ],
+      "known_risks": [
+        "The RC-3 guard uses maxApplied > maxFileVersion. If the DB has version 5 recorded and files are [1, 3, 6], maxFileVersion = 6 and RC-3 does not fire (5 < 6), even though file 0005 is absent. This is consistent with the spec but may surprise operators who expect exact file-to-version correspondence.",
+        "The AC-3 regression guard fires for any unapplied file version < maxApplied, regardless of whether that version was ever applied. Operators who intentionally create non-contiguous migration files (e.g. 0001, 0003 — skipping 0002 by design) will not trigger this guard if they apply them in order. Only retroactive file additions (file created after a higher version was applied) trigger it.",
+        "applyMigrations does not acquire an application-level advisory lock. If two processes call it concurrently, the INTEGER PRIMARY KEY on schema_migrations prevents duplicate inserts, but both processes may attempt exec before the constraint fires. In practice Yoke is single-process, so this is not a concern."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-db-schema",
       "phase": "implement",
       "attempt": 0,
       "ts": "2026-04-12T23:25:00Z",
@@ -16,13 +38,11 @@
         "The events table's workflow_id is nullable (no NOT NULL constraint) to allow harness-internal events not tied to a workflow. This matches sqlite-schema.sql but differs from items/sessions where workflow_id is NOT NULL. Downstream consumers should be aware."
       ],
       "known_risks": [
-        "applyMigrations reads the migrations directory with fs.readdirSync at call time. If migrations are added to the directory after the process starts and applyMigrations is called again (e.g., a hot-reload scenario), the new migration will be applied mid-run. This is not a concern for the current single-process startup model.",
+        "applyMigrations reads the migrations directory with fs.readdirSync at call time. If migrations are added to the directory after the process starts and applyMigrations is called again, the new migration will be applied mid-run. This is not a concern for the current single-process startup model.",
         "The partial index idx_pending_attention_open uses a WHERE clause. SQLite partial indexes are only used when the query's WHERE clause is a superset of the index predicate. The EXPLAIN QUERY PLAN test verifies the planner uses it, but any future query that omits acknowledged_at IS NULL will fall back to a full scan on workflow_id.",
         "applyMigrations is not exposed from db.ts — callers must explicitly wire openDbPool + applyMigrations at startup. If a future module opens a DbPool without calling applyMigrations, the tables will be absent. A convenience function combining both may be added as a separate task."
       ]
-    }
-  ],
-  "prior_features": [
+    },
     {
       "feature": "feat-db-setup",
       "phase": "implement",
