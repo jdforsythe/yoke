@@ -335,8 +335,8 @@ Do not write any Yoke code. Research only. Cite your test scripts and captured o
 
 Per D55, Yoke does not depend on jig — `command`/`args` per phase is the spawn contract, default `claude`. This research task exists only to inform the **best-practices doc** that mentions jig as a recommended scoping layer. Skip it if you are not personally using jig; you can always add it later. When done, this research does NOT feed into the Process Manager design (which must be jig-agnostic).
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full.
@@ -360,8 +360,8 @@ Write findings to docs/research/jig-semantics.md. This feeds the best-practices 
 Do not write any Yoke code. Research only.
 ```
 
-- [ ] 📝 `docs/research/jig-semantics.md` exists (optional; may be skipped)
-- [ ] 👤 Read and note anything worth capturing for the best-practices doc
+- [x] 📝 `docs/research/jig-semantics.md` exists (optional; may be skipped)
+- [x] 👤 Read and note anything worth capturing for the best-practices doc
 
 ### γ.4 — Build yoke-v0 (the bootstrap glue)
 
