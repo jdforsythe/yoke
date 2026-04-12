@@ -127,7 +127,7 @@ The architect translates plan-draft3 into concrete implementable design artifact
 
 - [ ] `/clear` in your Claude Code session (or open a fresh one)
 - [ ] Set working directory to repo root
-- [ ] Run the architect prompt below
+- [x] Run the architect prompt below
 
 **Architect prompt (paste into session or pipe via stdin):**
 
@@ -194,26 +194,26 @@ Constraints:
 When done, print a summary listing every file you created with a one-line description. Stop there. Do not propose next steps.
 ```
 
-- [ ] Let the architect session run to completion
+- [x] Let the architect session run to completion
 - [ ] If the session exits mid-work: `claude -c` to continue
 - [ ] If it fails 3 times: loop back to α.5 (the prompt itself may be wrong), do not keep retrying
 
 ### β.2 — Verify architect output
 
-- [ ] 📝 `docs/design/architecture.md` exists (or `docs/design/architecture-proposed.md` if an `architecture.md` already existed at repo root)
-- [ ] 📝 `docs/design/schemas/features.schema.json` exists and is valid JSON
-- [ ] 📝 `docs/design/schemas/yoke-config.schema.json` exists
-- [ ] 📝 `docs/design/schemas/review.schema.json` exists
-- [ ] 📝 `docs/design/schemas/handoff.schema.json` exists
-- [ ] 📝 `docs/design/schemas/sqlite-schema.sql` exists
-- [ ] 📝 `docs/design/schemas/pre-post-action-grammar.md` exists
-- [ ] 📝 `docs/design/state-machine-transitions.md` exists
-- [ ] 📝 `docs/design/protocol-websocket.md` exists
-- [ ] 📝 `docs/design/protocol-stream-json.md` exists
-- [ ] 📝 `docs/design/prompt-template-spec.md` exists
-- [ ] 📝 `docs/design/hook-contract.md` exists
-- [ ] 📝 `docs/design/threat-model.md` exists
-- [ ] 📝 `docs/design/open-questions.md` exists
+- [x] 📝 `docs/design/architecture.md` exists (or `docs/design/architecture-proposed.md` if an `architecture.md` already existed at repo root)
+- [x] 📝 `docs/design/schemas/features.schema.json` exists and is valid JSON
+- [x] 📝 `docs/design/schemas/yoke-config.schema.json` exists
+- [x] 📝 `docs/design/schemas/review.schema.json` exists
+- [x] 📝 `docs/design/schemas/handoff.schema.json` exists
+- [x] 📝 `docs/design/schemas/sqlite-schema.sql` exists
+- [x] 📝 `docs/design/schemas/pre-post-action-grammar.md` exists
+- [x] 📝 `docs/design/state-machine-transitions.md` exists
+- [x] 📝 `docs/design/protocol-websocket.md` exists
+- [x] 📝 `docs/design/protocol-stream-json.md` exists
+- [x] 📝 `docs/design/prompt-template-spec.md` exists
+- [x] 📝 `docs/design/hook-contract.md` exists
+- [x] 📝 `docs/design/threat-model.md` exists
+- [x] 📝 `docs/design/open-questions.md` exists
 
 ### β.3 — User review of design
 
