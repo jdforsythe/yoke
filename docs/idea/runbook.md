@@ -219,7 +219,7 @@ When done, print a summary listing every file you created with a one-line descri
 
 - [x] Read `docs/design/open-questions.md` first — if anything is blocking, resolve now
 - [x] Skim every design artifact for obvious wrongness
-- [x] Run every schema file through a JSON Schema validator (e.g., `npx ajv compile -s docs/design/schemas/features.schema.json`)
+- [x] Run every schema file through a JSON Schema validator (e.g., `npx ajv-cli@5 compile --spec=draft2020 --validate-formats=false -s docs/design/schemas/features.schema.json`)
 - [x] Run the SQLite DDL against an empty in-memory database: `sqlite3 :memory: < docs/design/schemas/sqlite-schema.sql`
 
 ### 🛑 GATE: Design Approval
@@ -439,10 +439,10 @@ Commit the script, prompts, and usage doc. Print a summary listing every file yo
 
 ### 🛑 GATE: Phase γ complete
 
-- [ ] All 3 research docs exist and were read by the user
-- [ ] Nothing in research contradicts plan-draft3 (or if it does, an architect amendment landed in β)
-- [ ] yoke-v0 smoke test passes
-- [ ] You understand how to invoke yoke-v0 for any phase
+- [x] All 3 research docs exist and were read by the user
+- [x] Nothing in research contradicts plan-draft3 (or if it does, an architect amendment landed in β)
+- [x] yoke-v0 smoke test passes
+- [x] You understand how to invoke yoke-v0 for any phase
 
 **On failure:** isolate which part failed. Research failures → new research session. yoke-v0 failure → new backend session with a specific rejection brief. Never retry the same failing prompt more than 3 times.
 
@@ -454,8 +454,8 @@ This is where Yoke starts building itself. Use `yoke-v0` to drive feature-by-fea
 
 ### δ.1 — Plan the engine features
 
-- [ ] `/clear` / fresh session
-- [ ] Ask the planner to decompose the v1 core engine (NOT dashboard, NOT QA) into discrete features:
+- [x] `/clear` / fresh session
+- [x] Ask the planner to decompose the v1 core engine (NOT dashboard, NOT QA) into discrete features:
 
 ```
 You are the Yoke backend engineer, operating in planner mode for this session. Before anything else, read docs/agents/backend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
@@ -478,7 +478,7 @@ Each feature must have:
 - review_criteria — what reviewers will check
 
 Core engine scope (group into categories):
-- config (yaml parser, ajv validation, version pin)
+- config (yaml parser, ajv-cli validation, version pin)
 - db (sqlite setup, WAL, migrations, each table + indexes, transaction wrapper)
 - state-machine (transition table, transition fn, unit tests)
 - process-mgr (JigProcessManager, ScriptedProcessManager, NDJSON parser, heartbeat, spawn/kill, EPIPE)
@@ -486,7 +486,7 @@ Core engine scope (group into categories):
 - prompt-asm (template engine, PromptContext builder)
 - pipeline-engine (load config, run phase, advance state, dependency resolution)
 - hook-contract (manifest validator, checksum recorder, tamper detector)
-- artifact-validators (ajv against features/review/handoff schemas, diff check)
+- artifact-validators (ajv-cli against features/review/handoff schemas, diff check)
 - session-log-store (per-session JSONL, paging endpoint stub)
 - fastify-ws (envelope, subscribe/backfill, protocol version check)
 - cli (yoke init, start, status, cancel, doctor, record)
@@ -499,10 +499,10 @@ Do NOT include the React dashboard (that's Phase ε) — only the ws/http server
 Write to docs/idea/yoke-features.json. Print the resulting topological order. Stop.
 ```
 
-- [ ] 📝 `docs/idea/yoke-features.json` exists and is valid per the schema
-- [ ] 👤 Validate: `npx ajv validate -s docs/design/schemas/features.schema.json -d docs/idea/yoke-features.json`
-- [ ] 👤 Check topological order — no cycles, dependencies reasonable
-- [ ] 👤 Manually pick the first 3 features to implement (typically: config parser, db setup, state-machine)
+- [x] 📝 `docs/idea/yoke-features.json` exists and is valid per the schema
+- [x] 👤 Validate: `npx ajv-cli@5 validate --spec=draft2020 --validate-formats=false -s docs/design/schemas/features.schema.json -d docs/idea/yoke-features.json`
+- [x] 👤 Check topological order — no cycles, dependencies reasonable
+- [x] 👤 Manually pick the first 3 features to implement (typically: config parser, db setup, state-machine)
 
 ### δ.2 — Implement each feature (loop)
 
