@@ -285,15 +285,15 @@ Also write docs/research/continue-semantics.md covering the -c behavior you obse
 Do not write any Yoke code. This is a research deliverable only. Cite the captured files by path so a reader can re-check your work.
 ```
 
-- [ ] 📝 `docs/research/stream-json-semantics.md` exists
-- [ ] 📝 `docs/research/continue-semantics.md` exists
-- [ ] 👤 Read both and verify the conclusions are sound
-- [ ] If stream-json is NOT NDJSON, **loop back to β.1** — architect amends plan-draft3 and protocol-stream-json.md
+- [x] 📝 `docs/research/stream-json-semantics.md` exists
+- [x] 📝 `docs/research/continue-semantics.md` exists
+- [x] 👤 Read both and verify the conclusions are sound
+- [x] If stream-json is NOT NDJSON, **loop back to β.1** — architect amends plan-draft3 and protocol-stream-json.md
 
 ### γ.2 — Research task: hook exit code semantics
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. Your anti-patterns and session protocol live there.
