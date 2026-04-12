@@ -41,4 +41,17 @@ print(obj.get('result', '(no result field)')); \
 last-logs:
 	@ls -lt $(LOG_DIR)/*.jsonl 2>/dev/null | awk '{print $$NF}' || echo "No logs in $(LOG_DIR)"
 
-.PHONY: last-status last-output last-logs
+# tail-session — pretty-print tail of the most recent session log (PHASE= and FEATURE= filters supported)
+tail-session:
+	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
+	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
+	python3 scripts/tail-session.py "$$log"
+
+# tail-session-raw — raw JSON tail (original behaviour)
+tail-session-raw:
+	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
+	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
+	echo "Tailing: $$log"; \
+	tail -f "$$log"
+
+.PHONY: last-status last-output last-logs tail-session tail-session-raw
