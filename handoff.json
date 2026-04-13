@@ -1,7 +1,32 @@
 {
-  "feature": "feat-db-transaction",
+  "feature": "feat-state-machine",
   "entries": [
     {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T21:00:00Z",
+      "intended_files": [
+        "src/server/state-machine/states.ts",
+        "src/server/state-machine/transitions.ts",
+        "src/server/state-machine/classifier.ts",
+        "tests/state-machine/transitions.test.ts",
+        "tests/state-machine/classifier.test.ts"
+      ],
+      "deferred_criteria": [
+        "AC-1 partial: (bootstrapping, user_cancel) is NOT in state-machine-transitions.md and therefore is NOT in TRANSITIONS. The test explicitly documents this gap. If the Pipeline Engine needs to cancel during bootstrapping, the transitions doc must be updated first (escalate per backend.md decision authority).",
+        "The validator_fail and diff_check_fail conditional results have only one outcome (budget > 0 → awaiting_retry). The budget-exhausted case is handled by the separate retries_exhausted event rather than an additional conditional outcome. This matches the table as written but the Pipeline Engine must ensure it fires retries_exhausted when budget reaches zero before firing validator_fail/diff_check_fail, otherwise the item gets stuck in in_progress.",
+        "The session_ok composite trigger semantics: the table models (in_progress, session_ok) as the final state the Pipeline Engine looks up after accumulating validators_ok + diff_check_ok + all post_command_ok internally. The Engine must NOT look up session_ok immediately on Process Manager exit; it must run validators and post commands first."
+      ],
+      "known_risks": [
+        "TRANSITIONS is frozen via Object.freeze() on each row and the outer map. TransitionResult objects inside the rows are NOT deeply frozen (the outcome arrays and their elements are not frozen). Mutation of an individual TransitionOutcome is not prevented at runtime. This is acceptable since consumers should treat results as read-only, but it's a gap if the Engine ever stores a result reference and modifies it.",
+        "The classifier uses regex pattern matching on stderr text. If Anthropic changes the exact error message wording (e.g. 'rate_limit_error' becomes 'rate_limit'), patterns may silently stop matching, causing permanent/transient errors to fall through to unknown. The pattern list should be reviewed when claude-code updates that affect error output are released.",
+        "classify() returns 'policy' when parseErrors > 0 AND lastEventType === null. If a session produces zero parseable events due to a transient connection reset (no auth/rate error in stderr, just ECONNRESET), it would be classified 'policy' rather than 'transient'. This could prevent an appropriate retry. The tiebreaker branch is conservative (no auto-retry on corrupt streams) but may be overly conservative for certain network failures."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-db-transaction",
       "phase": "implement",
       "attempt": 0,
       "ts": "2026-04-12T20:40:00Z",
@@ -18,9 +43,7 @@
         "better-sqlite3 uses savepoints for nested calls to db.transaction(). If a caller invokes pool.transaction inside another pool.transaction, the inner one becomes a savepoint. Rolling back the inner savepoint does not roll back the outer transaction. Callers must not rely on nested pool.transaction calls for independent atomicity.",
         "pool.transaction uses DEFERRED locking (better-sqlite3 default). Under high write contention, a second writer calling pool.transaction will receive SQLITE_BUSY after busy_timeout (5000 ms). Yoke is single-process single-writer, so this is not a concern in production; relevant only if tests open two writer pools on the same file."
       ]
-    }
-  ],
-  "prior_features": [
+    },
     {
       "feature": "feat-db-migrations",
       "phase": "implement",

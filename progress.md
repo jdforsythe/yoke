@@ -66,6 +66,30 @@ WAL writes; sees them post-commit; sees nothing after rollback), and AC-5 (typed
 return value, fn receives the writer connection). All 123 tests pass;
 `tsc --noEmit` clean.
 
+## feat-state-machine (2026-04-12)
+
+Implemented the state machine module in full under `src/server/state-machine/`.
+Three new TypeScript modules: `states.ts` (11-element `State` and 27-element
+`Event` union literal types), `transitions.ts` (the `TRANSITIONS` const typed as
+`{ [S in State]: Partial<Record<Event, TransitionResult>> }` — the mapped-type
+key forces a compile-time error when a new State is added without a corresponding
+entry; the `abandoned` row is typed as `satisfies Record<Event, TransitionResult>`
+so adding a new Event also errors; every row is runtime-frozen via
+`Object.freeze`; `transition()` is a pure lookup with no I/O), and
+`classifier.ts` (`classify(stderr, parseState): FailureClass` — tags
+rate-limit/overload patterns as `transient`, auth/permission patterns as
+`permanent`, content-policy patterns as `policy`, and all other patterns as
+`unknown`; parse state — parse_errors count + last event type — is a required
+input per RC-3 and affects classification when the stream was wholly
+unparseable). The `session_fail` TRANSITIONS entry has a conditional result with
+three guarded outcomes: `classifier=transient → awaiting_retry`,
+`classifier=permanent → awaiting_user`, `classifier=unknown → awaiting_user`,
+so `unknown` can never reach a retry path. One known gap filed in handoff.json:
+`(bootstrapping, user_cancel)` is absent from state-machine-transitions.md;
+the test explicitly documents this as "not in the doc." 122 new tests across
+`tests/state-machine/transitions.test.ts` (49) and `tests/state-machine/classifier.test.ts` (73);
+all 245 tests pass; `tsc --noEmit` clean.
+
 ## feat-config-loader (2026-04-12)
 
 Implemented the synchronous `.yoke.yml` config loader in full. The feature
