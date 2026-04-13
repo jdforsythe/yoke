@@ -50,6 +50,7 @@ interface WorkflowRow {
   current_stage: string | null;
   created_at: string;
   updated_at: string;
+  active_sessions: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,22 +157,25 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       if (!isFinite(limitRaw) || limitRaw < 1) return badRequest(reply, 'limit must be a positive integer');
       const limit = Math.min(limitRaw, 100);
 
-      let sql = 'SELECT id, name, status, current_stage, created_at, updated_at FROM workflows WHERE 1=1';
+      let sql =
+        'SELECT w.id, w.name, w.status, w.current_stage, w.created_at, w.updated_at,' +
+        ' (SELECT COUNT(*) FROM sessions s WHERE s.workflow_id = w.id AND s.ended_at IS NULL) AS active_sessions' +
+        ' FROM workflows w WHERE 1=1';
       const params: unknown[] = [];
 
       if (qs.status) {
-        sql += ' AND status = ?';
+        sql += ' AND w.status = ?';
         params.push(qs.status);
       }
       if (qs.q) {
-        sql += ' AND name LIKE ?';
+        sql += ' AND w.name LIKE ?';
         params.push(`%${qs.q}%`);
       }
       if (qs.before) {
-        sql += ' AND created_at < ?';
+        sql += ' AND w.created_at < ?';
         params.push(qs.before);
       }
-      sql += ` ORDER BY created_at DESC LIMIT ${limit + 1}`;
+      sql += ` ORDER BY w.created_at DESC LIMIT ${limit + 1}`;
 
       const rows = db.reader().prepare(sql).all(...params) as WorkflowRow[];
       const hasMore = rows.length > limit;
