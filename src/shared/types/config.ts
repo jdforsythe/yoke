@@ -68,6 +68,12 @@ export interface OutputArtifact {
 }
 
 export interface Heartbeat {
+  /**
+   * Interval in seconds for the liveness probe (kill(pid, 0)).
+   * Default: 30 s.
+   */
+  liveness_interval_s?: number;
+  /** Seconds of stdout silence before the stream-activity watchdog warns. Default: 90 s. */
   activity_timeout_s?: number;
   /** Tool-name → wall-clock budget in seconds. */
   per_tool_budgets?: Record<string, number>;

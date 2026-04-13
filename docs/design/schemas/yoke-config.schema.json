@@ -197,6 +197,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "liveness_interval_s": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Interval in seconds for the kill(pid,0) liveness probe. Read at construction time; never hard-coded (feat-process-mgr-heartbeat AC-4)."
+        },
         "activity_timeout_s": { "type": "integer", "minimum": 1, "default": 90 },
         "per_tool_budgets": {
           "type": "object",
