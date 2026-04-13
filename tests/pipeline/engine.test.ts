@@ -31,6 +31,8 @@ import {
   checkStageComplete,
   buildCrashRecovery,
   applyWorktreeCreated,
+  applyStageAdvance,
+  applyWorkflowComplete,
 } from '../../src/server/pipeline/engine.js';
 
 // ---------------------------------------------------------------------------
@@ -1638,5 +1640,87 @@ describe('applyWorktreeCreated — AC-5', () => {
 
     expect(wfRow.branch_name).toBe('yoke/atomic-abc12345');
     expect(evtCount.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyStageAdvance
+// ---------------------------------------------------------------------------
+
+describe('applyStageAdvance', () => {
+  it('updates current_stage on the workflow row', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyStageAdvance(pool, wfId, 'stage-two');
+
+    const row = pool.reader()
+      .prepare('SELECT current_stage FROM workflows WHERE id = ?')
+      .get(wfId) as { current_stage: string };
+    expect(row.current_stage).toBe('stage-two');
+  });
+
+  it('is visible via reader immediately after call (atomicity)', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyStageAdvance(pool, wfId, 'stage-three');
+
+    // Reader connection (separate from writer) must see the committed row.
+    const row = pool.reader()
+      .prepare('SELECT current_stage, updated_at FROM workflows WHERE id = ?')
+      .get(wfId) as { current_stage: string; updated_at: string };
+    expect(row.current_stage).toBe('stage-three');
+    // updated_at is refreshed by the call.
+    expect(row.updated_at).not.toBe('2026-01-01T00:00:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyWorkflowComplete
+// ---------------------------------------------------------------------------
+
+describe('applyWorkflowComplete', () => {
+  it('sets status=completed and nulls current_stage', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+    // Seed a current_stage value so we can verify it is nulled.
+    pool.writer
+      .prepare('UPDATE workflows SET current_stage = ? WHERE id = ?')
+      .run('stage-final', wfId);
+
+    applyWorkflowComplete(pool, wfId, 'completed');
+
+    const row = pool.reader()
+      .prepare('SELECT status, current_stage FROM workflows WHERE id = ?')
+      .get(wfId) as { status: string; current_stage: string | null };
+    expect(row.status).toBe('completed');
+    expect(row.current_stage).toBeNull();
+  });
+
+  it('sets status=completed_with_blocked', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyWorkflowComplete(pool, wfId, 'completed_with_blocked');
+
+    const row = pool.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wfId) as { status: string };
+    expect(row.status).toBe('completed_with_blocked');
+  });
+
+  it('is visible via reader immediately after call (atomicity)', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyWorkflowComplete(pool, wfId, 'completed');
+
+    // Reader connection must see the committed change.
+    const row = pool.reader()
+      .prepare('SELECT status, updated_at FROM workflows WHERE id = ?')
+      .get(wfId) as { status: string; updated_at: string };
+    expect(row.status).toBe('completed');
+    expect(row.updated_at).not.toBe('2026-01-01T00:00:00Z');
   });
 });

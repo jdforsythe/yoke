@@ -1273,6 +1273,57 @@ export function endSession(
 }
 
 // ---------------------------------------------------------------------------
+// applyStageAdvance — advance workflow to the next stage
+// ---------------------------------------------------------------------------
+
+/**
+ * Advances workflows.current_stage to `nextStageId` inside a single
+ * db.transaction().
+ *
+ * Called by the orchestration layer when checkStageComplete() returns true
+ * and there is a next stage to move to. RC-2: only the engine layer may write
+ * to the workflows table; no direct db.writer calls in the scheduler.
+ */
+export function applyStageAdvance(
+  db: DbPool,
+  workflowId: string,
+  nextStageId: string,
+): void {
+  const now = new Date().toISOString();
+  db.transaction((writer) => {
+    writer
+      .prepare('UPDATE workflows SET current_stage = ?, updated_at = ? WHERE id = ?')
+      .run(nextStageId, now, workflowId);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// applyWorkflowComplete — mark a workflow as terminal
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a workflow as `completed` or `completed_with_blocked` inside a
+ * single db.transaction(), nulling out current_stage.
+ *
+ * Called by the orchestration layer when the last stage completes.
+ * RC-2: only the engine layer may write to the workflows table.
+ */
+export function applyWorkflowComplete(
+  db: DbPool,
+  workflowId: string,
+  finalStatus: 'completed' | 'completed_with_blocked',
+): void {
+  const now = new Date().toISOString();
+  db.transaction((writer) => {
+    writer
+      .prepare(
+        'UPDATE workflows SET status = ?, current_stage = NULL, updated_at = ? WHERE id = ?',
+      )
+      .run(finalStatus, now, workflowId);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Internal: PID liveness probe (kill(pid, 0))
 // ---------------------------------------------------------------------------
 

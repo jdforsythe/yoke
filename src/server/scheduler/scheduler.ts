@@ -60,6 +60,8 @@ import {
   insertSession,
   updateSessionPid,
   endSession,
+  applyStageAdvance,
+  applyWorkflowComplete,
 } from '../pipeline/engine.js';
 import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
@@ -1036,35 +1038,35 @@ export class Scheduler {
    * Called when applyItemTransition reports stageComplete=true.
    * Advances workflows.current_stage to the next stage or marks the workflow
    * as completed / completed_with_blocked when the last stage is done.
+   *
+   * RC-2: all SQLite mutations go through engine functions — no direct
+   * db.writer calls here.
    */
   private _handleStageComplete(workflowId: string, completedStageId: string): void {
     const stages = this.config.pipeline.stages;
     const idx = stages.findIndex((s) => s.id === completedStageId);
-    const now = new Date().toISOString();
 
     if (idx < 0) return; // unknown stage — shouldn't happen
 
     if (idx < stages.length - 1) {
-      // Not the last stage — advance current_stage pointer.
+      // Not the last stage — advance current_stage pointer via engine function.
       const nextStage = stages[idx + 1];
-      this.db.writer
-        .prepare('UPDATE workflows SET current_stage = ?, updated_at = ? WHERE id = ?')
-        .run(nextStage.id, now, workflowId);
+      applyStageAdvance(this.db, workflowId, nextStage.id);
     } else {
       // Last stage completed — determine final workflow status.
       const BLOCKED_STATUSES = ['blocked', 'abandoned'];
       const allItems = this._readWorkflowItems(workflowId);
       const hasBlocked = allItems.some((item) => BLOCKED_STATUSES.includes(item.status));
-      const finalStatus = hasBlocked ? 'completed_with_blocked' : 'completed';
+      const finalStatus: 'completed' | 'completed_with_blocked' = hasBlocked
+        ? 'completed_with_blocked'
+        : 'completed';
 
-      this.db.writer
-        .prepare(`UPDATE workflows SET status = ?, current_stage = null, updated_at = ? WHERE id = ?`)
-        .run(finalStatus, now, workflowId);
+      applyWorkflowComplete(this.db, workflowId, finalStatus);
 
       this.broadcastFn(workflowId, null, 'workflow.update', {
         workflowId,
         status: finalStatus,
-        completedAt: now,
+        completedAt: new Date().toISOString(),
       });
     }
   }
