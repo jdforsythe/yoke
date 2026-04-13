@@ -49,6 +49,23 @@ numbers in the error message. The sort comparator was made explicitly numeric
 acceptance criteria (AC-1..AC-5) and the three relevant review criteria
 (RC-2..RC-4); all 108 tests pass, `tsc --noEmit` clean.
 
+## feat-db-transaction (2026-04-12)
+
+Added `pool.transaction<T>(fn)` to the `DbPool` interface and implemented it in
+`openDbPool`. The implementation is a single line: `writer.transaction(fn)(writer)`.
+`better-sqlite3` handles BEGIN/COMMIT/ROLLBACK internally; if `fn` throws, it rolls
+back and re-throws the original exception without wrapping. There is no catch block
+in the wrapper — RC-1 is satisfied structurally, not by convention. The wrapper is
+injected via `DbPool` (RC-3); no module-level transaction state exists. `fn` receives
+`Database.Database` and returns `T`; the outer call returns `T` (AC-5, verified by
+`tsc --noEmit`). 15 integration tests in `tests/storage/transaction.test.ts` cover
+AC-1 (two-table write atomic after simulated mid-transaction crash, successful
+commit, rollback + re-use), AC-2 (same Error instance re-thrown, no message
+augmentation, non-Error throws pass through), AC-3 (reader cannot see uncommitted
+WAL writes; sees them post-commit; sees nothing after rollback), and AC-5 (typed
+return value, fn receives the writer connection). All 123 tests pass;
+`tsc --noEmit` clean.
+
 ## feat-config-loader (2026-04-12)
 
 Implemented the synchronous `.yoke.yml` config loader in full. The feature

@@ -1,7 +1,28 @@
 {
-  "feature": "feat-db-migrations",
+  "feature": "feat-db-transaction",
   "entries": [
     {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T20:40:00Z",
+      "intended_files": [
+        "src/server/storage/db.ts",
+        "tests/storage/transaction.test.ts"
+      ],
+      "deferred_criteria": [
+        "AC-4: Every state-transition call site uses the transaction wrapper, not raw prepare().run(). pipeline-engine.ts, state-machine/transitions.ts, and worktree/manager.ts do not yet exist; this criterion cannot be verified until those modules are implemented. The wrapper is ready for use.",
+        "RC-2: No raw prepare().run() calls in pipeline-engine.ts, state-machine, or worktree-mgr — same as AC-4: deferred until those files exist."
+      ],
+      "known_risks": [
+        "pool.transaction passes the writer connection as the argument to fn. If fn captures a different Database.Database (e.g., a reader) from closure and writes through it, the write will fail at the SQLite level (readonly constraint) — not silently, but the error message will not mention the transaction wrapper.",
+        "better-sqlite3 uses savepoints for nested calls to db.transaction(). If a caller invokes pool.transaction inside another pool.transaction, the inner one becomes a savepoint. Rolling back the inner savepoint does not roll back the outer transaction. Callers must not rely on nested pool.transaction calls for independent atomicity.",
+        "pool.transaction uses DEFERRED locking (better-sqlite3 default). Under high write contention, a second writer calling pool.transaction will receive SQLITE_BUSY after busy_timeout (5000 ms). Yoke is single-process single-writer, so this is not a concern in production; relevant only if tests open two writer pools on the same file."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-db-migrations",
       "phase": "implement",
       "attempt": 0,
       "ts": "2026-04-12T23:34:00Z",
@@ -19,9 +40,7 @@
         "The AC-3 regression guard fires for any unapplied file version < maxApplied, regardless of whether that version was ever applied. Operators who intentionally create non-contiguous migration files (e.g. 0001, 0003 — skipping 0002 by design) will not trigger this guard if they apply them in order. Only retroactive file additions (file created after a higher version was applied) trigger it.",
         "applyMigrations does not acquire an application-level advisory lock. If two processes call it concurrently, the INTEGER PRIMARY KEY on schema_migrations prevents duplicate inserts, but both processes may attempt exec before the constraint fires. In practice Yoke is single-process, so this is not a concern."
       ]
-    }
-  ],
-  "prior_features": [
+    },
     {
       "feature": "feat-db-schema",
       "phase": "implement",
