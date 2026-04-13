@@ -20,6 +20,25 @@
         "Bootstrap symlink in .yoke.yml uses 'git rev-parse --show-toplevel' which in a worktree returns the worktree root, not the main repo root — creating a self-referential node_modules symlink. Fix: replace with 'git rev-parse --git-common-dir | sed s/.git$//'' or hard-code the relative path. Fixed manually for this worktree session; must be corrected in .yoke.yml before the next worktree bootstrap runs.",
         "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) were absent on this run (tsc --noEmit clean). May have been resolved by a prior fix elsewhere; monitor."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "ts": "2026-04-13T22:30:00Z",
+      "intended_files": [
+        "src/server/process/fixture-writer.ts",
+        "tests/process/fixture-writer.test.ts",
+        "src/server/scheduler/scheduler.ts",
+        "tests/scheduler/scheduler.test.ts",
+        "progress.md",
+        "handoff.json"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "FixtureWriter uses synchronous fs.appendFileSync per-line (stdout + stderr events). This is intentional in capture mode (not hot-path) but reviewers should confirm RC-2 (exit timing realism): the synchronous writes add ~microsecond latency between events which is negligible for test fixtures but would be unacceptable in a production always-on tee.",
+        "clearRecordMarker is called at every session-exit path including rate_limited and stopped-mid-run. In both those paths, fixtureWriter.close() is called with the current exitCode before the marker is cleared — the fixture will contain a partial stdout stream if cancelled mid-session. This is correct behaviour (partial fixture is replayable) but reviewers should confirm it matches spec intent.",
+        "The scheduler now imports from '../../cli/record.js' (readRecordMarker, clearRecordMarker). This is a cli→server dependency direction inversion. If the project enforces a strict layer boundary (cli must not be imported by server), these helpers should move to a shared module. No boundary enforcement exists today but this should be flagged in review."
+      ]
     }
   ]
 }

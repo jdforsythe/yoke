@@ -1,5 +1,15 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-scripted — implement attempt 1 (2026-04-13)
+
+Completed AC-2 (the only previously deferred acceptance criterion): `yoke record` capture mode now fully tee-s a live session's stream-json output to a JSONL fixture file.
+
+**`FixtureWriter`** (`src/server/process/fixture-writer.ts`): New class that opens a JSONL fixture file, writes a version-1 header, appends `stdout`/`stderr`/`exit` records synchronously (preserving event order without async buffering), and enforces a 64 KiB stderr cap matching the scheduler's own accumulator. 12 unit tests cover record ordering, the cap, idempotent `close()`, and a round-trip replay via `ScriptedProcessManager`.
+
+**Scheduler capture tee** (`src/server/scheduler/scheduler.ts`): In `_runSession`, after spawn succeeds, `readRecordMarker(this.config.configDir)` is checked. If a marker is present, a `FixtureWriter` is opened and wired as a tee alongside the existing `stdout_line`/`stderr_data` handlers. The writer is closed and the marker cleared at every session-exit path (normal end, rate-limited, and stopped-mid-run). Two integration tests in `tests/scheduler/scheduler.test.ts` verify the full path: fixture written + marker cleared when recording, and no fixture directory created without a marker.
+
+All 883 tests pass; `tsc --noEmit` clean.
+
 ## feat-process-mgr-scripted — implement attempt 0 (2026-04-13)
 
 Completed the two remaining gaps in the existing `ScriptedProcessManager` implementation to fully satisfy `feat-process-mgr-scripted`.
