@@ -70,6 +70,8 @@ import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
 import { classify } from '../state-machine/classifier.js';
+import { FixtureWriter } from '../process/fixture-writer.js';
+import { readRecordMarker, clearRecordMarker } from '../../cli/record.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -772,6 +774,19 @@ export class Scheduler {
       startedAt: new Date().toISOString(),
     });
 
+    // --- Capture mode: open FixtureWriter if .yoke/record.json is present (AC-2) ---
+    const captureMarker = readRecordMarker(this.config.configDir);
+    let fixtureWriter: FixtureWriter | null = null;
+    if (captureMarker) {
+      fixtureWriter = new FixtureWriter({ capturePath: captureMarker.capturePath });
+      try {
+        fixtureWriter.open();
+      } catch (err) {
+        console.error('[scheduler] capture: failed to open fixture writer:', err);
+        fixtureWriter = null;
+      }
+    }
+
     // --- Wire up NDJSON parser (AC-3) ---
     const parser = new StreamJsonParser();
     let stderr = '';
@@ -816,16 +831,18 @@ export class Scheduler {
     parser.on('stream.usage',        (ev) => this.broadcastFn(wf.id, sessionId, 'stream.usage',        ev));
     parser.on('stream.system_notice',(ev) => this.broadcastFn(wf.id, sessionId, 'stream.system_notice',ev));
 
-    // Feed stdout lines to parser.
+    // Feed stdout lines to parser; tee to fixture writer in capture mode.
     handle.on('stdout_line', (line: string) => {
       parser.feed(line);
+      fixtureWriter?.appendStdout(line);
     });
 
-    // Accumulate stderr for the failure classifier.
+    // Accumulate stderr for the failure classifier; tee to fixture writer.
     handle.on('stderr_data', (chunk: string) => {
       if (stderr.length < 65_536) {
         stderr += chunk;
       }
+      fixtureWriter?.appendStderr(chunk);
     });
 
     // --- Wait for process exit ---
@@ -843,6 +860,8 @@ export class Scheduler {
 
     // Guard: if stop() was called while session ran, skip all post-session work.
     if (this.stopped) {
+      fixtureWriter?.close(exitCode);
+      if (fixtureWriter) clearRecordMarker(this.config.configDir);
       await logWriter.close();
       this.inFlight.delete(item.id);
       return;
@@ -852,6 +871,8 @@ export class Scheduler {
     const freshItem = this._readItem(item.id);
     if (!freshItem || freshItem.status === 'rate_limited') {
       // Session was cancelled due to rate limit or item no longer exists.
+      fixtureWriter?.close(exitCode);
+      if (fixtureWriter) clearRecordMarker(this.config.configDir);
       this.broadcastFn(wf.id, sessionId, 'session.ended', {
         sessionId,
         endedAt: new Date().toISOString(),
@@ -962,6 +983,8 @@ export class Scheduler {
     }
 
     // --- Wrap up session ---
+    fixtureWriter?.close(exitCode);
+    if (fixtureWriter) clearRecordMarker(this.config.configDir);
     this.broadcastFn(wf.id, sessionId, 'session.ended', {
       sessionId,
       endedAt: new Date().toISOString(),

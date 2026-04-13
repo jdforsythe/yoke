@@ -8,6 +8,7 @@
  *   AC-1  ingestWorkflow seeds workflow + item rows within the poll window.
  *   AC-2  Crash recovery transitions stale in_progress → awaiting_retry before
  *         any new items are scheduled.
+ *   AC-2b Capture mode: fixture file written when .yoke/record.json is present.
  *   AC-3  Scheduler drives pending → ready → bootstrapping → in_progress →
  *         complete (or a terminal state) end-to-end for a single-phase workflow.
  *   AC-5  applyWorktreeCreated persists branch_name + worktree_path to workflows.
@@ -31,6 +32,8 @@ import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/se
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
 import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
+import { runRecord } from '../../src/cli/record.js';
+import { parseFixture } from '../../src/server/process/scripted-manager.js';
 
 // ---------------------------------------------------------------------------
 // Test infrastructure
@@ -757,5 +760,79 @@ describe('RC-5: concurrency limit', () => {
     expect(maxConcurrent).toBeLessThanOrEqual(1);
 
     await scheduler.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-2b: Capture mode — fixture file written during a live session
+// ---------------------------------------------------------------------------
+
+describe('AC-2b: capture mode', () => {
+  it('writes a parseable fixture file when .yoke/record.json is present', async () => {
+    // Enable capture mode: write the marker pointing to a fixture path.
+    const capturePath = path.join(tmpDir, 'fixtures', 'capture-test.jsonl');
+    runRecord({ cwd: tmpDir, capturePath });
+
+    const processManager = new StubProcessManager([
+      { type: 'stdout', line: '{"type":"text","text":"hello"}' },
+      { type: 'stderr', chunk: 'warning: something\n' },
+      { type: 'exit', code: 0 },
+    ]);
+
+    const config = makeConfig({ configDir: tmpDir });
+    const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
+    await scheduler.start();
+
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    await scheduler.stop();
+
+    // Fixture file must exist and be parseable.
+    expect(fs.existsSync(capturePath)).toBe(true);
+    const records = parseFixture(capturePath);
+
+    // Must contain a stdout record for the line the stub emitted.
+    expect(records).toContainEqual({ type: 'stdout', line: '{"type":"text","text":"hello"}' });
+    // Must contain a stderr record.
+    expect(records).toContainEqual({ type: 'stderr', chunk: 'warning: something\n' });
+    // Must contain an exit record.
+    expect(records.find((r) => r.type === 'exit')).toBeDefined();
+
+    // Marker must be cleared after the session.
+    const markerPath = path.join(tmpDir, '.yoke', 'record.json');
+    expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it('does not write a fixture when no .yoke/record.json exists', async () => {
+    const config = makeConfig({ configDir: tmpDir });
+    const processManager = new StubProcessManager([
+      { type: 'stdout', line: '{"type":"text","text":"no-capture"}' },
+      { type: 'exit', code: 0 },
+    ]);
+
+    const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
+    await scheduler.start();
+
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    await scheduler.stop();
+
+    // No .yoke/fixtures directory should have been created.
+    const fixturesDir = path.join(tmpDir, '.yoke', 'fixtures');
+    expect(fs.existsSync(fixturesDir)).toBe(false);
   });
 });
