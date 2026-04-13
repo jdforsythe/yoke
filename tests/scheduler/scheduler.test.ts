@@ -504,6 +504,208 @@ describe('AC-8: graceful drain on stop()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AC-4: Pre-phase non-continue action blocks spawn
+// ---------------------------------------------------------------------------
+
+describe('AC-4: pre-phase non-continue action blocks spawn', () => {
+  it('fires pre_command_failed and does not call spawn when pre returns stop-and-ask', async () => {
+    // Phase config must have at least one pre command so the runner is invoked.
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          pre: [{ name: 'pre-check', run: ['echo', 'checking'], actions: {} }],
+        },
+      },
+    });
+
+    let spawnCount = 0;
+    class SpyPM implements ProcessManager {
+      async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+        spawnCount++;
+        const handle = new StubSpawnHandle([{ type: 'exit', code: 0 }]);
+        handle.start();
+        return handle;
+      }
+    }
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: new SpyPM(),
+      worktreeManager: makeWorktreeManager(),
+      // Pre runner returns stop-and-ask → pre_command_failed → awaiting_user.
+      prepostRunner: async (opts) => {
+        if (opts.when === 'pre') {
+          return { kind: 'action' as const, command: 'pre-check', action: 'stop-and-ask' as const };
+        }
+        return { kind: 'complete' as const };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    // Item must reach awaiting_user — stop-and-ask maps there directly.
+    await pollUntil(() => {
+      const row = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(item.id) as { status: string };
+      return row.status === 'awaiting_user';
+    }, { timeoutMs: 10_000 });
+
+    // Spawn must never have been called — pre-command blocked it.
+    expect(spawnCount).toBe(0);
+    const row = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(item.id) as { status: string };
+    expect(row.status).toBe('awaiting_user');
+
+    await sched.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-5 (spec): Post-phase non-continue action forwarded to applyItemTransition
+// ---------------------------------------------------------------------------
+
+describe('AC-5 (spec): post-phase non-continue action forwarded to engine', () => {
+  it('post action=fail after session_ok sends item to awaiting_retry, not complete', async () => {
+    // Phase config must have at least one post command so the runner is invoked.
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          post: [{ name: 'review', run: ['echo', 'reviewing'], actions: {} }],
+        },
+      },
+    });
+
+    // Process exits 0 — session_ok path — but post runner returns non-continue.
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: makeWorktreeManager(),
+      // Post runner returns fail action → forwarded to post_command_action.
+      prepostRunner: async (opts) => {
+        if (opts.when === 'post') {
+          return {
+            kind: 'action' as const,
+            command: 'review',
+            action: { fail: { reason: 'review-failed' } },
+          };
+        }
+        return { kind: 'complete' as const };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    // Item must NOT reach complete — post action fail should prevent completion.
+    await pollUntil(() => {
+      const row = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(item.id) as { status: string };
+      return ['awaiting_retry', 'awaiting_user'].includes(row.status);
+    }, { timeoutMs: 10_000 });
+
+    const row = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(item.id) as { status: string };
+    expect(['awaiting_retry', 'awaiting_user']).toContain(row.status);
+    // The post action was forwarded — not re-executed — so item never completed.
+    expect(row.status).not.toBe('complete');
+
+    await sched.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-6: rate_limit_detected transitions item to rate_limited + backoff
+// ---------------------------------------------------------------------------
+
+describe('AC-6: rate_limit_detected → rate_limited with backoff', () => {
+  it('transitions item to rate_limited when parser emits rate_limit_detected', async () => {
+    const config = makeConfig();
+
+    // A stdout line that the StreamJsonParser classifies as a rate-limit event.
+    const RATE_LIMIT_LINE = JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 9_999_999_999 },
+    });
+
+    let spawnCount = 0;
+    class RateLimitPM implements ProcessManager {
+      async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+        spawnCount++;
+        // Emit the rate-limit line, then stall (no exit record) — the scheduler
+        // must call cancel() after firing the rate_limit_detected transition.
+        const handle = new StubSpawnHandle([
+          { type: 'stdout', line: RATE_LIMIT_LINE },
+        ]);
+        handle.start();
+        return handle;
+      }
+    }
+
+    const { scheduler } = buildScheduler({
+      config,
+      processManager: new RateLimitPM(),
+      pollIntervalMs: 50,
+    });
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    // Item should transition to rate_limited.
+    await pollUntil(() => {
+      const row = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(item.id) as { status: string };
+      return row.status === 'rate_limited';
+    }, { timeoutMs: 10_000 });
+
+    const row = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(item.id) as { status: string };
+    expect(row.status).toBe('rate_limited');
+
+    // Wait briefly to confirm no second spawn occurs during the backoff window.
+    await new Promise<void>((r) => setTimeout(r, 200));
+    expect(spawnCount).toBe(1);
+
+    await scheduler.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // RC-5: concurrency limit enforced
 // ---------------------------------------------------------------------------
 
