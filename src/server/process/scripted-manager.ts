@@ -5,10 +5,32 @@
  * process. Enables deterministic testing of the Pipeline Engine and the
  * session lifecycle without running a real agent.
  *
- * Fixture format (JSONL, one JSON object per line):
+ * ## Fixture format (JSONL, one JSON object per line)
+ *
+ * Header (must be first non-blank line when present):
+ *   { "type": "header", "version": 1 }
+ *
+ * Records (in emission order):
  *   { "type": "stdout", "line": "<raw stream-json line>" }
  *   { "type": "stderr", "chunk": "<stderr text>" }
  *   { "type": "exit",   "code": 0 }
+ *
+ * The header is optional for backward compatibility with fixtures written
+ * before versioning was introduced. If the header is present and `version`
+ * is not a recognised value, parseFixture() throws so the caller can surface
+ * the mismatch rather than silently replaying unexpected records.
+ *
+ * Fixtures that omit the header are treated as version 1.
+ *
+ * ## Failure-mode fixtures (tests/fixtures/scripted-manager/)
+ *
+ * One fixture exists per failure-mode row from plan-draft3 §D35:
+ *   session-ok.jsonl            — clean exit (exit 0), happy path
+ *   nonzero-exit-transient.jsonl — exit 1 + transient-pattern stderr (ECONNRESET)
+ *   nonzero-exit-permanent.jsonl — exit 1 + permanent-pattern stderr (module not found)
+ *   rate-limit-mid-stream.jsonl  — rate_limit_event mid-stream, then exit 0
+ *
+ * ## Notes
  *
  * The manager emits events in fixture order. An implicit exit(0) is appended
  * if the fixture file ends without an exit record. All events are emitted
@@ -32,6 +54,9 @@ import { ProcessError, type ProcessManager, type SpawnHandle, type SpawnOpts } f
 // ---------------------------------------------------------------------------
 // Fixture types
 // ---------------------------------------------------------------------------
+
+/** The only recognised fixture schema version. */
+export const CURRENT_FIXTURE_VERSION = 1;
 
 type FixtureRecord =
   | { type: 'stdout'; line: string }
@@ -160,11 +185,19 @@ export interface ScriptedManagerOptions {
 
 /**
  * Parse a JSONL fixture file into an array of FixtureRecord objects.
- * Skips blank lines and lines that cannot be parsed as valid FixtureRecord.
+ *
+ * If the first non-blank line is a header record (`{ "type": "header",
+ * "version": N }`), the version is validated against CURRENT_FIXTURE_VERSION
+ * and an error is thrown for any unrecognised value. Fixtures without a header
+ * are accepted as-is (treated as version 1).
+ *
+ * Blank lines and malformed JSON are silently skipped. Lines with an
+ * unrecognised record type are also skipped.
  */
 export function parseFixture(fixturePath: string): FixtureRecord[] {
   const raw = fs.readFileSync(fixturePath, 'utf8');
   const records: FixtureRecord[] = [];
+  let headerChecked = false;
 
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
@@ -185,6 +218,20 @@ export function parseFixture(fixturePath: string): FixtureRecord[] {
     ) continue;
 
     const rec = obj as Record<string, unknown>;
+
+    // Check for version header on the first non-blank parseable line.
+    if (!headerChecked) {
+      headerChecked = true;
+      if (rec.type === 'header') {
+        if (rec.version !== CURRENT_FIXTURE_VERSION) {
+          throw new Error(
+            `Unsupported fixture version: ${String(rec.version)} (expected ${CURRENT_FIXTURE_VERSION})`,
+          );
+        }
+        continue; // Header consumed; not added to records.
+      }
+      // First line is not a header — treat as headerless (version 1).
+    }
 
     if (rec.type === 'stdout' && typeof rec.line === 'string') {
       records.push({ type: 'stdout', line: rec.line });

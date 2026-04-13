@@ -1,0 +1,5 @@
+{"type":"header","version":1}
+{"type":"stdout","line":"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-session-permanent\"}"}
+{"type":"stdout","line":"{\"type\":\"assistant\",\"message\":{\"id\":\"msg_permanent\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"Attempting task...\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":80,\"output_tokens\":10}}}"}
+{"type":"stderr","chunk":"Error: Cannot find module 'nonexistent-package'\nRequire stack:\n- /workspace/src/index.ts\n"}
+{"type":"exit","code":1}

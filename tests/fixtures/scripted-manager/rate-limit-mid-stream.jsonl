@@ -1,0 +1,5 @@
+{"type":"header","version":1}
+{"type":"stdout","line":"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-session-rate-limit\"}"}
+{"type":"stdout","line":"{\"type\":\"assistant\",\"message\":{\"id\":\"msg_partial\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"Starting analysis...\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":80,\"output_tokens\":5}}}"}
+{"type":"stdout","line":"{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"paused\",\"resetsAt\":4070908800}}"}
+{"type":"exit","code":0}
