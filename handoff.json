@@ -1,10 +1,41 @@
 {
-  "feature": "feat-session-log-store",
+  "feature": "feat-fastify-ws",
   "entries": [
     {
       "phase": "implement",
       "attempt": 0,
-      "ts": "2026-04-13T08:30:00Z",
+      "ts": "2026-04-13T13:28:14Z",
+      "intended_files": [
+        "src/server/api/frames.ts",
+        "src/server/api/idempotency.ts",
+        "src/server/api/ws.ts",
+        "src/server/api/server.ts",
+        "tests/api/fastify-ws.test.ts",
+        "tests/api/fastify-http.test.ts"
+      ],
+      "deferred_criteria": [
+        "Pipeline engine live frame broadcast: createWsHandler and ServerState.seqStore/backfillBuffer are exposed for pipeline engine integration, but no code currently calls seqStore.next() or backfillBuffer.push() to emit live workflow.update/item.update/session.* frames. The pipeline engine (feat-scheduler or feat-server-main) must: obtain a reference to state.seqStore and state.backfillBuffer from createServer(); call seqStore.next(sessionId) for each frame, backfillBuffer.push(sessionId, frame), then broadcast to all subscribed WebSocket clients.",
+        "WS client registry for broadcast: createWsHandler creates per-connection subscription state, but there is no registry that the pipeline engine can use to push frames to currently-connected clients. A broadcast mechanism (e.g. a Set<{socket, subscriptions}> shared via ServerState) must be added when the pipeline engine integration is implemented.",
+        "http.ts deprecation: src/server/api/http.ts (the Node.js http.Server that served the session log HTTP route) is superseded by server.ts. It should be removed or marked deprecated when the orchestration layer migrates to createServer(). The two servers currently coexist and serve overlapping GET /api/sessions/:id/log paths.",
+        "WS idempotency store is in-memory only: IdempotencyStore resets on server restart. The 5-minute TTL means that a client retrying a control commandId across a server restart within the TTL window will be re-executed rather than get the cached response. Acceptable per spec ('server restart resets idempotency window') but documented here for operator awareness.",
+        "Attention ack is the one API-layer write: POST /api/workflows/:id/attention/:attentionId/ack is the only endpoint that calls db.writer. All other reads use db.reader(). If the attention ack write is moved to the pipeline engine in a future refactor, this module will become fully read-only."
+      ],
+      "known_risks": [
+        "BackfillBuffer is an in-memory ring buffer (max 500 frames per session). On server restart, all backfill history is lost. Clients that reconnect after a restart will always receive backfill.truncated and must fall back to the HTTP /api/sessions/:id/log endpoint. This is documented behavior.",
+        "The WS route registers directly on the root Fastify instance (not inside a sub-plugin scope) to avoid @fastify/websocket plugin scoping issues. If the server gains sub-application plugins that need the WS plugin decorated, they must also register on the root instance or the WS plugin must be re-registered in their scope.",
+        "control commands are accepted (202/notice) and cached in IdempotencyStore but not executed: the pipeline engine integration is deferred. In the interim, POST /api/workflows/:id/control and WS control frames both return 'accepted' without actually changing any state. This is documented but creates a discoverability gap if a consumer assumes accepted means executed.",
+        "The heartbeat interval (30 s) is hardcoded in ws.ts as HEARTBEAT_INTERVAL_MS. The server sends no actual ping frames \u2014 the constant is declared in the hello frame's heartbeatIntervalMs field for the client to use as its keepalive timer. No server-side ping is implemented; if a client stops sending frames but stays connected, the server will not detect the stale connection until the OS closes the socket."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-session-log-store",
+      "entries": [
+        {
+          "phase": "implement",
+          "attempt": 0,
+          "ts": "2026-04-13T08:30:00Z",
       "intended_files": [
         "src/server/session-log/writer.ts",
         "src/server/session-log/reader.ts",
@@ -547,6 +578,8 @@
           ]
         }
       ]
+    }
+  ]
     }
   ]
 }
