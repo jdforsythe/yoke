@@ -69,9 +69,9 @@ export const DEFAULT_TIMEOUT_S = 15 * 60;
 
 /**
  * Grace period between SIGTERM and SIGKILL when the timeout fires.
- * Kept short (5 s) because pre/post commands must not stall the pipeline.
+ * Matches the process manager's production default (10 s) per RC-5.
  */
-const SIGKILL_GRACE_MS = 5_000;
+const SIGKILL_GRACE_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Public result type
