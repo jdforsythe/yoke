@@ -837,3 +837,245 @@ describe('AC-2b: capture mode', () => {
     expect(fs.existsSync(fixturesDir)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// AC-6: prepost_runs rows written atomically with state transition
+// ---------------------------------------------------------------------------
+
+describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
+  it('writes one prepost_runs row per pre command when pre succeeds and session completes', async () => {
+    // Phase must declare a pre command so the scheduler calls prepostRunner.
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          pre: [{ name: 'lint', run: ['./lint.sh'], actions: { '0': 'continue', '*': 'stop' } }],
+        },
+      },
+    });
+
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    // Pre runner produces a record mimicking what runCommands would return.
+    const preRunRecord = {
+      commandName: 'lint',
+      argv: ['./lint.sh'],
+      when: 'pre' as const,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      exitCode: 0,
+      actionTaken: 'continue' as const,
+    };
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async (opts) => {
+        if (opts.when === 'pre') {
+          return { kind: 'complete' as const, runs: [preRunRecord] };
+        }
+        return { kind: 'complete' as const, runs: [] };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    // One prepost_runs row must exist for the pre command.
+    const rows = db.reader()
+      .prepare('SELECT * FROM prepost_runs WHERE workflow_id = ?')
+      .all(workflowId) as {
+        command_name: string;
+        when_phase: string;
+        argv: string;
+        exit_code: number | null;
+        action_taken: string | null;
+      }[];
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].command_name).toBe('lint');
+    expect(rows[0].when_phase).toBe('pre');
+    expect(JSON.parse(rows[0].argv)).toEqual(['./lint.sh']);
+    expect(rows[0].exit_code).toBe(0);
+    expect(JSON.parse(rows[0].action_taken!)).toBe('continue');
+
+    await sched.stop();
+  }, 15_000);
+
+  it('writes prepost_runs rows for pre commands when pre_command_failed fires', async () => {
+    // Phase must declare a pre command so the scheduler calls prepostRunner.
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          pre: [{ name: 'check', run: ['./check.sh'], actions: { '0': 'continue', '*': 'stop-and-ask' } }],
+        },
+      },
+    });
+
+    const preRunRecord = {
+      commandName: 'check',
+      argv: ['./check.sh'],
+      when: 'pre' as const,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      exitCode: 1,
+      actionTaken: 'stop-and-ask' as const,
+    };
+
+    let spawnCount = 0;
+    class SpyPM2 implements ProcessManager {
+      async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+        spawnCount++;
+        const h = new StubSpawnHandle([{ type: 'exit', code: 0 }]);
+        h.start();
+        return h;
+      }
+    }
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: new SpyPM2(),
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async (opts) => {
+        if (opts.when === 'pre') {
+          return {
+            kind: 'action' as const,
+            command: 'check',
+            action: 'stop-and-ask' as const,
+            runs: [preRunRecord],
+          };
+        }
+        return { kind: 'complete' as const, runs: [] };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    await pollUntil(() => {
+      const row = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(item.id) as { status: string };
+      return row.status === 'awaiting_user';
+    }, { timeoutMs: 10_000 });
+
+    // Spawn must never have been called.
+    expect(spawnCount).toBe(0);
+
+    // The pre command run must appear in prepost_runs even though spawn never fired.
+    const rows = db.reader()
+      .prepare('SELECT * FROM prepost_runs WHERE workflow_id = ?')
+      .all(workflowId) as {
+        command_name: string;
+        when_phase: string;
+        exit_code: number | null;
+        action_taken: string | null;
+      }[];
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].command_name).toBe('check');
+    expect(rows[0].when_phase).toBe('pre');
+    expect(rows[0].exit_code).toBe(1);
+    expect(JSON.parse(rows[0].action_taken!)).toBe('stop-and-ask');
+
+    await sched.stop();
+  }, 15_000);
+
+  it('writes prepost_runs rows for post commands alongside session_ok transition', async () => {
+    // Phase must declare a post command so the scheduler calls prepostRunner.
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          post: [{ name: 'verify', run: ['./verify.sh'], actions: { '0': 'continue', '*': 'stop' } }],
+        },
+      },
+    });
+
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const postRunRecord = {
+      commandName: 'verify',
+      argv: ['./verify.sh'],
+      when: 'post' as const,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      exitCode: 0,
+      actionTaken: 'continue' as const,
+    };
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async (opts) => {
+        if (opts.when === 'post') {
+          return { kind: 'complete' as const, runs: [postRunRecord] };
+        }
+        return { kind: 'complete' as const, runs: [] };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    const rows = db.reader()
+      .prepare('SELECT * FROM prepost_runs WHERE workflow_id = ?')
+      .all(workflowId) as {
+        command_name: string;
+        when_phase: string;
+        exit_code: number | null;
+        action_taken: string | null;
+      }[];
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].command_name).toBe('verify');
+    expect(rows[0].when_phase).toBe('post');
+    expect(rows[0].exit_code).toBe(0);
+
+    await sched.stop();
+  }, 15_000);
+});
