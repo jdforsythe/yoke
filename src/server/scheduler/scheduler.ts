@@ -498,6 +498,10 @@ export class Scheduler {
     item: ItemRow,
     stage: Stage,
   ): Promise<void> {
+    if (this.stopped) {
+      this.inFlight.delete(item.id);
+      return;
+    }
     try {
       // --- Create worktree if not already present (first phase of first stage).
       let worktreePath = wf.worktree_path;
@@ -586,6 +590,11 @@ export class Scheduler {
     item: ItemRow,
     stage: Stage,
   ): Promise<void> {
+    if (this.stopped) {
+      this.inFlight.delete(item.id);
+      return;
+    }
+
     const phaseKey = item.current_phase ?? stage.phases[0] ?? '';
     const phaseConfig = this.config.phases[phaseKey];
 
@@ -734,6 +743,14 @@ export class Scheduler {
       return;
     }
 
+    // Guard: if stop() was called while we were spawning, cancel immediately.
+    if (this.stopped) {
+      void handle.cancel();
+      await logWriter.close();
+      this.inFlight.delete(item.id);
+      return;
+    }
+
     // Update PID/PGID now that we have the real process (RC-2: engine helper).
     updateSessionPid(this.db, sessionId, handle.pid, handle.pgid);
 
@@ -821,6 +838,13 @@ export class Scheduler {
     );
 
     parser.flush();
+
+    // Guard: if stop() was called while session ran, skip all post-session work.
+    if (this.stopped) {
+      await logWriter.close();
+      this.inFlight.delete(item.id);
+      return;
+    }
 
     // Re-read item — state may have changed during the session (e.g. rate_limited).
     const freshItem = this._readItem(item.id);
@@ -1001,6 +1025,48 @@ export class Scheduler {
       },
     };
     this.broadcastFn(workflowId, null, 'item.state', payload);
+
+    // If the stage just completed, advance the workflow (last stage → terminal status).
+    if (result.stageComplete) {
+      this._handleStageComplete(workflowId, stageId);
+    }
+  }
+
+  /**
+   * Called when applyItemTransition reports stageComplete=true.
+   * Advances workflows.current_stage to the next stage or marks the workflow
+   * as completed / completed_with_blocked when the last stage is done.
+   */
+  private _handleStageComplete(workflowId: string, completedStageId: string): void {
+    const stages = this.config.pipeline.stages;
+    const idx = stages.findIndex((s) => s.id === completedStageId);
+    const now = new Date().toISOString();
+
+    if (idx < 0) return; // unknown stage — shouldn't happen
+
+    if (idx < stages.length - 1) {
+      // Not the last stage — advance current_stage pointer.
+      const nextStage = stages[idx + 1];
+      this.db.writer
+        .prepare('UPDATE workflows SET current_stage = ?, updated_at = ? WHERE id = ?')
+        .run(nextStage.id, now, workflowId);
+    } else {
+      // Last stage completed — determine final workflow status.
+      const BLOCKED_STATUSES = ['blocked', 'abandoned'];
+      const allItems = this._readWorkflowItems(workflowId);
+      const hasBlocked = allItems.some((item) => BLOCKED_STATUSES.includes(item.status));
+      const finalStatus = hasBlocked ? 'completed_with_blocked' : 'completed';
+
+      this.db.writer
+        .prepare(`UPDATE workflows SET status = ?, current_stage = null, updated_at = ? WHERE id = ?`)
+        .run(finalStatus, now, workflowId);
+
+      this.broadcastFn(workflowId, null, 'workflow.update', {
+        workflowId,
+        status: finalStatus,
+        completedAt: now,
+      });
+    }
   }
 
   /**
