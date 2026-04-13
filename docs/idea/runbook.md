@@ -523,6 +523,36 @@ For each feature in topological order:
 - [x] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
 - [x] After each feature: `./yoke-v0 run review <feature-id>` — review against acceptance and review criteria; if blocking issues found, address then re-implement before moving on
 - [x] Check review result: `make last-status PHASE=review FEATURE=<feature-id>` — `Verdict : PASS` + `Blocking: none` required to proceed; on FAIL run `make last-output PHASE=review FEATURE=<feature-id>` to read the full report
+
+**Review fail → re-implement procedure** (D56: default `retry_mode: fresh`):
+
+When `Verdict: FAIL` with blocking issues:
+
+1. **Update `handoff.json`** — append a `review_failure` entry inside `entries[]` for this feature:
+   ```json
+   {
+     "phase": "review",
+     "attempt": <N>,
+     "ts": "<ISO timestamp>",
+     "verdict": "FAIL",
+     "blocking_issues": [
+       "<exact text of each blocking issue from the review output>"
+     ],
+     "non_blocking": [
+       "<optional: copy non-blocking observations if relevant to the fix>"
+     ]
+   }
+   ```
+   This is the mechanism: yoke-v0 injects `handoff.json` entries into `{{handoff_entries}}` in `prompts/implement.md`, so the re-implement session sees the failure context without any shared state.
+
+2. **Fresh implement session** (D56 default): `./yoke-v0 run implement <feature-id>` — do NOT use `-c`; a fresh session forces the implementer to re-read the updated handoff and re-derive context from scratch, which is what you want.
+
+3. **Re-run review**: `./yoke-v0 run review <feature-id>`.
+
+4. **Attempt cap**: max **2 re-implement attempts** (attempt 1, attempt 2 after the original). If still `Verdict: FAIL` after attempt 2, mark the feature `awaiting_user` in `yoke-features.json`, note the failure summary in `handoff.json`, and move to the next unblocked feature. Do not keep retrying without user intervention.
+
+5. **Non-blocking observations**: do not block re-implement; the implementer may address them at discretion. If you want them fixed, add them to `handoff.json` alongside the blocking issues.
+
 - [x] After each feature: `pnpm test` (skip until `package.json` exists; once it does, run after every feature)
 
 ### δ.3 — Self-hosting checkpoint

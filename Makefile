@@ -62,9 +62,15 @@ run-implement:
 run-review:
 	./yoke-v0 run review $(FEATURE)
 
+# handoff-review-fail [FEATURE=<id>]
+# Parse the last review log and append a review_failure entry to handoff.json.
+# Run this after a Verdict: FAIL, then run make run-implement FEATURE=<id>.
+handoff-review-fail:
+	@python3 scripts/handoff-review-fail.py $(FEATURE)
+
 # deps FEATURE=<id> — print transitive dependency closure in topological order
 # Use FEATURES_FILE= to override the default features.json path.
 deps:
 	@python3 scripts/deps.py $(FEATURE) $(if $(FEATURES_FILE),$(FEATURES_FILE),)
 
-.PHONY: last-status last-output last-logs tail-session tail-session-raw run-implement run-review deps
+.PHONY: last-status last-output last-logs tail-session tail-session-raw run-implement run-review handoff-review-fail deps
