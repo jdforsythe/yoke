@@ -419,3 +419,121 @@ describe('loadConfig — AJV error message quality', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Acceptance criterion 7 — missing wildcard '*' key in actions map (AC-4)
+// ---------------------------------------------------------------------------
+
+describe('loadConfig — prepost actions map wildcard enforcement (AC-4)', () => {
+  it('rejects a post command whose actions map has no "*" key', () => {
+    const yaml = `\
+version: "1"
+project:
+  name: test
+pipeline:
+  stages:
+    - id: main
+      run: once
+      phases: [impl]
+phases:
+  impl:
+    command: claude
+    args: []
+    prompt_template: prompts/impl.md
+    post:
+      - name: check
+        run: ["./check.sh"]
+        actions:
+          "0": continue
+`;
+    let err: ConfigLoadError | undefined;
+    try {
+      loadConfig(writeYaml(yaml));
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('validation_error');
+  });
+
+  it('rejects a pre command whose actions map has no "*" key', () => {
+    const yaml = `\
+version: "1"
+project:
+  name: test
+pipeline:
+  stages:
+    - id: main
+      run: once
+      phases: [impl]
+phases:
+  impl:
+    command: claude
+    args: []
+    prompt_template: prompts/impl.md
+    pre:
+      - name: lint
+        run: ["./lint.sh"]
+        actions:
+          "0": continue
+          "1": stop-and-ask
+`;
+    let err: ConfigLoadError | undefined;
+    try {
+      loadConfig(writeYaml(yaml));
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('validation_error');
+  });
+
+  it('accepts a post command whose actions map has a "*" key', () => {
+    const yaml = `\
+version: "1"
+project:
+  name: test
+pipeline:
+  stages:
+    - id: main
+      run: once
+      phases: [impl]
+phases:
+  impl:
+    command: claude
+    args: []
+    prompt_template: prompts/impl.md
+    post:
+      - name: check
+        run: ["./check.sh"]
+        actions:
+          "0": continue
+          "*": stop-and-ask
+`;
+    expect(() => loadConfig(writeYaml(yaml))).not.toThrow();
+  });
+
+  it('accepts an actions map with only a "*" key (covers all exit codes)', () => {
+    const yaml = `\
+version: "1"
+project:
+  name: test
+pipeline:
+  stages:
+    - id: main
+      run: once
+      phases: [impl]
+phases:
+  impl:
+    command: claude
+    args: []
+    prompt_template: prompts/impl.md
+    post:
+      - name: check
+        run: ["./check.sh"]
+        actions:
+          "*": continue
+`;
+    expect(() => loadConfig(writeYaml(yaml))).not.toThrow();
+  });
+});
