@@ -1,5 +1,19 @@
 # Yoke — Build Progress
 
+## feat-prepost-runner — implement attempt 0 (2026-04-13)
+
+Implemented the full pre/post command runner feature across four focused commits.
+
+**Wildcard enforcement at config load time (AC-4)**: Added `"required": ["*"]` to the `actionsMap` JSON schema definition (`docs/design/schemas/yoke-config.schema.json`). AJV now rejects any pre/post command whose `actions` map omits the catch-all wildcard entry at load time rather than at runtime. Four new loader tests cover both rejection and acceptance cases.
+
+**`PrePostRunRecord` type + `runs` field (AC-6 data collection)**: Added the `PrePostRunRecord` interface to `src/server/prepost/runner.ts`. Every `RunCommandsResult` variant now carries a `runs: PrePostRunRecord[]` array. The runner populates one record per command with `commandName`, `argv`, `when`, `startedAt`, `endedAt`, `exitCode`, and `actionTaken` (null for timeout, spawn failure, or unhandled exit). Made `shell: false` explicit in the spawn options (RC-1). Updated all 24 existing runner tests and added 7 new tests covering the runs array across every result kind.
+
+**Engine `prepost_runs` write (AC-6, RC-4)**: Added `prepostRuns?: PrePostRunRecord[]` to `GuardContext` in `src/server/pipeline/engine.ts`. Added the `writePrepostRun()` helper and wired it inside `applyItemTransition`'s `db.transaction()`, after the standard state mutation, so every run record is atomically persisted alongside its corresponding state transition.
+
+**Scheduler wiring**: Updated `_runSession` in `src/server/scheduler/scheduler.ts` to collect `preRuns` from pre command results and pass them — together with `postRuns` — as `guardCtx.prepostRuns` to every `applyItemTransition` call that follows. Pre-only runs are passed to `pre_command_failed` and `session_fail` (non-zero exit); pre + post runs are passed to `session_ok` and `post_command_action`. Three new scheduler integration tests verify that `prepost_runs` rows appear in SQLite for the pre-success, pre-fail, and post-success paths.
+
+All 896 tests pass; `tsc --noEmit` clean.
+
 ## feat-process-mgr-scripted — implement attempt 2 (2026-04-13)
 
 Fixed the architectural import-direction inversion flagged as a known risk in attempt 1: the Scheduler (server layer) was importing `readRecordMarker` and `clearRecordMarker` directly from `src/cli/record.ts`, violating the rule that server modules must not import from the CLI layer.

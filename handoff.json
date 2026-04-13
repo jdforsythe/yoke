@@ -1,59 +1,87 @@
-{
-  "feature": "feat-process-mgr-scripted",
-  "entries": [
-    {
-      "phase": "implement",
-      "attempt": 0,
-      "ts": "2026-04-13T22:15:00Z",
-      "intended_files": [
-        "src/server/process/scripted-manager.ts",
-        "tests/process/scripted-manager.test.ts",
-        "tests/fixtures/scripted-manager/session-ok.jsonl",
-        "tests/fixtures/scripted-manager/nonzero-exit-transient.jsonl",
-        "tests/fixtures/scripted-manager/nonzero-exit-permanent.jsonl",
-        "tests/fixtures/scripted-manager/rate-limit-mid-stream.jsonl"
-      ],
-      "deferred_criteria": [
-        "AC-2 — yoke record capture mode: writing fixture files by tee-ing live session stdout is deferred to feat-record-capture-wiring. parseFixture() and ScriptedProcessManager replay are complete; capture wiring (opening a fixture file at session-spawn time, tee-ing stdout_line records, writing exit record, clearing the marker) must be added in the pipeline engine layer."
-      ],
-      "known_risks": [
-        "Bootstrap symlink in .yoke.yml uses 'git rev-parse --show-toplevel' which in a worktree returns the worktree root, not the main repo root — creating a self-referential node_modules symlink. Fix: replace with 'git rev-parse --git-common-dir | sed s/.git$//'' or hard-code the relative path. Fixed manually for this worktree session; must be corrected in .yoke.yml before the next worktree bootstrap runs.",
-        "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) were absent on this run (tsc --noEmit clean). May have been resolved by a prior fix elsewhere; monitor."
-      ]
-    },
-    {
-      "phase": "implement",
-      "attempt": 1,
-      "ts": "2026-04-13T22:30:00Z",
-      "intended_files": [
-        "src/server/process/fixture-writer.ts",
-        "tests/process/fixture-writer.test.ts",
-        "src/server/scheduler/scheduler.ts",
-        "tests/scheduler/scheduler.test.ts",
-        "progress.md",
-        "handoff.json"
-      ],
-      "deferred_criteria": [],
-      "known_risks": [
-        "FixtureWriter uses synchronous fs.appendFileSync per-line (stdout + stderr events). This is intentional in capture mode (not hot-path) but reviewers should confirm RC-2 (exit timing realism): the synchronous writes add ~microsecond latency between events which is negligible for test fixtures but would be unacceptable in a production always-on tee.",
-        "clearRecordMarker is called at every session-exit path including rate_limited and stopped-mid-run. In both those paths, fixtureWriter.close() is called with the current exitCode before the marker is cleared — the fixture will contain a partial stdout stream if cancelled mid-session. This is correct behaviour (partial fixture is replayable) but reviewers should confirm it matches spec intent.",
-        "The scheduler now imports from '../../cli/record.js' (readRecordMarker, clearRecordMarker). This is a cli→server dependency direction inversion. If the project enforces a strict layer boundary (cli must not be imported by server), these helpers should move to a shared module. No boundary enforcement exists today but this should be flagged in review."
-      ]
-    }
-  ,
-    {
-      "phase": "implement",
-      "attempt": 2,
-      "ts": "2026-04-13T22:45:00Z",
-      "intended_files": [
-        "src/server/process/record-marker.ts",
-        "src/cli/record.ts",
-        "src/server/scheduler/scheduler.ts",
-        "progress.md",
-        "handoff.json"
-      ],
-      "deferred_criteria": [],
-      "known_risks": []
-    }
-  ]
-}
+[
+  {
+    "feature": "feat-prepost-runner",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T23:00:00Z",
+        "intended_files": [
+          "docs/design/schemas/yoke-config.schema.json",
+          "src/server/prepost/runner.ts",
+          "src/server/pipeline/engine.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/config/loader.test.ts",
+          "tests/prepost/runner.test.ts",
+          "tests/scheduler/scheduler.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The wildcard '*' enforcement (required: ['*'] in actionsMap schema) is a breaking change for any existing .yoke.yml files that omit the wildcard from pre/post actions maps. This is intentional per the spec but should be communicated to users upgrading.",
+          "prepost_runs rows are written atomically with the first major state transition AFTER the commands run. For successful pre commands, this is the session_ok / session_fail / post_command_action transition — not the pre-command completion instant. The started_at / ended_at timestamps in the record are correct (they're recorded at command execution time), but the DB row doesn't appear until the session ends. This is correct per RC-4 but may surprise dashboard consumers expecting near-real-time prepost_runs visibility.",
+          "The scheduler test stubs for prepostRunner now require a `runs` field on all returned values. Any new tests that use inline stubs (async () => ({ kind: 'complete' })) will get a TypeScript error; they must include runs: []."
+        ]
+      }
+    ]
+  },
+  {
+    "feature": "feat-process-mgr-scripted",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T22:15:00Z",
+        "intended_files": [
+          "src/server/process/scripted-manager.ts",
+          "tests/process/scripted-manager.test.ts",
+          "tests/fixtures/scripted-manager/session-ok.jsonl",
+          "tests/fixtures/scripted-manager/nonzero-exit-transient.jsonl",
+          "tests/fixtures/scripted-manager/nonzero-exit-permanent.jsonl",
+          "tests/fixtures/scripted-manager/rate-limit-mid-stream.jsonl"
+        ],
+        "deferred_criteria": [
+          "AC-2 — yoke record capture mode: writing fixture files by tee-ing live session stdout is deferred to feat-record-capture-wiring. parseFixture() and ScriptedProcessManager replay are complete; capture wiring (opening a fixture file at session-spawn time, tee-ing stdout_line records, writing exit record, clearing the marker) must be added in the pipeline engine layer."
+        ],
+        "known_risks": [
+          "Bootstrap symlink in .yoke.yml uses 'git rev-parse --show-toplevel' which in a worktree returns the worktree root, not the main repo root — creating a self-referential node_modules symlink. Fix: replace with 'git rev-parse --git-common-dir | sed s/.git$//'' or hard-code the relative path. Fixed manually for this worktree session; must be corrected in .yoke.yml before the next worktree bootstrap runs.",
+          "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) were absent on this run (tsc --noEmit clean). May have been resolved by a prior fix elsewhere; monitor."
+        ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "ts": "2026-04-13T22:30:00Z",
+        "intended_files": [
+          "src/server/process/fixture-writer.ts",
+          "tests/process/fixture-writer.test.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/scheduler/scheduler.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "FixtureWriter uses synchronous fs.appendFileSync per-line (stdout + stderr events). This is intentional in capture mode (not hot-path) but reviewers should confirm RC-2 (exit timing realism): the synchronous writes add ~microsecond latency between events which is negligible for test fixtures but would be unacceptable in a production always-on tee.",
+          "clearRecordMarker is called at every session-exit path including rate_limited and stopped-mid-run. In both those paths, fixtureWriter.close() is called with the current exitCode before the marker is cleared — the fixture will contain a partial stdout stream if cancelled mid-session. This is correct behaviour (partial fixture is replayable) but reviewers should confirm it matches spec intent.",
+          "The scheduler now imports from '../../cli/record.js' (readRecordMarker, clearRecordMarker). This is a cli→server dependency direction inversion. If the project enforces a strict layer boundary (cli must not be imported by server), these helpers should move to a shared module. No boundary enforcement exists today but this should be flagged in review."
+        ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 2,
+        "ts": "2026-04-13T22:45:00Z",
+        "intended_files": [
+          "src/server/process/record-marker.ts",
+          "src/cli/record.ts",
+          "src/server/scheduler/scheduler.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": []
+      }
+    ]
+  }
+]
