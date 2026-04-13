@@ -1,5 +1,27 @@
 # Yoke — Build Progress
 
+## feat-github — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-github` feature across four focused commits, covering all five acceptance criteria with no live GitHub API calls in any test.
+
+**Migration 0002** (`src/server/storage/migrations/0002_github_state.sql`): Adds six columns to the `workflows` table — `github_state`, `github_pr_number`, `github_pr_url`, `github_pr_state`, `github_error`, `github_last_checked_at` — implementing the D48 GithubState enum (`disabled | unconfigured | idle | creating | created | failed`). Forward-only, applied automatically by the existing `applyMigrations` runner.
+
+**`src/server/github/types.ts`**: `GithubStatus` union type and `GithubError` discriminated union (`auth_failed | api_failed`), plus `GithubStateRow` mirroring the new DB columns.
+
+**`src/server/github/auth.ts`**: `resolveAuth(deps)` implements the GITHUB_TOKEN → gh auth token resolution chain with fully injectable `AuthDeps`. On failure, returns a structured `GithubAuthError` with an `attempts` array naming every source tried and the specific failure reason — never a raw stack trace (AC-4). `makeProductionAuthDeps()` provides the real-process implementation (dynamic import of `child_process` so tests never load it).
+
+**`src/server/github/push-guard.ts`**: `checkPushed(branch, deps)` runs `git log origin/<branch>..<branch> --oneline` via injectable `PushGuardDeps`. Empty output = fully pushed; any lines = unpushed commits. Remote-branch-not-found errors are caught and returned as a structured failure rather than thrown (AC-3, RC-1: always enforced, not config-gated).
+
+**`src/server/github/pr.ts`**: `OctokitAdapter` and `GhCliAdapter` interfaces with injectable adapters. `OctokitPrError` carries the HTTP status code so the service layer can detect 401/403 for fallback. Production `makeOctokitAdapter()` uses `@octokit/rest` (dynamic import). Production `makeGhCliAdapter()` calls `gh pr create --json number,url` and parses the result.
+
+**`src/server/github/service.ts`**: `createPr(input, deps)` orchestrates the full AC surface: push guard → auth resolution → DB transition to `creating` → Octokit call (with 401/403 fallback to gh CLI) → DB transition to `created` or `failed`. Every `github_state` DB write is paired with an `events` row inside the same `db.transaction()` (RC-4). `initGithubState(db, workflowId, opts)` stamps the initial state at workflow ingest time based on config.
+
+**Tests** (`tests/github/service.test.ts`): 16 integration tests using real SQLite (with migrations) and injectable stub deps — the "scripted fixture" pattern (no live API calls, AC-5/RC-2). Covers: octokit happy path (idle→creating→created with prNumber+prUrl); gh CLI path (GITHUB_TOKEN absent); 401 + 403 fallback to gh CLI; both auth sources exhausted → structured `GithubAuthError` naming each attempt; push guard blocking with unpushed commits and missing remote tracking branch; non-auth Octokit error (422) does not fall back to gh CLI; `initGithubState` stamps all four initial states; events row written atomically with every state change.
+
+`tests/storage/schema.test.ts` updated: workflows column count 12 → 18 and column name list extended with the six new github_state columns.
+
+947 tests pass; `tsc --noEmit` clean.
+
 ## feat-fault-injector — implement attempt 0 (2026-04-13)
 
 Implemented `feat-fault-injector` in a single focused commit. **`src/server/fault/injector.ts`** (new): exports `Checkpoint` string union (`bootstrap_ok | session_ok | artifact_validators | post_commands_ok`), `FaultInjector` interface with `check(checkpoint)`, `NoopFaultInjector` (empty body — zero overhead in production, AC-1), `ActiveFaultInjector` (holds a `ReadonlySet<Checkpoint>`; `check()` throws `FaultInjectionError` synchronously at armed checkpoints — no sleep hacks, RC-3), and `FaultInjectionError` (carries `.checkpoint` for instanceof dispatch, AC-5). No `process.env` lookup inside the class; the caller constructs the right implementation (RC-4). **Scheduler wiring** (`src/server/scheduler/scheduler.ts`): added `faultInjector?: FaultInjector` to `SchedulerOpts`, defaults to `new NoopFaultInjector()`; four `check()` call-sites: at `bootstrap_ok` (after `runBootstrap()` succeeds, before `applyItemTransition`) with `FaultInjectionError` caught to fire `bootstrap_fail` immediately (AC-2); at `artifact_validators` (after validators pass, before post commands); at `post_commands_ok` (after post commands complete); at `session_ok` (immediately before `session_ok` is committed). Faults at the last three checkpoints leave the session row as `running` with the live PID so that `buildCrashRecovery` on the next scheduler restart detects the stale PID and fires `session_fail` (AC-3). **Tests**: 10 unit tests in `tests/fault/injector.test.ts` (all checkpoint variants, FaultInjectionError identity, edge cases); 4 integration tests in `tests/scheduler/crash-recovery.test.ts` covering AC-2 (bootstrap_ok fault → `bootstrap_failed`), AC-3/AC-4a-b (session_ok fault + new scheduler restart → stale PID recovery → item leaves `in_progress`), AC-4c (`rate_limited` item with unknown resetAt promoted immediately by new scheduler tick), and the no-op happy path. 931 tests pass; `tsc --noEmit` clean.

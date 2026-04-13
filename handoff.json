@@ -153,5 +153,38 @@
         "known_risks": []
       }
     ]
+  },
+  {
+    "feature": "feat-github",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T19:51:00Z",
+        "intended_files": [
+          "src/server/storage/migrations/0002_github_state.sql",
+          "src/server/github/types.ts",
+          "src/server/github/auth.ts",
+          "src/server/github/push-guard.ts",
+          "src/server/github/pr.ts",
+          "src/server/github/service.ts",
+          "tests/github/service.test.ts",
+          "tests/storage/schema.test.ts",
+          "package.json",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "Scheduler wiring: createPr() is not yet called from the scheduler workflow-complete path. The service is complete and callable; the wire-up into the scheduler (passing GithubServiceDeps to the Scheduler constructor and calling createPr() after applyWorkflowComplete()) is deferred. This does not affect any stated AC — no AC requires the scheduler to invoke createPr() automatically.",
+          "initGithubState() is not yet called from the ingest path — it must be wired into ingestWorkflow() when the scheduler is updated to carry GithubServiceDeps. Until then, github_state columns remain NULL for new workflows; callers should treat NULL as disabled.",
+          "github_pr_state (open/closed/merged) is never written by the current implementation — PR polling is explicitly out of scope for feat-github which only covers creation. The column exists in the schema for future use."
+        ],
+        "known_risks": [
+          "The OctokitAdapter uses a dynamic import of @octokit/rest inside createPr(). If the package is missing at runtime (e.g. npm install was not run after pulling this commit), the import will throw a MODULE_NOT_FOUND error that surfaces as an uncaught promise rejection in the service layer — not a structured GithubApiError. The catch block in pr.ts only handles OctokitPrError; a MODULE_NOT_FOUND error will propagate as api_failed via the generic catch in service.ts, but the message will be the Node module resolution error rather than a meaningful GitHub API error.",
+          "The gh CLI fallback in service.ts is triggered only when the GITHUB_TOKEN source is active and Octokit returns 401 or 403. If the caller resolved via gh_auth (not GITHUB_TOKEN), the Octokit adapter is never called and the gh CLI path is taken directly — this is correct per spec but the code path through the service.ts conditional may be surprising to future readers: a gh_auth token is passed to ghCliAdapter.createPr(), not to octokitAdapter.",
+          "checkPushed uses git log origin/<branch>..<branch> which requires the remote to be named exactly origin. Repositories with non-standard remote names (e.g. upstream) will falsely report not-pushed. This matches the spec (which does not enumerate alternative remote names) but should be documented."
+        ]
+      }
+    ]
   }
 ]
