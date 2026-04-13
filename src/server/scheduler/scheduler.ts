@@ -51,6 +51,7 @@ import type { Stage, Phase } from '../../shared/types/config.js';
 import type { ProcessManager, SpawnHandle } from '../process/manager.js';
 import type { WorktreeManager } from '../worktree/manager.js';
 import type { RunCommandsOpts, RunCommandsResult, PrePostRunRecord } from '../prepost/runner.js';
+import type { ValidateArtifactsResult } from '../artifacts/validator.js';
 import type { ServerFrameType } from '../api/frames.js';
 import type { ItemStatePayload } from '../api/frames.js';
 import {
@@ -99,6 +100,18 @@ export type PromptAssemblerFn = (opts: {
 
 /** Injectable pre/post runner function (maps to runCommands from prepost/runner.ts). */
 export type PrePostRunnerFn = (opts: RunCommandsOpts) => Promise<RunCommandsResult>;
+
+/**
+ * Injectable artifact validator function.
+ * In production: calls validateArtifacts() from artifacts/validator.ts.
+ * In tests: returns a stub result.
+ *
+ * RC-4: called after session exit (exitCode === 0) and before post: commands.
+ */
+export type ArtifactValidatorFn = (
+  artifacts: import('../../shared/types/config.js').OutputArtifact[],
+  worktreePath: string,
+) => Promise<ValidateArtifactsResult>;
 
 /**
  * Broadcast function injected from the server layer.
@@ -167,6 +180,11 @@ export interface SchedulerOpts {
   prepostRunner: PrePostRunnerFn;
   assemblePrompt: PromptAssemblerFn;
   broadcast: BroadcastFn;
+  /**
+   * Injectable artifact validator. Defaults to the production validateArtifacts()
+   * from artifacts/validator.ts. Override in tests to control validation results.
+   */
+  artifactValidator?: ArtifactValidatorFn;
   /** Poll interval in ms. Default: 500. */
   pollIntervalMs?: number;
   /** Grace period for graceful shutdown drain (ms). Default: 10 000. */
@@ -185,6 +203,7 @@ export class Scheduler {
   private readonly processManager: ProcessManager;
   private readonly worktreeManager: WorktreeManager;
   private readonly prepostRunner: PrePostRunnerFn;
+  private readonly artifactValidatorFn: ArtifactValidatorFn;
   private readonly assemblePromptFn: PromptAssemblerFn;
   private readonly broadcastFn: BroadcastFn;
   private readonly pollIntervalMs: number;
@@ -212,6 +231,16 @@ export class Scheduler {
     this.processManager = opts.processManager;
     this.worktreeManager = opts.worktreeManager;
     this.prepostRunner = opts.prepostRunner;
+    // Default to the production validateArtifacts if no override is provided.
+    if (opts.artifactValidator) {
+      this.artifactValidatorFn = opts.artifactValidator;
+    } else {
+      // Lazy import so tests that supply a stub never load AJV.
+      this.artifactValidatorFn = async (artifacts, worktreePath) => {
+        const { validateArtifacts } = await import('../artifacts/validator.js');
+        return validateArtifacts(artifacts, worktreePath);
+      };
+    }
     this.assemblePromptFn = opts.assemblePrompt;
     this.broadcastFn = opts.broadcast;
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -894,6 +923,40 @@ export class Scheduler {
     const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
     if (exitCode === 0) {
+      // --- Artifact validators (RC-4: after session exit, before post commands) ---
+      const artifacts = phaseConfig.output_artifacts ?? [];
+      const validationResult = await this.artifactValidatorFn(artifacts, worktreePath);
+
+      if (validationResult.kind === 'validator_fail') {
+        // One or more artifacts failed validation — fire validator_fail event.
+        // Post commands are skipped (they run only when all validators pass).
+        const result = applyItemTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: freshItem.id,
+          sessionId,
+          stage: freshItem.stage_id,
+          phase: freshItem.current_phase ?? '',
+          attempt,
+          event: 'validator_fail',
+          guardCtx: { prepostRuns: preRuns },
+        });
+        this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'validator_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
+      }
+
       // --- Post: commands (AC-5) ---
       let postResult: RunCommandsResult = { kind: 'complete', runs: [] };
       if (phaseConfig.post && phaseConfig.post.length > 0) {

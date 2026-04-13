@@ -16,6 +16,12 @@
  *   AC-8  stop() resolves after cancelling in-flight sessions (graceful drain).
  *   RC-5  Concurrency limit (maxParallel=1) prevents over-scheduling.
  *   RC-6  All production deps are injectable (verified by using stubs throughout).
+ *
+ *   feat-artifact-validators:
+ *   AV-1  Passing validators_ok → workflow reaches completed.
+ *   AV-2  validator_fail → item transitions to awaiting_retry (budget > 0).
+ *   AV-3  validator_fail → post commands are NOT called.
+ *   AV-4  Validators called with phase output_artifacts + worktreePath.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -30,6 +36,7 @@ import type { DbPool } from '../../src/server/storage/db.js';
 import type { ProcessManager, SpawnHandle, SpawnOpts } from '../../src/server/process/manager.js';
 import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/server/worktree/manager.js';
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
+import type { ArtifactValidatorFn } from '../../src/server/scheduler/scheduler.js';
 import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 import { runRecord } from '../../src/cli/record.js';
@@ -1077,5 +1084,232 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
     expect(rows[0].exit_code).toBe(0);
 
     await sched.stop();
+  }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// feat-artifact-validators: artifact validation wiring in _runSession
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a scheduler with an injectable artifact validator and a minimal
+ * process manager that exits cleanly.
+ */
+function buildValidatorScheduler(opts: {
+  artifactValidator: ArtifactValidatorFn;
+  postRunnerSpy?: { called: boolean };
+  config?: ResolvedConfig;
+}): TestSchedulerResult {
+  const broadcasts: TestSchedulerResult['broadcasts'] = [];
+
+  const scheduler = new Scheduler({
+    db,
+    config: opts.config ?? makeConfig(),
+    processManager: new StubProcessManager([{ type: 'exit', code: 0 }]),
+    worktreeManager: makeWorktreeManager(),
+    prepostRunner: async () => {
+      if (opts.postRunnerSpy) opts.postRunnerSpy.called = true;
+      return { kind: 'complete', runs: [] };
+    },
+    assemblePrompt: async () => 'stub prompt',
+    artifactValidator: opts.artifactValidator,
+    broadcast: (workflowId, sessionId, frameType, payload) => {
+      broadcasts.push({ workflowId, sessionId, frameType, payload });
+    },
+    maxParallel: 4,
+    pollIntervalMs: 50,
+    gracePeriodMs: 500,
+  });
+
+  activeSchedulers.push(scheduler);
+  return { scheduler, broadcasts };
+}
+
+describe('feat-artifact-validators: scheduler wiring', () => {
+  // AV-1: validators pass → workflow completes normally.
+  it('AV-1: validators_ok → item reaches completed', async () => {
+    const { scheduler } = buildValidatorScheduler({
+      artifactValidator: async () => ({ kind: 'validators_ok' }),
+    });
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    const item = db.reader()
+      .prepare('SELECT status FROM items WHERE workflow_id = ?')
+      .get(workflowId) as { status: string } | undefined;
+    expect(item?.status).toBe('complete');
+  }, 15_000);
+
+  // AV-2: validators fail → item transitions to awaiting_retry (budget > 0).
+  it('AV-2: validator_fail → item enters awaiting_retry', async () => {
+    const { scheduler } = buildValidatorScheduler({
+      artifactValidator: async () => ({
+        kind: 'validator_fail',
+        failures: [
+          {
+            artifactPath: 'output.json',
+            schemaId: 'https://example.com/schemas/test',
+            errors: [
+              {
+                instancePath: '',
+                schemaPath: '#/required',
+                keyword: 'required',
+                params: { missingProperty: 'name' },
+                message: 'must have required property name',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              } as any,
+            ],
+          },
+        ],
+      }),
+    });
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const item = db.reader()
+        .prepare('SELECT status FROM items WHERE workflow_id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      // Item should be awaiting_retry (default retry ladder has budget)
+      return item?.status === 'awaiting_retry';
+    }, { timeoutMs: 10_000 });
+
+    const item = db.reader()
+      .prepare('SELECT status, retry_count FROM items WHERE workflow_id = ?')
+      .get(workflowId) as { status: string; retry_count: number } | undefined;
+    expect(item?.status).toBe('awaiting_retry');
+    expect(item?.retry_count).toBeGreaterThan(0);
+  }, 15_000);
+
+  // AV-3: validator_fail → post commands NOT called.
+  it('AV-3: validator_fail → post runner is not invoked', async () => {
+    const spy = { called: false };
+
+    const { scheduler } = buildValidatorScheduler({
+      artifactValidator: async () => ({
+        kind: 'validator_fail',
+        failures: [
+          {
+            artifactPath: 'missing.json',
+            schemaId: 'missing.json',
+            errors: [
+              {
+                instancePath: '',
+                schemaPath: '#',
+                keyword: 'required',
+                params: {},
+                message: 'required artifact not found on disk: missing.json',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              } as any,
+            ],
+          },
+        ],
+      }),
+      postRunnerSpy: spy,
+      config: makeConfig({
+        phases: {
+          'phase-one': {
+            command: 'claude',
+            args: ['--output-format', 'stream-json'],
+            prompt_template: 'Do the thing.',
+            post: [
+              {
+                name: 'verify',
+                run: ['true'],
+                actions: { '*': 'continue' },
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const item = db.reader()
+        .prepare('SELECT status FROM items WHERE workflow_id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return item?.status === 'awaiting_retry';
+    }, { timeoutMs: 10_000 });
+
+    // The post runner spy must NOT have been called.
+    expect(spy.called).toBe(false);
+  }, 15_000);
+
+  // AV-4: artifact validator called with the correct artifacts and worktreePath.
+  it('AV-4: validator receives phase output_artifacts and worktreePath', async () => {
+    let capturedArtifacts: import('../../src/shared/types/config.js').OutputArtifact[] | null = null;
+    let capturedWorktreePath: string | null = null;
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(wt, { recursive: true });
+
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          output_artifacts: [
+            { path: 'output.json', schema: '/tmp/schema.json', required: false },
+          ],
+        },
+      },
+    });
+
+    const scheduler = new Scheduler({
+      db,
+      config,
+      processManager: new StubProcessManager([{ type: 'exit', code: 0 }]),
+      worktreeManager: {
+        async createWorktree(): Promise<{ branchName: string; worktreePath: string }> {
+          return { branchName: 'yoke/test', worktreePath: wt };
+        },
+        async runBootstrap(): Promise<{ type: string }> {
+          return { type: 'bootstrap_ok' };
+        },
+        async cleanup(): Promise<{ worktreeRemoved: boolean; branchRetained: boolean }> {
+          return { worktreeRemoved: true, branchRetained: false };
+        },
+      } as unknown as import('../../src/server/worktree/manager.js').WorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      artifactValidator: async (artifacts, worktreePath) => {
+        capturedArtifacts = artifacts;
+        capturedWorktreePath = worktreePath;
+        return { kind: 'validators_ok' };
+      },
+      broadcast: () => {},
+      maxParallel: 4,
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(scheduler);
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    expect(capturedArtifacts).not.toBeNull();
+    expect(capturedArtifacts).toHaveLength(1);
+    expect(capturedArtifacts![0].path).toBe('output.json');
+    // worktreePath is the worktree directory, not the configDir
+    expect(capturedWorktreePath).toBe(wt);
   }, 15_000);
 });
