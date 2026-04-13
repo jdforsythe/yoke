@@ -73,6 +73,8 @@ import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream
 import { classify } from '../state-machine/classifier.js';
 import { FixtureWriter } from '../process/fixture-writer.js';
 import { readRecordMarker, clearRecordMarker } from '../process/record-marker.js';
+import { NoopFaultInjector, FaultInjectionError } from '../fault/injector.js';
+import type { FaultInjector } from '../fault/injector.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -191,6 +193,14 @@ export interface SchedulerOpts {
   gracePeriodMs?: number;
   /** Max concurrent sessions. Default: 4. */
   maxParallel?: number;
+  /**
+   * Fault injection seam for crash-recovery testing.
+   * Defaults to NoopFaultInjector (zero overhead in production).
+   * Pass an ActiveFaultInjector to trigger crash recovery paths in tests.
+   * The caller (not this class) reads YOKE_FAULT_INJECT from the environment
+   * and constructs the appropriate implementation (RC-4).
+   */
+  faultInjector?: FaultInjector;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +216,7 @@ export class Scheduler {
   private readonly artifactValidatorFn: ArtifactValidatorFn;
   private readonly assemblePromptFn: PromptAssemblerFn;
   private readonly broadcastFn: BroadcastFn;
+  private readonly faultInjector: FaultInjector;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -243,6 +254,7 @@ export class Scheduler {
     }
     this.assemblePromptFn = opts.assemblePrompt;
     this.broadcastFn = opts.broadcast;
+    this.faultInjector = opts.faultInjector ?? new NoopFaultInjector();
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
@@ -585,6 +597,15 @@ export class Scheduler {
         commands,
       });
 
+      // Checkpoint: bootstrap_ok (AC-2).
+      // Injecting a fault here simulates a crash between bootstrap succeeding
+      // and the bootstrap_ok transition being committed to SQLite.  The catch
+      // block below treats FaultInjectionError as bootstrap_fail so the item
+      // enters the bootstrap_fail recovery path without a scheduler restart.
+      if (bootstrapEvent.type === 'bootstrap_ok') {
+        this.faultInjector.check('bootstrap_ok');
+      }
+
       const result = applyItemTransition({
         db: this.db,
         workflowId: wf.id,
@@ -609,7 +630,24 @@ export class Scheduler {
         }
       }
     } catch (err) {
-      console.error(`[scheduler] bootstrap error for item ${item.id}:`, err);
+      if (err instanceof FaultInjectionError) {
+        // Fault injection at bootstrap_ok: simulate a crash before the
+        // bootstrap_ok transition is committed.  Fire bootstrap_fail so the
+        // item enters the bootstrap_fail recovery path (AC-2).
+        const result = applyItemTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: item.id,
+          sessionId: null,
+          stage: item.stage_id,
+          phase: item.current_phase ?? '',
+          attempt: item.retry_count + 1,
+          event: 'bootstrap_fail',
+        });
+        this._broadcastItemState(wf.id, item.id, item.stage_id, result);
+      } else {
+        console.error(`[scheduler] bootstrap error for item ${item.id}:`, err);
+      }
     }
     this.inFlight.delete(item.id);
   }
@@ -922,10 +960,19 @@ export class Scheduler {
     const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
     const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
+    try {
+
     if (exitCode === 0) {
       // --- Artifact validators (RC-4: after session exit, before post commands) ---
       const artifacts = phaseConfig.output_artifacts ?? [];
       const validationResult = await this.artifactValidatorFn(artifacts, worktreePath);
+
+      // Checkpoint: artifact_validators (AC-5).
+      // Injecting here simulates a crash after validators pass but before
+      // post commands run.  The session_ok catch path (below) handles the item.
+      if (validationResult.kind !== 'validator_fail') {
+        this.faultInjector.check('artifact_validators');
+      }
 
       if (validationResult.kind === 'validator_fail') {
         // One or more artifacts failed validation — fire validator_fail event.
@@ -973,6 +1020,17 @@ export class Scheduler {
       const allRuns: PrePostRunRecord[] = [...preRuns, ...postResult.runs];
 
       if (postResult.kind === 'complete') {
+        // Checkpoint: post_commands_ok — all post commands passed (AC-5).
+        // Injecting here simulates a crash between post commands completing
+        // and the session_ok transition being committed to SQLite.
+        this.faultInjector.check('post_commands_ok');
+
+        // Checkpoint: session_ok — commit the successful session outcome (AC-3).
+        // Injecting here simulates a crash immediately before session_ok is
+        // written to SQLite, triggering the crash-recovery restart projection
+        // path on the next scheduler start (stale PID in sessions table).
+        this.faultInjector.check('session_ok');
+
         // session_ok → complete (last phase) or in_progress (advance phase).
         const result = applyItemTransition({
           db: this.db,
@@ -1051,6 +1109,21 @@ export class Scheduler {
         this.retryAfterAt.set(freshItem.id, Date.now() + RETRY_BACKOFF_MS);
       }
       this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+    }
+
+    } catch (err) {
+      if (err instanceof FaultInjectionError) {
+        // Simulated crash: clean up I/O but leave the session row as 'running'
+        // with its PID intact.  On the next scheduler start, buildCrashRecovery
+        // probes the stale PID (ESRCH) and fires session_fail via the normal
+        // crash-recovery restart projection path (AC-3).
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        await logWriter.close();
+        this.inFlight.delete(item.id);
+        return;
+      }
+      throw err; // re-raise unexpected errors
     }
 
     // --- Wrap up session ---
