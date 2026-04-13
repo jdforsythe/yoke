@@ -71,7 +71,7 @@ import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
 import { classify } from '../state-machine/classifier.js';
 import { FixtureWriter } from '../process/fixture-writer.js';
-import { readRecordMarker, clearRecordMarker } from '../../cli/record.js';
+import { readRecordMarker, clearRecordMarker } from '../process/record-marker.js';
 
 // ---------------------------------------------------------------------------
 // Types
