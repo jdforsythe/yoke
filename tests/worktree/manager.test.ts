@@ -172,7 +172,6 @@ describe('createWorktree()', () => {
     const mgr = makeManager();
     const { worktreePath } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
     expect(fs.existsSync(worktreePath)).toBe(true);
     expect(fs.statSync(worktreePath).isDirectory()).toBe(true);
@@ -182,7 +181,6 @@ describe('createWorktree()', () => {
     const mgr = makeManager();
     const { branchName } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
     expect(branchName).toBe(makeBranchName(WORKFLOW_NAME, WORKFLOW_ID));
     expect(branchName).toMatch(/^yoke\/[a-z0-9-]+-[a-z0-9]{8}$/);
@@ -192,40 +190,9 @@ describe('createWorktree()', () => {
     const mgr = makeManager();
     const { worktreePath } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
     const expectedDir = makeWorktreeDirName(WORKFLOW_NAME, WORKFLOW_ID);
     expect(worktreePath).toBe(path.join(baseDir(), expectedDir));
-  });
-
-  it('writes branch_name and worktree_path to workflows row in a transaction (AC-1)', async () => {
-    const mgr = makeManager();
-    const { branchName, worktreePath } = await mgr.createWorktree(
-      { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
-    );
-
-    const row = db.reader().prepare('SELECT branch_name, worktree_path FROM workflows WHERE id = ?').get(WORKFLOW_ID) as
-      | { branch_name: string; worktree_path: string }
-      | undefined;
-
-    expect(row).toBeDefined();
-    expect(row!.branch_name).toBe(branchName);
-    expect(row!.worktree_path).toBe(worktreePath);
-  });
-
-  it('both columns are written atomically — reader sees both or neither', async () => {
-    // Spy on transaction to verify it's called exactly once for the DB write.
-    const txSpy = vi.spyOn(db, 'transaction');
-    const mgr = makeManager();
-
-    await mgr.createWorktree(
-      { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
-    );
-
-    // transaction() called once for the branch_name + worktree_path update.
-    expect(txSpy).toHaveBeenCalledTimes(1);
   });
 
   it('respects a custom branchPrefix', async () => {
@@ -237,7 +204,6 @@ describe('createWorktree()', () => {
         baseDir: baseDir(),
         branchPrefix: 'feat/',
       },
-      db,
     );
     expect(branchName).toMatch(/^feat\//);
   });
@@ -249,7 +215,6 @@ describe('createWorktree()', () => {
     const mgr = makeManager();
     await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: nonExistentBase },
-      db,
     );
     expect(fs.existsSync(nonExistentBase)).toBe(true);
   });
@@ -258,7 +223,6 @@ describe('createWorktree()', () => {
     const mgr = makeManager();
     const { worktreePath } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
     expect(path.isAbsolute(worktreePath)).toBe(true);
   });
@@ -276,7 +240,6 @@ describe('createWorktree()', () => {
     // slugify removes '..' — the slug becomes 'etc-passwd' which stays inside baseDir.
     const { worktreePath } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: maliciousName, baseDir: baseDir() },
-      db,
     );
     // Must stay under baseDir
     expect(worktreePath.startsWith(baseDir())).toBe(true);
@@ -292,7 +255,6 @@ describe('runBootstrap()', () => {
   async function createWorktree(mgr: WorktreeManager) {
     return mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
   }
 
@@ -301,8 +263,7 @@ describe('runBootstrap()', () => {
     const { worktreePath } = await createWorktree(mgr);
 
     const event = await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: ['true', 'true'] },
-      db,
+      { worktreePath, commands: ['true', 'true'] },
     );
 
     expect(event.type).toBe('bootstrap_ok');
@@ -313,8 +274,7 @@ describe('runBootstrap()', () => {
     const { worktreePath } = await createWorktree(mgr);
 
     const event = await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: ['false'] },
-      db,
+      { worktreePath, commands: ['false'] },
     );
 
     expect(event.type).toBe('bootstrap_fail');
@@ -332,7 +292,6 @@ describe('runBootstrap()', () => {
 
     const event = await mgr.runBootstrap(
       {
-        workflowId: WORKFLOW_ID,
         worktreePath,
         commands: [
           'false',
@@ -340,7 +299,6 @@ describe('runBootstrap()', () => {
           `touch ${sentinel}`,
         ],
       },
-      db,
     );
 
     expect(event.type).toBe('bootstrap_fail');
@@ -354,7 +312,6 @@ describe('runBootstrap()', () => {
     const orderFile = path.join(worktreePath, 'order.txt');
     const event = await mgr.runBootstrap(
       {
-        workflowId: WORKFLOW_ID,
         worktreePath,
         commands: [
           `printf 'first\n' >> ${orderFile}`,
@@ -362,51 +319,11 @@ describe('runBootstrap()', () => {
           `printf 'third\n' >> ${orderFile}`,
         ],
       },
-      db,
     );
 
     expect(event.type).toBe('bootstrap_ok');
     const content = fs.readFileSync(orderFile, 'utf-8');
     expect(content).toBe('first\nsecond\nthird\n');
-  });
-
-  it('inserts pending_attention with kind=bootstrap_failed on failure (AC-2)', async () => {
-    const mgr = makeManager();
-    const { worktreePath } = await createWorktree(mgr);
-
-    await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: ['false'] },
-      db,
-    );
-
-    const rows = db.reader()
-      .prepare(
-        `SELECT kind, payload FROM pending_attention
-          WHERE workflow_id = ? AND acknowledged_at IS NULL`,
-      )
-      .all(WORKFLOW_ID) as Array<{ kind: string; payload: string }>;
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe('bootstrap_failed');
-    const payload = JSON.parse(rows[0].payload);
-    expect(payload.failedCommand).toBe('false');
-    expect(payload.exitCode).toBe(1);
-  });
-
-  it('does NOT insert pending_attention when all commands succeed', async () => {
-    const mgr = makeManager();
-    const { worktreePath } = await createWorktree(mgr);
-
-    await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: ['true'] },
-      db,
-    );
-
-    const count = db.reader()
-      .prepare(`SELECT COUNT(*) AS n FROM pending_attention WHERE workflow_id = ?`)
-      .get(WORKFLOW_ID) as { n: number };
-
-    expect(count.n).toBe(0);
   });
 
   it('does NOT remove the worktree directory on bootstrap_fail (AC-3)', async () => {
@@ -416,8 +333,7 @@ describe('runBootstrap()', () => {
     const { worktreePath } = await createWorktree(mgr);
 
     await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: ['false'] },
-      db,
+      { worktreePath, commands: ['false'] },
     );
 
     // Worktree must still exist after bootstrap failure.
@@ -430,11 +346,9 @@ describe('runBootstrap()', () => {
 
     const event = await mgr.runBootstrap(
       {
-        workflowId: WORKFLOW_ID,
         worktreePath,
         commands: ['sh -c "echo oops >&2; exit 1"'],
       },
-      db,
     );
 
     if (event.type === 'bootstrap_fail') {
@@ -449,8 +363,7 @@ describe('runBootstrap()', () => {
     const { worktreePath } = await createWorktree(mgr);
 
     const event = await mgr.runBootstrap(
-      { workflowId: WORKFLOW_ID, worktreePath, commands: [] },
-      db,
+      { worktreePath, commands: [] },
     );
 
     expect(event.type).toBe('bootstrap_ok');
@@ -465,7 +378,6 @@ describe('runTeardown()', () => {
   async function createWorktree(mgr: WorktreeManager) {
     return mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
   }
 
@@ -533,7 +445,6 @@ describe('cleanup()', () => {
   async function createWorktree(mgr: WorktreeManager) {
     return mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
-      db,
     );
   }
 

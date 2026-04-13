@@ -1095,6 +1095,60 @@ export function buildCrashRecovery(db: DbPool): WorkflowRecoveryInfo[] {
 }
 
 // ---------------------------------------------------------------------------
+// applyWorktreeCreated — public
+// ---------------------------------------------------------------------------
+
+export interface ApplyWorktreeCreatedParams {
+  db: DbPool;
+  workflowId: string;
+  /** Full git branch name, e.g. 'yoke/add-auth-abc12345'. */
+  branchName: string;
+  /** Absolute path to the worktree directory. */
+  worktreePath: string;
+}
+
+/**
+ * Persists the result of WorktreeManager.createWorktree() to SQLite (AC-5).
+ *
+ * Writes `branch_name` and `worktree_path` to the workflows row, and appends
+ * a 'worktree_created' row to the events table — both inside a single
+ * db.transaction() (AC-6).
+ *
+ * The orchestration loop calls this immediately after
+ * WorktreeManager.createWorktree() returns, before applying bootstrap_ok or
+ * bootstrap_fail via applyItemTransition().
+ */
+export function applyWorktreeCreated(params: ApplyWorktreeCreatedParams): void {
+  params.db.transaction((writer) => {
+    const now = new Date().toISOString();
+
+    writer
+      .prepare(
+        `UPDATE workflows
+            SET branch_name   = ?,
+                worktree_path = ?,
+                updated_at    = ?
+          WHERE id = ?`,
+      )
+      .run(params.branchName, params.worktreePath, now, params.workflowId);
+
+    writeEvent(writer, {
+      ts: now,
+      workflowId: params.workflowId,
+      itemId: null,
+      sessionId: null,
+      stage: null,
+      phase: null,
+      attempt: null,
+      eventType: 'worktree_created',
+      level: 'info',
+      message: `Worktree created: ${params.worktreePath} on branch ${params.branchName}`,
+      extra: JSON.stringify({ branchName: params.branchName, worktreePath: params.worktreePath }),
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Internal: PID liveness probe (kill(pid, 0))
 // ---------------------------------------------------------------------------
 

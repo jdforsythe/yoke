@@ -30,6 +30,7 @@ import {
   applyItemTransition,
   checkStageComplete,
   buildCrashRecovery,
+  applyWorktreeCreated,
 } from '../../src/server/pipeline/engine.js';
 
 // ---------------------------------------------------------------------------
@@ -1566,5 +1567,76 @@ describe('session_fail — policy classifier', () => {
     expect(result.newState).toBe('awaiting_user');
     expect(result.retryMode).toBeUndefined();
     expect(getItem(itemId)?.status).toBe('awaiting_user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyWorktreeCreated — AC-5
+// ---------------------------------------------------------------------------
+
+describe('applyWorktreeCreated — AC-5', () => {
+  it('writes branch_name and worktree_path to workflows row', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyWorktreeCreated({
+      db: pool,
+      workflowId: wfId,
+      branchName: 'yoke/add-auth-abc12345',
+      worktreePath: '/tmp/worktrees/add-auth-abc12345',
+    });
+
+    const row = pool.writer
+      .prepare('SELECT branch_name, worktree_path FROM workflows WHERE id = ?')
+      .get(wfId) as { branch_name: string; worktree_path: string };
+
+    expect(row.branch_name).toBe('yoke/add-auth-abc12345');
+    expect(row.worktree_path).toBe('/tmp/worktrees/add-auth-abc12345');
+  });
+
+  it('writes a worktree_created event row (AC-6 — events for every mutation)', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyWorktreeCreated({
+      db: pool,
+      workflowId: wfId,
+      branchName: 'yoke/feat-abc12345',
+      worktreePath: '/tmp/worktrees/feat-abc12345',
+    });
+
+    const event = pool.writer
+      .prepare(
+        "SELECT event_type, workflow_id FROM events WHERE workflow_id = ? AND event_type = 'worktree_created'",
+      )
+      .get(wfId) as { event_type: string; workflow_id: string } | undefined;
+
+    expect(event).toBeDefined();
+    expect(event!.event_type).toBe('worktree_created');
+    expect(event!.workflow_id).toBe(wfId);
+  });
+
+  it('both writes are committed atomically — reader sees both or neither (AC-6)', () => {
+    const wfId = makeWfId();
+    insertWorkflow(wfId);
+
+    applyWorktreeCreated({
+      db: pool,
+      workflowId: wfId,
+      branchName: 'yoke/atomic-abc12345',
+      worktreePath: '/tmp/worktrees/atomic-abc12345',
+    });
+
+    // Both the workflows update and the events row must be visible via the
+    // read-only connection (WAL snapshot after commit).
+    const wfRow = pool.reader()
+      .prepare('SELECT branch_name FROM workflows WHERE id = ?')
+      .get(wfId) as { branch_name: string };
+    const evtCount = pool.reader()
+      .prepare("SELECT COUNT(*) AS n FROM events WHERE workflow_id = ? AND event_type = 'worktree_created'")
+      .get(wfId) as { n: number };
+
+    expect(wfRow.branch_name).toBe('yoke/atomic-abc12345');
+    expect(evtCount.n).toBe(1);
   });
 });

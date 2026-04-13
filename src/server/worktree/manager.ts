@@ -28,7 +28,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DbPool } from '../storage/db.js';
 import { makeBranchName, makeWorktreeDirName } from './branch.js';
 
 const execFileAsync = promisify(execFile);
@@ -91,7 +90,6 @@ export interface CreateWorktreeOpts {
 }
 
 export interface RunBootstrapOpts {
-  workflowId: string;
   worktreePath: string;
   /** Shell command strings from ResolvedConfig.worktrees.bootstrap.commands. */
   commands: string[];
@@ -160,13 +158,14 @@ export class WorktreeManager {
    * Branch name:    yoke/<slug>-<shortid>
    * Worktree path:  <baseDir>/<slug>-<shortid>  (absolute, validated)
    *
-   * After the worktree is created, writes branch_name and worktree_path to
-   * the workflows row inside a single database transaction (AC-1).
+   * Returns { branchName, worktreePath } for the caller (Pipeline Engine) to
+   * persist via applyWorktreeCreated().  This method does NOT write to SQLite —
+   * the Pipeline Engine is the sole SQLite mutator (AC-5).
    *
    * @throws {WorktreeError} kind='path_traversal' if computed path escapes baseDir.
    * @throws {WorktreeError} kind='git_error' if git worktree add fails.
    */
-  async createWorktree(opts: CreateWorktreeOpts, db: DbPool): Promise<WorktreeInfo> {
+  async createWorktree(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
     const { workflowId, workflowName, baseDir, branchPrefix = 'yoke/' } = opts;
 
     const branchName = makeBranchName(workflowName, workflowId, branchPrefix);
@@ -197,19 +196,6 @@ export class WorktreeManager {
       );
     }
 
-    // Write branch_name and worktree_path inside a single transaction (AC-1).
-    db.transaction((writer) => {
-      writer
-        .prepare(
-          `UPDATE workflows
-              SET branch_name   = ?,
-                  worktree_path = ?,
-                  updated_at    = ?
-            WHERE id = ?`,
-        )
-        .run(branchName, worktreePath, new Date().toISOString(), workflowId);
-    });
-
     return { branchName, worktreePath };
   }
 
@@ -224,50 +210,32 @@ export class WorktreeManager {
    *   bootstrap_ok   — all commands exited 0.
    *   bootstrap_fail — a command exited non-zero; subsequent commands are skipped.
    *
-   * On bootstrap_fail: inserts a pending_attention row (kind='bootstrap_failed')
-   * so the dashboard banner fires (AC-2).
+   * The returned event type is what the Pipeline Engine passes to applyItemTransition():
+   *   applyItemTransition({ event: event.type, ... })
+   * This method does NOT write to SQLite — the Pipeline Engine is the sole SQLite
+   * mutator (AC-5).  The bootstrap_fail transition already carries the
+   * 'insert pending_attention{kind=bootstrap_failed}' side-effect label in the
+   * TRANSITIONS table, so the engine handles that write.
    *
-   * The returned event type is what the Pipeline Engine passes to transition():
-   *   transition('bootstrapping', event.type)
    * This module never calls transition() itself (RC-1).
    *
    * AC-3 (bootstrap_failed never auto-cleans) is enforced by the state machine:
    * the Pipeline Engine only calls cleanup() on transitions that lead to
    * cleanup side effects; bootstrap_failed has no such transition.
    */
-  async runBootstrap(opts: RunBootstrapOpts, db: DbPool): Promise<BootstrapEvent> {
-    const { workflowId, worktreePath, commands } = opts;
+  async runBootstrap(opts: RunBootstrapOpts): Promise<BootstrapEvent> {
+    const { worktreePath, commands } = opts;
 
     for (const cmd of commands) {
       const result = await this._runShellCommand(cmd, worktreePath);
 
       if (result.exitCode !== 0) {
-        const event: BootstrapEvent = {
+        return {
           type: 'bootstrap_fail',
           failedCommand: cmd,
           exitCode: result.exitCode ?? 1,
           stderr: result.stderr,
         };
-
-        // Insert pending_attention so the dashboard banner fires (AC-2).
-        db.transaction((writer) => {
-          writer
-            .prepare(
-              `INSERT INTO pending_attention (workflow_id, kind, payload, created_at)
-               VALUES (?, 'bootstrap_failed', ?, ?)`,
-            )
-            .run(
-              workflowId,
-              JSON.stringify({
-                failedCommand: cmd,
-                exitCode: result.exitCode,
-                stderr: result.stderr,
-              }),
-              new Date().toISOString(),
-            );
-        });
-
-        return event;
       }
     }
 
