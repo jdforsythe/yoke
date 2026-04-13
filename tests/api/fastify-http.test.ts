@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createServer, type ServerHandle } from '../../src/server/api/server.js';
+import { createServer, type ServerHandle, type AckAttentionResult } from '../../src/server/api/server.js';
 import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 
@@ -35,7 +35,21 @@ beforeEach(async () => {
   ).pathname;
   await applyMigrations(db.writer, migrationsDir);
 
-  handle = await createServer(db);
+  // Inject the ackAttention callback so the API layer has no write path (RC-3).
+  // The callback owns the pending_attention read + write.
+  handle = await createServer(db, {
+    ackAttention: (workflowId, attentionId): AckAttentionResult => {
+      const row = db.reader()
+        .prepare('SELECT id, acknowledged_at FROM pending_attention WHERE id = ? AND workflow_id = ?')
+        .get(attentionId, workflowId) as { id: number; acknowledged_at: string | null } | undefined;
+      if (!row) return { status: 'not_found' };
+      if (row.acknowledged_at) return { status: 'already_acknowledged', id: attentionId };
+      db.writer
+        .prepare("UPDATE pending_attention SET acknowledged_at = datetime('now') WHERE id = ?")
+        .run(attentionId);
+      return { status: 'acknowledged', id: attentionId };
+    },
+  });
   // Use inject() — no listen() needed for HTTP tests.
   await handle.fastify.ready();
 });
@@ -444,7 +458,27 @@ describe('POST /api/workflows/:id/attention/:attentionId/ack', () => {
 });
 
 // ---------------------------------------------------------------------------
-// RC: read-only — no writes from API except attention ack
+// RC-3: no writes from API layer — ackAttention callback required
+// ---------------------------------------------------------------------------
+
+describe('RC-3: attention ack requires injected callback', () => {
+  it('returns 501 when ackAttention callback is not provided (RC-3)', async () => {
+    // Server created WITHOUT the ackAttention callback — API layer has no write path.
+    const bareHandle = await createServer(db);
+    await bareHandle.fastify.ready();
+    const id = insertWorkflow();
+    const attId = insertAttention(id);
+    const res = await bareHandle.fastify.inject({
+      method: 'POST',
+      url: `/api/workflows/${id}/attention/${attId}/ack`,
+    });
+    expect(res.statusCode).toBe(501);
+    await bareHandle.fastify.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RC: read-only — no writes from API layer (RC-3)
 // ---------------------------------------------------------------------------
 
 describe('RC: API uses read-only connection for queries', () => {

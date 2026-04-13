@@ -9,9 +9,9 @@
  *
  * Design invariants:
  *   - All reads use db.reader() (read-only connection).
- *   - The only SQLite write in this module is attention ack (sets
- *     acknowledged_at on pending_attention rows); all workflow/item state
- *     transitions are the pipeline engine's domain.
+ *   - No SQLite writes in this module (RC-3). The attention ack endpoint
+ *     delegates the write to an injected AckAttentionFn callback so the API
+ *     layer itself has no write path.
  *   - No authentication middleware (D57).
  *   - No 0.0.0.0 bind path exists anywhere in this file.
  */
@@ -79,14 +79,50 @@ export interface ServerHandle {
 }
 
 /**
+ * Result returned by AckAttentionFn to the API layer.
+ * The callback owns both the read and the write for the ack operation so that
+ * the API layer has no SQLite write path (RC-3).
+ */
+export type AckAttentionResult =
+  | { status: 'acknowledged'; id: number }
+  | { status: 'already_acknowledged'; id: number }
+  | { status: 'not_found' };
+
+/**
+ * Callback that handles POST /api/workflows/:id/attention/:attentionId/ack.
+ * Implementations must: verify the attention item exists and belongs to
+ * workflowId, check acknowledged_at, write acknowledged_at = datetime('now')
+ * if not already set, and return the appropriate result.
+ *
+ * The write MUST NOT happen inside the API layer (RC-3). Callers inject this
+ * callback so the actual SQLite write lives in the pipeline engine layer.
+ */
+export type AckAttentionFn = (workflowId: string, attentionId: number) => AckAttentionResult;
+
+/**
+ * Optional callbacks injected into the server at creation time.
+ * These allow the API layer to delegate writes to the pipeline engine layer
+ * without the API module having any SQLite write path (RC-3).
+ */
+export interface ServerCallbacks {
+  /**
+   * Called when a client POSTs to
+   * /api/workflows/:id/attention/:attentionId/ack.
+   * If omitted, the endpoint returns 501 Not Implemented.
+   */
+  ackAttention?: AckAttentionFn;
+}
+
+/**
  * Creates and configures the Fastify server.
  *
  * Callers must await fastify.listen(...) to start accepting connections.
  * The returned instance's .server.address() gives the bound port.
  *
- * @param db  DbPool opened by the caller.
+ * @param db         DbPool opened by the caller.
+ * @param callbacks  Optional injected handlers for write operations (RC-3).
  */
-export async function createServer(db: DbPool): Promise<ServerHandle> {
+export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}): Promise<ServerHandle> {
   const fastify = Fastify({ logger: false });
 
   // Shared state for the WS layer.
@@ -353,6 +389,7 @@ export async function createServer(db: DbPool): Promise<ServerHandle> {
 
   // POST /api/workflows/:id/attention/:attentionId/ack
   // Clear a pending attention item.
+  // The write is delegated to callbacks.ackAttention (RC-3 — no writes in API layer).
   fastify.post(
     '/api/workflows/:id/attention/:attentionId/ack',
     async (
@@ -363,30 +400,19 @@ export async function createServer(db: DbPool): Promise<ServerHandle> {
       const attId = parseInt(attentionId, 10);
       if (!isFinite(attId)) return badRequest(reply, 'attentionId must be an integer');
 
-      const reader = db.reader();
-      const wf = reader.prepare('SELECT id FROM workflows WHERE id = ?').get(id) as { id: string } | undefined;
-      if (!wf) return notFound(reply, 'workflow not found');
-
-      const row = reader
-        .prepare('SELECT id, acknowledged_at FROM pending_attention WHERE id = ? AND workflow_id = ?')
-        .get(attId, id) as { id: number; acknowledged_at: string | null } | undefined;
-
-      if (!row) return notFound(reply, 'attention item not found');
-
-      // Already acknowledged — idempotent.
-      if (row.acknowledged_at) {
-        return reply.send({ status: 'already_acknowledged', id: attId });
+      if (!callbacks.ackAttention) {
+        return reply.status(501).send({ error: 'attention ack not configured' });
       }
 
-      // This is the one write from the API layer: acknowledging a pending
-      // attention item is an operational action, not a state-machine transition.
-      db.writer
-        .prepare(
-          "UPDATE pending_attention SET acknowledged_at = datetime('now') WHERE id = ?",
-        )
-        .run(attId);
+      // Verify the workflow exists using the read-only connection.
+      const wf = db.reader().prepare('SELECT id FROM workflows WHERE id = ?').get(id) as { id: string } | undefined;
+      if (!wf) return notFound(reply, 'workflow not found');
 
-      return reply.send({ status: 'acknowledged', id: attId });
+      // Delegate the pending_attention read + write to the injected callback
+      // so that no SQLite write occurs inside the API layer (RC-3).
+      const result = callbacks.ackAttention(id, attId);
+      if (result.status === 'not_found') return notFound(reply, 'attention item not found');
+      return reply.send(result);
     },
   );
 
@@ -406,6 +432,7 @@ export async function createServer(db: DbPool): Promise<ServerHandle> {
 export async function listenServer(
   db: DbPool,
   opts: ServerOptions = {},
+  callbacks: ServerCallbacks = {},
 ): Promise<FastifyInstance> {
   const host = opts.host ?? '127.0.0.1';
   if (host !== '127.0.0.1') {
@@ -413,7 +440,7 @@ export async function listenServer(
   }
   const port = opts.port ?? 0;
 
-  const { fastify } = await createServer(db);
+  const { fastify } = await createServer(db, callbacks);
   await fastify.listen({ host, port });
   return fastify;
 }
