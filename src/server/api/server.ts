@@ -23,6 +23,7 @@ import { readLogPage } from '../session-log/reader.js';
 import {
   SessionSeqStore,
   BackfillBuffer,
+  WsClientRegistry,
   createWsHandler,
 } from './ws.js';
 import { IdempotencyStore } from './idempotency.js';
@@ -72,7 +73,12 @@ export interface ServerState {
   seqStore: SessionSeqStore;
   backfillBuffer: BackfillBuffer;
   idempotency: IdempotencyStore;
+  /** Client registry for scheduler-driven broadcast. */
+  registry: WsClientRegistry;
 }
+
+// Re-export so callers don't need a separate import.
+export type { WsClientRegistry } from './ws.js';
 
 export interface ServerHandle {
   fastify: FastifyInstance;
@@ -130,6 +136,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
   const seqStore = new SessionSeqStore();
   const backfillBuffer = new BackfillBuffer();
   const idempotency = new IdempotencyStore();
+  const registry = new WsClientRegistry(seqStore, backfillBuffer);
 
   // Register WebSocket plugin.
   await fastify.register(fastifyWebsocket);
@@ -137,7 +144,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
   // WebSocket route at /stream (§4 Lifecycle).
   // Registered directly on the root fastify instance so it inherits the
   // @fastify/websocket plugin decoration without sub-plugin scoping issues.
-  const wsHandler = createWsHandler({ db, idempotency, seqStore, backfillBuffer });
+  const wsHandler = createWsHandler({ db, idempotency, seqStore, backfillBuffer, registry });
   fastify.get('/stream', { websocket: true }, (connection: SocketStream) => {
     wsHandler(connection.socket);
   });
@@ -420,7 +427,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
     },
   );
 
-  return { fastify, state: { seqStore, backfillBuffer, idempotency } };
+  return { fastify, state: { seqStore, backfillBuffer, idempotency, registry } };
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import type {
   AckPayload,
   PingPayload,
   ServerFrame,
+  ServerFrameType,
   WorkflowSnapshotPayload,
   StageProjection,
   ItemProjection,
@@ -129,6 +130,86 @@ export class BackfillBuffer {
 }
 
 // ---------------------------------------------------------------------------
+// WsClientRegistry — tracks subscriptions for scheduler broadcast
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks active WebSocket connections and their workflow subscriptions.
+ *
+ * The pipeline engine / scheduler calls broadcast() to push frames to all
+ * clients subscribed to a workflow without knowing about individual sockets.
+ *
+ * The registry is created once per server instance and shared across all
+ * connections. createWsHandler() registers each new socket on connect.
+ */
+export class WsClientRegistry {
+  private readonly clients = new Map<WebSocket, Set<string>>();
+
+  constructor(
+    private readonly seqStore: SessionSeqStore,
+    private readonly backfillBuffer: BackfillBuffer,
+  ) {}
+
+  /**
+   * Registers a newly-connected socket. Sets up the 'close' handler to
+   * automatically deregister it. Called from createWsHandler on connect.
+   */
+  register(socket: WebSocket): void {
+    this.clients.set(socket, new Set());
+    socket.on('close', () => {
+      this.clients.delete(socket);
+    });
+  }
+
+  /** Records that `socket` is subscribed to `workflowId`. */
+  subscribe(socket: WebSocket, workflowId: string): void {
+    this.clients.get(socket)?.add(workflowId);
+  }
+
+  /** Records that `socket` is no longer subscribed to `workflowId`. */
+  unsubscribe(socket: WebSocket, workflowId: string): void {
+    this.clients.get(socket)?.delete(workflowId);
+  }
+
+  /**
+   * Broadcasts a frame to all clients subscribed to `workflowId`.
+   *
+   * For session-scoped frames (sessionId non-null):
+   *   - Assigns the next monotonic seq from seqStore.
+   *   - Pushes the frame into the backfillBuffer for reconnecting clients.
+   * For workflow-scope frames (sessionId null): seq is 0.
+   */
+  broadcast(
+    workflowId: string,
+    sessionId: string | null,
+    frameType: ServerFrameType,
+    payload: unknown,
+  ): void {
+    const seq = sessionId ? this.seqStore.next(sessionId) : 0;
+    const frame = makeFrame(frameType, payload, {
+      workflowId,
+      ...(sessionId ? { sessionId } : {}),
+      seq,
+    });
+
+    if (sessionId) {
+      this.backfillBuffer.push(sessionId, frame);
+    }
+
+    for (const [socket, subs] of this.clients) {
+      if (subs.has(workflowId) && socket.readyState === socket.OPEN) {
+        socket.send(JSON.stringify(frame));
+      }
+    }
+  }
+
+  /** Number of currently registered sockets. Useful for tests. */
+  get size(): number {
+    return this.clients.size;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // WsHandlerContext — shared state injected into each connection
 // ---------------------------------------------------------------------------
 
@@ -137,6 +218,8 @@ export interface WsHandlerContext {
   idempotency: IdempotencyStore;
   seqStore: SessionSeqStore;
   backfillBuffer: BackfillBuffer;
+  /** Optional client registry for broadcast. Added when the scheduler is running. */
+  registry?: WsClientRegistry;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +414,7 @@ function handleSubscribe(
   }
 
   subscriptions.set(workflowId, true);
+  ctx.registry?.subscribe(socket, workflowId);
 
   // Send workflow.snapshot (non-session frame: seq:0).
   send(
@@ -380,11 +464,12 @@ function handleUnsubscribe(
   socket: WebSocket,
   frame: ClientFrame<UnsubscribePayload>,
   subscriptions: Map<string, boolean>,
+  ctx: WsHandlerContext,
 ): void {
   subscriptions.delete(frame.payload.workflowId);
+  ctx.registry?.unsubscribe(socket, frame.payload.workflowId);
   // The server now stops sending workflow-scoped frames for this workflowId.
   // No acknowledgment frame is sent — protocol does not require one.
-  void socket; // connection stays open
 }
 
 function handleControl(
@@ -444,6 +529,9 @@ export function createWsHandler(ctx: WsHandlerContext) {
     // Per-connection subscription state (workflowId → true).
     const subscriptions = new Map<string, boolean>();
 
+    // Register this socket in the client registry so broadcast() reaches it.
+    ctx.registry?.register(socket);
+
     // Send hello immediately on connect before any other frame (AC-1, §2.1).
     send(
       socket,
@@ -486,6 +574,7 @@ export function createWsHandler(ctx: WsHandlerContext) {
             socket,
             frame as ClientFrame<UnsubscribePayload>,
             subscriptions,
+            ctx,
           );
           break;
 
