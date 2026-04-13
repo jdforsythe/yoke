@@ -8,10 +8,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { openDbPool } from '../../src/server/storage/db.js';
+import { applyMigrations } from '../../src/server/storage/migrate.js';
 import {
   SessionLogWriter,
   makeFingerprint,
   makeSessionLogPath,
+  openSessionLog,
 } from '../../src/server/session-log/writer.js';
 
 let tmpDir: string;
@@ -232,5 +235,99 @@ describe('SessionLogWriter — write semantics', () => {
     });
     expect(logPath.startsWith('/home/user/.yoke/')).toBe(true);
     expect(logPath).not.toContain('worktree');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// openSessionLog — AC-4: sets sessions.session_log_path and opens the writer
+// ---------------------------------------------------------------------------
+
+describe('openSessionLog (AC-4)', () => {
+  const migrationsDir = new URL(
+    '../../src/server/storage/migrations/',
+    import.meta.url,
+  ).pathname;
+
+  /** Set up a minimal DB with a sessions row. */
+  async function makeDb(dbPath: string, sessionId: string): Promise<ReturnType<typeof openDbPool>> {
+    const db = openDbPool(dbPath);
+    await applyMigrations(db.writer, migrationsDir);
+    db.writer
+      .prepare(
+        `INSERT INTO workflows (id, name, spec, pipeline, config, status, created_at, updated_at)
+         VALUES ('wf-1', 'test', '{}', '{}', '{}', 'running', datetime('now'), datetime('now'))`,
+      )
+      .run();
+    db.writer
+      .prepare(
+        `INSERT INTO sessions
+           (id, workflow_id, stage, phase, agent_profile, started_at, status)
+         VALUES (?, 'wf-1', 'stage-1', 'phase-1', 'default', datetime('now'), 'running')`,
+      )
+      .run(sessionId);
+    return db;
+  }
+
+  it('sets sessions.session_log_path in SQLite before returning (AC-4)', async () => {
+    const db = await makeDb(path.join(tmpDir, 'open-session.db'), 'ses-open-1');
+    try {
+      const { writer, logPath } = await openSessionLog(db, {
+        configDir: '/project',
+        workflowId: 'wf-1',
+        sessionId: 'ses-open-1',
+        homeDir: tmpDir,
+      });
+      await writer.close();
+
+      const row = db.reader()
+        .prepare('SELECT session_log_path FROM sessions WHERE id = ?')
+        .get('ses-open-1') as { session_log_path: string } | undefined;
+
+      expect(row).toBeDefined();
+      expect(row!.session_log_path).toBe(logPath);
+      expect(row!.session_log_path.endsWith('ses-open-1.jsonl')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('returned writer is already open — writeLine() works immediately', async () => {
+    const db = await makeDb(path.join(tmpDir, 'open-session2.db'), 'ses-open-2');
+    try {
+      const { writer } = await openSessionLog(db, {
+        configDir: '/project',
+        workflowId: 'wf-1',
+        sessionId: 'ses-open-2',
+        homeDir: tmpDir,
+      });
+      await writer.writeLine('{"type":"text"}');
+      await writer.close();
+
+      // The log path is the one stored in SQLite.
+      const { session_log_path } = db.reader()
+        .prepare('SELECT session_log_path FROM sessions WHERE id = ?')
+        .get('ses-open-2') as { session_log_path: string };
+
+      const content = await fs.promises.readFile(session_log_path, 'utf8');
+      expect(content).toBe('{"type":"text"}\n');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('log path anchored under homeDir/.yoke/ (survives worktree cleanup, AC-3)', async () => {
+    const db = await makeDb(path.join(tmpDir, 'open-session3.db'), 'ses-open-3');
+    try {
+      const { logPath, writer } = await openSessionLog(db, {
+        configDir: '/worktrees/my-project',
+        workflowId: 'wf-1',
+        sessionId: 'ses-open-3',
+        homeDir: tmpDir,
+      });
+      await writer.close();
+      expect(logPath.startsWith(path.join(tmpDir, '.yoke'))).toBe(true);
+    } finally {
+      db.close();
+    }
   });
 });

@@ -23,6 +23,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
+import { type SessionLogWriter } from '../session-log/writer.js';
 import { ProcessError, type ProcessManager, type SpawnHandle, type SpawnOpts } from './manager.js';
 
 /** Maximum stderr bytes buffered before the cap is enforced. */
@@ -44,13 +45,22 @@ class JigSpawnHandle extends EventEmitter implements SpawnHandle {
   private readonly child: ChildProcess;
   private readonly gracePeriodMs: number;
   private cancelTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly logWriter: SessionLogWriter | null;
+  /**
+   * Promise chain ensuring sequential log writes — lines are appended in the
+   * same order they arrive on stdout even though writeLine() is async.
+   * The chain is also used to drain pending writes + close the writer before
+   * the 'exit' event fires (guaranteeing log completeness for callers).
+   */
+  private _logChain: Promise<void> = Promise.resolve();
 
-  constructor(child: ChildProcess, gracePeriodMs: number) {
+  constructor(child: ChildProcess, gracePeriodMs: number, logWriter: SessionLogWriter | null) {
     super();
     this.child = child;
     this.pid = child.pid!;
     this.pgid = child.pid!;
     this.gracePeriodMs = gracePeriodMs;
+    this.logWriter = logWriter;
 
     this._wireStdin();
     this._wireStdout();
@@ -89,14 +99,28 @@ class JigSpawnHandle extends EventEmitter implements SpawnHandle {
   }
 
   /**
+   * Append one stdout line to the session log (verbatim stream-json line
+   * copy, AC-1). Writes are chained so they are serialized — the log
+   * preserves stdout line order regardless of I/O scheduling.
+   * Write errors are suppressed (log is non-critical; session continues).
+   */
+  private _logLine(line: string): void {
+    if (!this.logWriter) return;
+    const writer = this.logWriter;
+    this._logChain = this._logChain.then(() => writer.writeLine(line)).catch(() => {});
+  }
+
+  /**
    * Line-buffered stdout reader (readline handles the trailing partial-line
    * buffer). Each complete line is emitted as 'stdout_line' for the
-   * stream-json parser (process/stream-json.ts) to consume.
+   * stream-json parser (process/stream-json.ts) to consume, and also
+   * copied verbatim to the session log writer if one is set (AC-1).
    */
   private _wireStdout(): void {
     const rl = createInterface({ input: this.child.stdout!, crlfDelay: Infinity });
     rl.on('line', (line: string) => {
       this.emit('stdout_line', line);
+      this._logLine(line);
     });
   }
 
@@ -138,7 +162,22 @@ class JigSpawnHandle extends EventEmitter implements SpawnHandle {
         clearTimeout(this.cancelTimer);
         this.cancelTimer = null;
       }
-      this.emit('exit', code, signal as NodeJS.Signals | null);
+
+      if (this.logWriter) {
+        // Drain pending writes then close the writer before emitting 'exit'.
+        // This guarantees callers that await 'exit' see a fully-flushed log.
+        // If close() fails, we still emit 'exit' so the session can proceed.
+        const writer = this.logWriter;
+        const exitArgs: [number | null, NodeJS.Signals | null] = [code, signal as NodeJS.Signals | null];
+        this._logChain = this._logChain
+          .then(() => writer.close())
+          .catch(() => {})
+          .then(() => {
+            this.emit('exit', ...exitArgs);
+          });
+      } else {
+        this.emit('exit', code, signal as NodeJS.Signals | null);
+      }
     });
 
     this.child.on('error', (err: NodeJS.ErrnoException) => {
@@ -220,7 +259,7 @@ class JigSpawnHandle extends EventEmitter implements SpawnHandle {
  */
 export class JigProcessManager implements ProcessManager {
   async spawn(opts: SpawnOpts): Promise<SpawnHandle> {
-    const { command, args, cwd, env, promptBuffer, gracePeriodMs = 10_000 } = opts;
+    const { command, args, cwd, env, promptBuffer, gracePeriodMs = 10_000, logWriter = null } = opts;
 
     const child = nodeSpawn(command, args, {
       cwd,
@@ -238,7 +277,7 @@ export class JigProcessManager implements ProcessManager {
     // Construct the handle first — its _wireStdin() call registers the stdin
     // 'error' handler synchronously. EPIPE is asynchronous, so by the time
     // it fires the handler is already in place.
-    const handle = new JigSpawnHandle(child, gracePeriodMs);
+    const handle = new JigSpawnHandle(child, gracePeriodMs, logWriter);
 
     // Zombie reap: unref() allows the Node.js event loop to exit without
     // waiting for this child. The OS adopts and reaps the process if Yoke

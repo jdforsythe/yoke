@@ -21,7 +21,6 @@
  */
 
 import * as http from 'http';
-import * as url from 'url';
 import type { DbPool } from '../storage/db.js';
 import { readLogPage } from '../session-log/reader.js';
 
@@ -38,10 +37,9 @@ function writeJson(res: http.ServerResponse, status: number, body: unknown): voi
   res.end(payload);
 }
 
-function parseIntParam(value: string | string[] | undefined, defaultValue: number): number {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (raw === undefined || raw === '') return defaultValue;
-  const parsed = parseInt(raw, 10);
+function parseIntParam(value: string | null, defaultValue: number): number {
+  if (value === null || value === '') return defaultValue;
+  const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
@@ -61,10 +59,10 @@ async function handleSessionLog(
   res: http.ServerResponse,
   db: DbPool,
   sessionId: string,
-  query: Record<string, string | string[] | undefined>,
+  query: URLSearchParams,
 ): Promise<void> {
-  const sinceSeq = Math.max(0, parseIntParam(query.sinceSeq, 0));
-  const limit = Math.max(1, parseIntParam(query.limit, 100));
+  const sinceSeq = Math.max(0, parseIntParam(query.get('sinceSeq'), 0));
+  const limit = Math.max(1, parseIntParam(query.get('limit'), 100));
 
   const row = db
     .reader()
@@ -104,14 +102,16 @@ async function handleSessionLog(
  */
 export function createHttpServer(db: DbPool): http.Server {
   return http.createServer(async (req, res) => {
-    const parsed = url.parse(req.url ?? '/', true);
-    const pathname = parsed.pathname ?? '/';
+    // new URL() (non-deprecated) for URL parsing; base is required but ignored
+    // for path/query extraction on relative request URLs.
+    const reqUrl = new URL(req.url ?? '/', 'http://localhost');
+    const pathname = reqUrl.pathname;
 
     const sessionLogMatch = SESSION_LOG_PATTERN.exec(pathname);
     if (req.method === 'GET' && sessionLogMatch) {
       const sessionId = decodeURIComponent(sessionLogMatch[1]);
       try {
-        await handleSessionLog(req, res, db, sessionId, parsed.query);
+        await handleSessionLog(req, res, db, sessionId, reqUrl.searchParams);
       } catch {
         writeJson(res, 500, { error: 'internal error' });
       }

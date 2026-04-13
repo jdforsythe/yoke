@@ -17,10 +17,19 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { DbPool } from '../storage/db.js';
 
 // ---------------------------------------------------------------------------
 // Path utilities
 // ---------------------------------------------------------------------------
+
+/**
+ * Log retention is governed by config.retention.stream_json_logs (max_age_days,
+ * max_total_bytes). No automatic cleanup runs in the writer — a separate
+ * background maintenance task scans ~/.yoke/<fingerprint>/logs/ and prunes
+ * files that exceed the retention policy (RC-2). The writer itself is append-only
+ * and never deletes or truncates files.
+ */
 
 /**
  * Derives a 16-hex-char fingerprint from the config directory absolute path.
@@ -109,4 +118,52 @@ export class SessionLogWriter {
   get isOpen(): boolean {
     return this.fileHandle !== null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session spawn helper — AC-4
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes the log path, writes sessions.session_log_path in SQLite, creates
+ * parent directories, opens the log file for appending, and returns the writer.
+ *
+ * Call this at session spawn time (before ProcessManager.spawn()):
+ *   const { writer, logPath } = await openSessionLog(db, { configDir, workflowId, sessionId });
+ *   const handle = await processManager.spawn({ ..., logWriter: writer });
+ *
+ * Writing sessions.session_log_path BEFORE the writer is opened ensures the
+ * HTTP endpoint can serve the path even if the process crashes before the
+ * first line is written (AC-4).
+ *
+ * @param db         DbPool for the SQLite write. The writer updates
+ *                   sessions.session_log_path via db.writer directly (not via
+ *                   a transaction wrapper — callers that need atomicity with
+ *                   other writes should call this inside their own transaction).
+ * @param opts.configDir  Absolute path to the directory containing .yoke.yml.
+ * @param opts.workflowId Workflow row ID.
+ * @param opts.sessionId  Session row ID.
+ * @param opts.homeDir    Override for os.homedir() (tests only).
+ */
+export async function openSessionLog(
+  db: DbPool,
+  opts: {
+    configDir: string;
+    workflowId: string;
+    sessionId: string;
+    homeDir?: string;
+  },
+): Promise<{ writer: SessionLogWriter; logPath: string }> {
+  const logPath = makeSessionLogPath(opts);
+
+  // AC-4: set sessions.session_log_path before opening the file so the HTTP
+  // endpoint can serve the path immediately — even if the process hasn't
+  // written any lines yet.
+  db.writer
+    .prepare('UPDATE sessions SET session_log_path = ? WHERE id = ?')
+    .run(logPath, opts.sessionId);
+
+  const writer = new SessionLogWriter(logPath);
+  await writer.open();
+  return { writer, logPath };
 }

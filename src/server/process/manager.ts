@@ -12,6 +12,8 @@
  * jig-manager.ts directly so ScriptedProcessManager is a drop-in replacement.
  */
 
+import type { SessionLogWriter } from '../session-log/writer.js';
+
 // ---------------------------------------------------------------------------
 // Typed error class
 // ---------------------------------------------------------------------------
@@ -61,6 +63,14 @@ export interface SpawnOpts {
    * Exposed so tests can use a much shorter value.
    */
   gracePeriodMs?: number;
+  /**
+   * Optional session log writer. If provided, each stdout line is appended to
+   * the writer via writeLine() — verbatim stream-json line copy (AC-1).
+   * The caller must have already called writer.open() before passing it here.
+   * The writer is closed (and all pending writes flushed) before the 'exit'
+   * event fires on the returned SpawnHandle.
+   */
+  logWriter?: SessionLogWriter;
 }
 
 // ---------------------------------------------------------------------------
