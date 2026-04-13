@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-prepost-runner — implement attempt 1 (2026-04-13)
+
+Single blocking fix from review attempt 1 (RC-5): changed `SIGKILL_GRACE_MS` from 5,000 ms to 10,000 ms in `src/server/prepost/runner.ts` to match the process manager's documented SIGTERM+10s grace+SIGKILL escalation contract. Updated the associated code comment. All 31 prepost runner tests pass; `tsc --noEmit` clean.
+
 ## feat-prepost-runner — implement attempt 0 (2026-04-13)
 
 Implemented the full pre/post command runner feature across four focused commits.
