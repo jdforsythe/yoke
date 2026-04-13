@@ -389,6 +389,40 @@
       ]
     },
     {
+      "id": "feat-scheduler",
+      "category": "pipeline-engine",
+      "description": "Orchestration loop wired into yoke start: on startup calls buildCrashRecovery then enters a poll/event loop that reads SQLite for runnable items, assembles prompts via PromptAssembler, creates worktrees via WorktreeManager, spawns sessions via ProcessManager, feeds stdout lines through StreamJsonParser, fires applyItemTransition on every classifier event, runs pre/post commands via PrePostRunner, and broadcasts state changes as WS frames — the glue layer that makes all existing building blocks drive real workflow execution.",
+      "priority": 7,
+      "depends_on": [
+        "feat-pipeline-engine",
+        "feat-prepost-runner",
+        "feat-process-mgr-live",
+        "feat-worktree-mgr",
+        "feat-prompt-asm",
+        "feat-session-log-store",
+        "feat-fastify-ws",
+        "feat-config-loader"
+      ],
+      "acceptance_criteria": [
+        "yoke start on a repo with a valid .yoke.yml ingests the stage graph, upserts workflow + item rows into SQLite, calls buildCrashRecovery, and begins scheduling within 2 seconds of startup.",
+        "Items whose depends_on are all terminal-complete are picked up and transitioned to in_progress before ProcessManager.spawn is called; items with unmet dependencies are skipped.",
+        "For each spawned session: prompt assembled via assemblePrompt, worktree created via WorktreeManager.createWorktree, process spawned via ProcessManager.spawn, each stdout_line fed to StreamJsonParser, classifier events forwarded to applyItemTransition.",
+        "Pre-phase commands run via PrePostRunner before session spawn; a non-continue pre action blocks the spawn and hands the resolved action to applyItemTransition.",
+        "Post-phase commands run via PrePostRunner after session_ok; a non-continue post action is handed to applyItemTransition (not executed by the runner).",
+        "rate_limit_detected from StreamJsonParser transitions the item to rate_limited and schedules a retry after the reset_at timestamp; no spawn occurs during the backoff window.",
+        "WS subscribers receive incremental state-change frames for every applyItemTransition the scheduler fires; no subscriber polling required.",
+        "On SIGINT/SIGTERM the scheduler drains in-flight sessions (cancel + wait up to gracePeriodMs) before process.exit."
+      ],
+      "review_criteria": [
+        "Every scheduling decision re-reads SQLite — no in-memory workflow cache between loop ticks.",
+        "All SQLite mutations go through applyItemTransition; no direct db.writer calls in the scheduler itself.",
+        "Process spawn happens only after the in_progress transition is committed (applyItemTransition returns before spawn).",
+        "buildCrashRecovery called on startup before any new items are scheduled; stale sessions do not get double-spawned.",
+        "Concurrency limit (max_parallel from ResolvedConfig or a sensible default) enforced by counting running sessions from SQLite, not an in-memory counter.",
+        "Scheduler is a class with an injectable ProcessManager, WorktreeManager, PromptAssembler, and PrePostRunner so the integration test suite can swap in scripted/fake implementations without touching yoke start."
+      ]
+    },
+    {
       "id": "feat-fault-injector",
       "category": "fault-injector",
       "description": "FaultInjector checkpoint seam injected into Pipeline Engine, ProcessManager, and WorktreeManager at named checkpoints (bootstrap_ok, session_ok, post_commands_ok, artifact_validators); no-op in production (gated by env flag); used by crash-recovery test suite to exercise every restart projection path without manual intervention.",
