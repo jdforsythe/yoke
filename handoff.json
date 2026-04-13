@@ -1,4 +1,36 @@
 {
+  "feature": "feat-worktree-mgr",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T22:35:00Z",
+      "intended_files": [
+        "src/server/worktree/branch.ts",
+        "src/server/worktree/manager.ts",
+        "tests/worktree/branch.test.ts",
+        "tests/worktree/manager.test.ts"
+      ],
+      "deferred_criteria": [
+        "Pipeline Engine wiring: WorktreeManager.createWorktree() and runBootstrap() are implemented and tested in isolation, but the Pipeline Engine that calls them in sequence and applies the returned BootstrapEvent to transition() does not yet exist. The transition (bootstrapping, bootstrap_ok) → in_progress and (bootstrapping, bootstrap_fail) → bootstrap_failed are in the TRANSITIONS table; the engine must wire them.",
+        "bootstrap_failed → user_retry re-runs bootstrap: transition (bootstrap_failed, user_retry) → bootstrapping with side effect 're-run bootstrap' is specified in TRANSITIONS but the Pipeline Engine that calls WorktreeManager.runBootstrap() again on that transition is not yet implemented.",
+        "Ordered cleanup step 1 (kill tracked pids) is implemented via killProcessGroup(), but the trackedPids list is supplied by the caller (Pipeline Engine). The Pipeline Engine must maintain a list of active SpawnHandle.pid values per workflow and pass them to cleanup(). No integration between ProcessManager SpawnHandle PIDs and the cleanup call is wired yet.",
+        "sessions.pid and sessions.pgid are not written by WorktreeManager — that is ProcessManager's responsibility when it spawns a session. The cleanup step 1 reads trackedPids from the caller; the Pipeline Engine must populate them from the sessions table on startup (crash recovery) or from in-memory SpawnHandle references.",
+        "branch deletion after worktree removal is deferred per plan-draft3 §Worktree Management (D40 §Rules). v1 retains branches. A future feature may add 'yoke cleanup --prune-merged' to delete branches whose PRs are merged.",
+        "The CheckPrFn default implementation calls 'gh pr list --head <branch> --json number'. This requires the gh CLI to be authenticated and the remote to be GitHub. Non-GitHub remotes (GitLab, Bitbucket, self-hosted) will always get false → cleanup refused if unpushed commits exist. A GitLab/Bitbucket adapter is deferred.",
+        "Cleanup does not update the workflows table (worktree_path, branch_name columns) after worktree removal. The Pipeline Engine should null those columns or set status='abandoned' after a successful cleanup. This SQLite write is not in WorktreeManager's scope but must be wired in the Pipeline Engine."
+      ],
+      "known_risks": [
+        "git worktree add requires at least one commit in the repository. If createWorktree() is called on a freshly initialised repo with no commits, git returns an error and createWorktree() throws WorktreeError{kind:'git_error'}. The Pipeline Engine must ensure a repository has at least one commit before invoking createWorktree().",
+        "The _hasUnpushedCommits check uses 'git log <branch> --not --remotes --oneline'. In a repo with no remote configured, all commits on the branch are listed as unpushed (--remotes is empty so --not --remotes filters nothing). This is the conservative direction: auto-cleanup is refused unless a PR exists. In projects with no remote (local-only), cleanup will always be refused unless checkPr is overridden to return true or the user uses 'yoke cancel' with --force.",
+        "runTeardown() uses fs.existsSync() to check for .yoke/teardown.sh. This is a TOCTOU race (check then act). In production, only the harness and the user's own code write to the worktree, so the race is acceptable. It would become a problem if two concurrent cleanup operations targeted the same worktree, which the Pipeline Engine must prevent by design.",
+        "killProcessGroup() sends SIGTERM to -pid (the entire process group). On macOS, if the child has called setsid() or setpgid() to move to a different process group, kill(-pid, SIGTERM) sends to the original pgid (which may be empty if all processes changed groups). This edge case can leave zombie processes. It is the same risk documented for ProcessManager.cancel() and is acceptable in v1.",
+        "_runShellCommand uses 'sh -c cmd' with maxBuffer: 4 MB. If a bootstrap command produces stdout exceeding 4 MB, execFileAsync will reject with an ENOBUFS-like error, which _runShellCommand catches and returns as { exitCode: 1, stderr: 'Spawn failed: ...' }. The stderr field will not contain the actual command stderr in this case. This is acceptable for bootstrap commands (4 MB of stdout during npm install is unusual)."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-process-mgr-heartbeat",
   "entries": [
     {
@@ -240,6 +272,6 @@
   ]
   }
   ]
-}
+  }
   ]
 }
