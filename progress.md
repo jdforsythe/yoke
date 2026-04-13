@@ -1,5 +1,22 @@
 # Yoke — Build Progress
 
+## feat-state-machine-tests (2026-04-12)
+
+Added `tests/state-machine/transitions-assertions.test.ts` — the full 19-assertion
+unit test suite for the state machine, mapped 1-to-1 to the §Test assertion list in
+`docs/design/state-machine-transitions.md`. All 19 named assertions are present and
+none are skipped. Assertion 1 is the completeness test: it defines the 33 documented
+non-abandoned pairs explicitly and verifies each returns a defined result from
+`transition()`, plus checks that all 27 events are handled by `abandoned` and that
+undocumented pairs return `undefined` (no phantom rows). Assertions 2–19 cover valid
+to-states, guard semantics (`deps_satisfied` requires `complete` deps, `complete`
+requires all four conditions), bootstrap-failed non-auto-transition, phase advance
+atomicity, goto/max_revisits, stop-and-ask, user_cancel universality (with the
+bootstrapping gap documented), cascade side effects, logging side effects,
+idempotency of the crash recovery path (referential equality of pure function
+outputs), and stage-level events as workflow-level concerns. 64 new tests; total
+309 tests pass; all tests run in ~10ms (pure data-structure assertions, no I/O).
+
 ## feat-db-setup (2026-04-12)
 
 Implemented `src/server/storage/db.ts` — the `better-sqlite3` connection pool

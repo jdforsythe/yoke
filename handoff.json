@@ -1,7 +1,27 @@
 {
-  "feature": "feat-state-machine",
+  "feature": "feat-state-machine-tests",
   "entries": [
     {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-12T21:14:00Z",
+      "intended_files": [
+        "tests/state-machine/transitions-assertions.test.ts"
+      ],
+      "deferred_criteria": [
+        "Assertions 14, 15, 18, 19 test structural properties of the TRANSITIONS table (side-effect labels, absence of workflow-level events at item level) as proxies for Pipeline Engine behavior.  Full integration-level verification of cascade writes, events-row logging, stage-completion timing, and stage_approval_granted pausing requires a Pipeline Engine test suite that hits SQLite — deferred to the pipeline-engine feature.",
+        "Assertion 16 (idempotency) tests referential equality of transition() outputs as the structural guarantee.  A true end-to-end idempotency test (replaying crash recovery against SQLite and observing zero row delta) is deferred to the pipeline-engine integration test suite.",
+        "The bootstrapping gap (bootstrapping, user_cancel absent from transitions.md) is documented by the assertion-13 test.  If the spec is updated to add that row, the test must be updated: remove the 'bootstrapping is missing user_cancel' it() case and add bootstrapping to NON_TERMINAL_STATES_WITH_USER_CANCEL."
+      ],
+      "known_risks": [
+        "DOCUMENTED_NON_ABANDONED_PAIRS in the test file is a hardcoded copy of the pairs listed in state-machine-transitions.md.  If new rows are added to the spec without updating the test, assertion-1's 'undocumented pairs return undefined' test will still pass (it checks TRANSITIONS superset of documented, not the other direction).  The 'all documented pairs are defined' direction will catch removals but not additions.  Reviewers adding spec rows should also update DOCUMENTED_NON_ABANDONED_PAIRS.",
+        "Guard-string assertions (assertions 3, 6, 7, 10, 11) match substrings of the guard text in transitions.ts.  If the guard wording changes without changing semantics, tests will fail even though behaviour is correct.  The guard strings in transitions.ts are documented prose, not a formal language, so wording changes are possible."
+      ]
+    }
+  ],
+  "prior_features": [
+    {
+      "feature": "feat-state-machine",
       "phase": "implement",
       "attempt": 0,
       "ts": "2026-04-12T21:00:00Z",
@@ -22,9 +42,7 @@
         "The classifier uses regex pattern matching on stderr text. If Anthropic changes the exact error message wording (e.g. 'rate_limit_error' becomes 'rate_limit'), patterns may silently stop matching, causing permanent/transient errors to fall through to unknown. The pattern list should be reviewed when claude-code updates that affect error output are released.",
         "classify() returns 'policy' when parseErrors > 0 AND lastEventType === null. If a session produces zero parseable events due to a transient connection reset (no auth/rate error in stderr, just ECONNRESET), it would be classified 'policy' rather than 'transient'. This could prevent an appropriate retry. The tiebreaker branch is conservative (no auto-retry on corrupt streams) but may be overly conservative for certain network failures."
       ]
-    }
-  ],
-  "prior_features": [
+    },
     {
       "feature": "feat-db-transaction",
       "phase": "implement",
