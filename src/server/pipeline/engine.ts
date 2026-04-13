@@ -1149,6 +1149,130 @@ export function applyWorktreeCreated(params: ApplyWorktreeCreatedParams): void {
 }
 
 // ---------------------------------------------------------------------------
+// insertSession — create a sessions row at spawn time
+// ---------------------------------------------------------------------------
+
+export interface InsertSessionParams {
+  sessionId: string;
+  workflowId: string;
+  itemId: string | null;
+  stage: string;
+  phase: string;
+  /** null until spawn returns the real PID. */
+  pid: number | null;
+  /** null until spawn returns the real PGID. */
+  pgid: number | null;
+  /** Agent profile label. Default 'default'. */
+  agentProfile?: string;
+}
+
+/**
+ * Creates a sessions row with status='running'.
+ *
+ * Called by the orchestration layer immediately before spawning the agent
+ * so that SQLite concurrency counts are accurate before the spawn is
+ * attempted. pid/pgid are null at this point and updated via
+ * updateSessionPid() once the process is live.
+ *
+ * Uses db.writer directly — this is an engine-layer function, not the
+ * scheduler itself (RC-2: no direct db.writer calls in scheduler.ts).
+ */
+export function insertSession(db: DbPool, params: InsertSessionParams): void {
+  const now = new Date().toISOString();
+  db.writer
+    .prepare(`
+      INSERT INTO sessions
+        (id, workflow_id, item_id, stage, phase, agent_profile,
+         pid, pgid, started_at, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')
+    `)
+    .run(
+      params.sessionId,
+      params.workflowId,
+      params.itemId,
+      params.stage,
+      params.phase,
+      params.agentProfile ?? 'default',
+      params.pid,
+      params.pgid,
+      now,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// updateSessionPid — fill in PID/PGID after spawn
+// ---------------------------------------------------------------------------
+
+/**
+ * Updates pid and pgid on the sessions row after the child process is live.
+ *
+ * Separate from insertSession because PID is only known after spawn() returns.
+ * The session row is inserted with null PID first so the concurrency count
+ * in SQLite stays accurate while the spawn is in progress.
+ */
+export function updateSessionPid(
+  db: DbPool,
+  sessionId: string,
+  pid: number,
+  pgid: number,
+): void {
+  db.writer
+    .prepare('UPDATE sessions SET pid = ?, pgid = ? WHERE id = ?')
+    .run(pid, pgid, sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// endSession — mark a session as completed or failed
+// ---------------------------------------------------------------------------
+
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
+/**
+ * Marks a sessions row as ended, recording exit code and token usage.
+ *
+ * Called by the orchestration layer after the agent process exits and all
+ * post-phase work (post: commands, validators) completes.
+ */
+export function endSession(
+  db: DbPool,
+  sessionId: string,
+  opts: {
+    exitCode: number | null;
+    usage?: SessionUsage;
+  },
+): void {
+  const now = new Date().toISOString();
+  const status = opts.exitCode === 0 ? 'completed' : 'failed';
+  db.writer
+    .prepare(`
+      UPDATE sessions
+         SET ended_at = ?,
+             exit_code = ?,
+             status = ?,
+             input_tokens = ?,
+             output_tokens = ?,
+             cache_creation_input_tokens = ?,
+             cache_read_input_tokens = ?
+       WHERE id = ?
+    `)
+    .run(
+      now,
+      opts.exitCode,
+      status,
+      opts.usage?.inputTokens ?? 0,
+      opts.usage?.outputTokens ?? 0,
+      opts.usage?.cacheCreationInputTokens ?? 0,
+      opts.usage?.cacheReadInputTokens ?? 0,
+      sessionId,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Internal: PID liveness probe (kill(pid, 0))
 // ---------------------------------------------------------------------------
 
