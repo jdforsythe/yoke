@@ -16,10 +16,14 @@
     "fastify": "^4.29.1",
     "yaml": "^2.7.0"
   },
+  "bin": {
+    "yoke": "bin/yoke"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.17.0",
     "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
   }

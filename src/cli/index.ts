@@ -46,3 +46,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   const program = buildProgram();
   await program.parseAsync(argv);
 }
+
+// Auto-invoke when run as the entry point (tsx src/cli/index.ts or bin/yoke).
+void main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

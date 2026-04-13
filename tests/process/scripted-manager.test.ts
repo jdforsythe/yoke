@@ -164,8 +164,8 @@ describe('ScriptedProcessManager', () => {
     expect(handle2.pid).toBe(handle.pid);
 
     // Wait for both to exit to avoid test leaks.
-    await new Promise<void>((r) => handle.once('exit', r));
-    await new Promise<void>((r) => handle2.once('exit', r));
+    await new Promise<void>((r) => handle.once('exit', () => r()));
+    await new Promise<void>((r) => handle2.once('exit', () => r()));
   });
 
   it('honours explicit fakePid option', async () => {
@@ -175,7 +175,7 @@ describe('ScriptedProcessManager', () => {
     const mgr = new ScriptedProcessManager({ fixturePath, fakePid: 12345 });
     const handle = await mgr.spawn(DUMMY_OPTS);
     expect(handle.pid).toBe(12345);
-    await new Promise<void>((r) => handle.once('exit', r));
+    await new Promise<void>((r) => handle.once('exit', () => r()));
   });
 
   it('isAlive() returns true before exit, false after', async () => {
@@ -186,7 +186,7 @@ describe('ScriptedProcessManager', () => {
     const handle = await mgr.spawn(DUMMY_OPTS);
 
     expect(handle.isAlive()).toBe(true);
-    await new Promise<void>((r) => handle.once('exit', r));
+    await new Promise<void>((r) => handle.once('exit', () => r()));
     expect(handle.isAlive()).toBe(false);
   });
 
@@ -227,7 +227,7 @@ describe('ScriptedProcessManager', () => {
     handle.on('stdout_line', (l) => events.push(`out:${l}`));
     handle.on('stderr_data', (c) => events.push(`err:${c}`));
 
-    await new Promise<void>((r) => handle.once('exit', r));
+    await new Promise<void>((r) => handle.once('exit', () => r()));
 
     expect(events).toEqual(['out:out-1', 'err:err-1', 'out:out-2']);
   });
