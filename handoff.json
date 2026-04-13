@@ -1,4 +1,33 @@
 {
+  "feature": "feat-process-mgr-ndjson",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T21:50:00Z",
+      "intended_files": [
+        "src/server/process/stream-json.ts",
+        "tests/process/stream-json.test.ts",
+        "tests/fixtures/stream-json/capture-default-mode.jsonl",
+        "tests/fixtures/stream-json/capture-partial-messages.jsonl"
+      ],
+      "deferred_criteria": [
+        "RC-3: parse_errors counter stored in sessions.status_flags JSON column. The parser emits `parse_error` events; the Pipeline Engine (not yet implemented) is responsible for calling UPDATE sessions SET status_flags = json_set(status_flags, '$.parse_errors', ...) on receipt. Until pipeline-engine.ts exists, the SQLite persistence side of this criterion cannot be integration-tested.",
+        "AC-4 (rate_limit_detected): The detection pattern (status !== 'allowed') is derived from empirically observed format in docs/research/stream-json-semantics.md §3.6. No actual status='rejected' frame was captured during Phase γ research — the test constructs a frame matching the documented format with status changed to 'rejected'. The pattern must be validated against a live rate-limited session when one is captured.",
+        "stream.thinking delta events: thinking_delta type is expected but was not observed in Phase γ captures (thinking was too short to chunk). The inline synthetic test covers the block tracking logic, but no empirical fixture contains streaming thinking deltas.",
+        "input_json_delta (tool_use input streaming): deliberately not emitted — the complete tool_use is emitted from the assistant event instead. If the Pipeline Engine needs incremental tool_use input (e.g. for a UI that renders partial inputs), this would require a new stream.tool_input_delta event type.",
+        "ScriptedProcessManager integration: the parser is standalone (EventEmitter); wiring it to the JigProcessManager stdout_line events (handle.on('stdout_line', line => parser.feed(line))) is the Pipeline Engine's responsibility when it constructs the session."
+      ],
+      "known_risks": [
+        "Streaming mode detection uses _seenStreamEvent flag: once any stream_event line arrives, ALL subsequent assistant text/thinking events are suppressed. If a future Claude Code version emits stream_event lines for one API call but falls back to default-mode assistant events for another (within the same session), the second API call's text/thinking would be silently dropped. This is considered unlikely given the --include-partial-messages flag is either on or off for the entire session.",
+        "content_block_stop emits an empty-delta final event (textDelta=''). Consumers must handle the empty delta gracefully — they should not append it to the accumulated text. The design is consistent with the spec language 'final:true set on the last delta' but 'last delta' here means the stop marker, not the last text-carrying delta.",
+        "rate_limit_detected is not emitted for rate_limit_event objects that are missing the rate_limit_info field entirely (the _handleRateLimitEvent returns early). If Claude Code ever emits a malformed rate_limit_event, it would be silently ignored rather than raising a parse_error. This is a gap between AC-1 (malformed JSON → parse_error) and AC-4 (rate_limit detection).",
+        "The parser does not reset _seenStreamEvent or _nextBlockId between sessions. If a StreamJsonParser instance is reused across multiple process spawns, the mode flag and block ID counter will carry over from the previous session. Callers must create a new StreamJsonParser for each spawned process."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-process-mgr-live",
   "entries": [
     {
@@ -12,7 +41,7 @@
       ],
       "deferred_criteria": [
         "stream-json.ts (NDJSON line-buffered parser) and heartbeat.ts (liveness + stream-activity signals) are referenced in architecture.md §4.2 as part of the Process Manager module but are NOT in this feature's scope — they are separate features. The JigSpawnHandle emits raw 'stdout_line' events; the NDJSON parser consumes them from outside.",
-        "ScriptedProcessManager (replays recorded stream-json JSONL for yoke record fixtures) satisfies the ProcessManager interface but is not implemented here — it is a separate testability feature.",
+        "ScriptedProcessManager (replays captured stream-json JSONL for yoke record fixtures) satisfies the ProcessManager interface but is not implemented here — it is a separate testability feature.",
         "pgid is set to child.pid because detached:true on POSIX makes the child its own process group leader. On Windows, process groups work differently and kill(-pgid, sig) is not supported. Windows support is deferred per plan-draft3.",
         "The cancel() method resolves after sending SIGKILL, not after the 'exit' event fires. Callers that need to confirm the process actually died must listen for 'exit' themselves. This is by design (matches the plan-draft3 shutdown spec) but is a footgun if callers assume the process is dead immediately after await cancel().",
         "No integration with sessions table (pid, pgid, started_at columns) — that wiring belongs in the Pipeline Engine which doesn't yet exist."
@@ -180,6 +209,8 @@
         "Ajv2020 imported from ajv/dist/2020.js; if a future ajv 9.x breaking change removes or renames this path, the import and the AnySchema cast will both need updating."
       ]
     }
+  ]
+  }
   ]
   }
   ]

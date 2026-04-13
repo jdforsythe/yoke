@@ -1,5 +1,26 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-ndjson (2026-04-13)
+
+Implemented `src/server/process/stream-json.ts` — the NDJSON line-buffered stream-json parser that
+consumes Claude Code `--output-format stream-json` stdout and emits six typed events: `stream.text`,
+`stream.thinking`, `stream.tool_use`, `stream.tool_result`, `stream.usage`, `stream.system_notice`,
+plus `rate_limit_detected` and `parse_error`. The parser is a `StreamJsonParser extends EventEmitter`
+with two input methods: `feed(line: string)` for complete lines (used by the JigProcessManager
+readline path) and `feedChunk(data: string)` for arbitrary byte chunks with a `flush()` to drain the
+partial-line buffer. Splitting is on LF (`\n`) only — matches the empirical finding that Claude Code
+never emits CRLF. Two streaming modes are handled transparently: in default mode, complete `assistant`
+events yield `stream.text`/`stream.thinking` with `final:true`; in `--include-partial-messages` mode,
+`stream_event content_block_delta` events yield deltas with `final:false` and `stream_event
+content_block_stop` emits an empty-delta `final:true` event, while the duplicate `assistant` text/
+thinking events are suppressed. `stream.tool_use` is always emitted from the complete `assistant`
+event. Rate-limit detection fires when `rate_limit_event.rate_limit_info.status !== "allowed"` with
+`resetAt` extracted from `resetsAt`. Malformed JSON lines emit `parse_error` (the Pipeline Engine is
+responsible for incrementing `sessions.status_flags.parse_errors` in SQLite on receipt). 39 tests in
+`tests/process/stream-json.test.ts` covering all 6 acceptance criteria and all 4 review criteria
+against two empirically captured fixture files (`capture-default-mode.jsonl` = research capture-1,
+`capture-partial-messages.jsonl` = research capture-4); all 370 tests pass; `tsc --noEmit` clean.
+
 ## feat-process-mgr-live (2026-04-13)
 
 Implemented `src/server/process/manager.ts` and `src/server/process/jig-manager.ts` — the
