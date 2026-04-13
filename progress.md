@@ -1,5 +1,17 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-scripted — implement attempt 0 (2026-04-13)
+
+Completed the two remaining gaps in the existing `ScriptedProcessManager` implementation to fully satisfy `feat-process-mgr-scripted`.
+
+**Fixture version checking** (`src/server/process/scripted-manager.ts`): Added `{ "type": "header", "version": 1 }` support to `parseFixture()`. When a header record is the first non-blank line, the version is validated against `CURRENT_FIXTURE_VERSION = 1`; an unrecognised value (including wrong type such as `"1"` as string) throws `Error('Unsupported fixture version: N (expected 1)')`. Fixtures without a header continue to work (backward compatibility for inline test fixtures). The `CURRENT_FIXTURE_VERSION` constant is exported so callers can reference it. The module comment was updated with a full format spec and a failure-mode fixture index (RC-3).
+
+**Failure-mode fixtures** (`tests/fixtures/scripted-manager/`): Created four JSONL fixture files mapping to named rows in the plan-draft3 §D35 Failure Modes table (RC-4): `session-ok.jsonl` (clean exit, exit 0), `nonzero-exit-transient.jsonl` (exit 1 + ECONNRESET stderr), `nonzero-exit-permanent.jsonl` (exit 1 + "Cannot find module" stderr), `rate-limit-mid-stream.jsonl` (rate_limit_event with numeric `resetsAt`, then exit 0). All four include a version-1 header.
+
+**Tests** (`tests/process/scripted-manager.test.ts`): 8 new tests covering AC-5 (header accept/reject) and AC-3 (one replay integration test per failure-mode fixture). The rate-limit fixture test wires `StreamJsonParser` inline to verify `rate_limit_detected` fires with the expected `resetAt` value. 869 tests pass; `tsc --noEmit` clean.
+
+**Deferred**: `yoke record` capture mode (AC-2) — writing fixture files by tee-ing live session stdout — remains deferred to `feat-record-capture-wiring` as planned.
+
 ## feat-scheduler — implement attempt 1 (2026-04-13)
 
 Closed three deferred test gaps from attempt 0 and fixed the RC-2 blocker from the review.
