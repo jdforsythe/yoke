@@ -1,5 +1,29 @@
 [
   {
+    "feature": "feat-fault-injector",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T19:36:00Z",
+        "intended_files": [
+          "src/server/fault/injector.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/fault/injector.test.ts",
+          "tests/scheduler/crash-recovery.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The crash-recovery test for session_ok (AC-3/AC-4a-b) relies on FAKE_PID=99877 not being a live OS process during the test run. If a test host happens to have a process with PID 99877, buildCrashRecovery will probe kill(99877,0) and get success (not ESRCH), meaning the session won't be detected as stale and the test will timeout. This is extremely unlikely in practice but technically possible.",
+          "The stale session row (status='running') is never updated to a terminal status in crash recovery — only the item row transitions via applyItemTransition. Any SQLite query counting 'running' sessions will see inflated counts after a crash recovery. The endSession function is not called for stale sessions. This is consistent with the existing buildCrashRecovery design (which only updates recovery_state, not session status) but may surprise dashboard consumers expecting session rows to accurately reflect lifecycle state.",
+          "FaultInjectionError thrown at artifact_validators is caught by the same try/catch block as session_ok and post_commands_ok. All three leave the session row as 'running' for crash recovery. If a reviewer expects artifact_validators to produce a different recovery path from session_ok, that distinction does not exist in the current implementation — all three are 'crash before commit' scenarios."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-artifact-validators",
     "entries": [
       {
