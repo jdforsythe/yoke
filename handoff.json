@@ -1,4 +1,31 @@
 {
+  "feature": "feat-process-mgr-live",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T21:35:00Z",
+      "intended_files": [
+        "src/server/process/manager.ts",
+        "src/server/process/jig-manager.ts",
+        "tests/process/jig-manager.test.ts"
+      ],
+      "deferred_criteria": [
+        "stream-json.ts (NDJSON line-buffered parser) and heartbeat.ts (liveness + stream-activity signals) are referenced in architecture.md §4.2 as part of the Process Manager module but are NOT in this feature's scope — they are separate features. The JigSpawnHandle emits raw 'stdout_line' events; the NDJSON parser consumes them from outside.",
+        "ScriptedProcessManager (replays recorded stream-json JSONL for yoke record fixtures) satisfies the ProcessManager interface but is not implemented here — it is a separate testability feature.",
+        "pgid is set to child.pid because detached:true on POSIX makes the child its own process group leader. On Windows, process groups work differently and kill(-pgid, sig) is not supported. Windows support is deferred per plan-draft3.",
+        "The cancel() method resolves after sending SIGKILL, not after the 'exit' event fires. Callers that need to confirm the process actually died must listen for 'exit' themselves. This is by design (matches the plan-draft3 shutdown spec) but is a footgun if callers assume the process is dead immediately after await cancel().",
+        "No integration with sessions table (pid, pgid, started_at columns) — that wiring belongs in the Pipeline Engine which doesn't yet exist."
+      ],
+      "known_risks": [
+        "EPIPE is caught and emitted as a ProcessError, but the test verifies 'if EPIPE fires, it is typed correctly' rather than 'EPIPE always fires'. Whether EPIPE fires depends on kernel pipe buffer size and timing. On a machine with a large pipe buffer, a 4 MB write might complete before the child destroys stdin, causing no EPIPE. The acceptance criterion is 'does not crash' — verified. The 'named failure class' review criterion is satisfied structurally (the catch clause checks err.code === EPIPE explicitly).",
+        "child.unref() unreferences the process handle (the exit watcher) but NOT the stdio stream handles. The readline interface on stdout keeps the event loop alive until stdout is closed (when the child exits). This is intentional — we need to drain stdout — but means the event loop is kept alive by the child's stdio, not the process itself.",
+        "gracePeriodMs defaults to 10 000 ms in production. The cancel() timer is a Node.js setTimeout, which may drift under load. Tests use 300 ms with a 50 ms tolerance; production use with 10 s has more headroom. The spec says '10 s grace' — this matches."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-state-machine-tests",
   "entries": [
     {
@@ -153,5 +180,7 @@
         "Ajv2020 imported from ajv/dist/2020.js; if a future ajv 9.x breaking change removes or renames this path, the import and the AnySchema cast will both need updating."
       ]
     }
+  ]
+  }
   ]
 }

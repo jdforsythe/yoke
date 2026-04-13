@@ -1,5 +1,24 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-live (2026-04-13)
+
+Implemented `src/server/process/manager.ts` and `src/server/process/jig-manager.ts` — the
+`ProcessManager` interface and its production implementation. `manager.ts` exports `ProcessError`
+(discriminated kind: `epipe | spawn_failed | stdin_error`), `SpawnOpts` (command + args from
+ResolvedConfig only, no hard-coded strings), `SpawnHandle` (typed event overloads: `stdout_line`,
+`stderr_data`, `stderr_cap_reached`, `exit`, `error`; plus `isAlive()` and `cancel()`), and
+`ProcessManager` (single `spawn(opts)` method — no JigProcessManager-specific leakage). `jig-manager.ts`
+exports only `JigProcessManager`; the internal `JigSpawnHandle extends EventEmitter` is not exported.
+Key mechanics: `detached:true` gives the child its own process group (`pgid === pid`); `child.unref()`
+allows the event loop to exit without waiting (zombie reap documented in a code comment); EPIPE is
+caught as a named failure class in the stdin `error` handler (not a generic catch) and re-raised as
+`ProcessError{ kind: 'epipe' }`; stderr is capped at 64 KB in the `data` stream handler (slice-before-emit,
+never accumulate all bytes first); `stderr_cap_reached` is emitted once; `cancel()` sends SIGTERM to the
+entire process group (`process.kill(-pgid, 'SIGTERM')`), waits `gracePeriodMs` (default 10 000 ms),
+then escalates to SIGKILL. The SIGTERM→SIGKILL escalation test uses a readiness protocol (child writes
+`"ready\n"` after registering its handler) to eliminate the signal-before-handler-registration race. 22
+integration tests in `tests/process/jig-manager.test.ts`; all 331 tests pass; `tsc --noEmit` clean.
+
 ## feat-state-machine-tests (2026-04-12)
 
 Added `tests/state-machine/transitions-assertions.test.ts` — the full 19-assertion
