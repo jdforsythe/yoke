@@ -1,5 +1,15 @@
 # Yoke — Build Progress
 
+## feat-artifact-validators — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-artifact-validators` feature in two focused commits.
+
+**`src/server/artifacts/validator.ts`** (new): Exports `validateArtifacts(artifacts, worktreePath)` which iterates every declared `OutputArtifact` independently, collecting failures without short-circuit (AC-5). For each artifact: (1) checks existence and raises `validator_fail` for missing required artifacts — catching `ENOENT` rather than propagating it (AC-4, RC-3); (2) skips schema validation when no `schema` field is configured; (3) parses the artifact as JSON and raises `validator_fail` for unparseable content; (4) reads the schema file fresh on every call — never from a cache (RC-2); (5) validates with `Ajv2020({ allErrors: true, verbose: true })` so errors carry `instancePath`, `schemaPath`, and `data` (the offending value) (AC-6). The `schemaId` in each `ArtifactFailure` comes from the schema's `$id` field, falling back to the schema file path (AC-2). New AJV instance per artifact guarantees no cross-run compiled-validator retention. Returns `{ kind: 'validators_ok' }` only when all artifacts pass (AC-3). 17 unit tests cover all AC/RC criteria plus edge cases (invalid JSON, unreadable schema, schema change between calls, no-schema existence check).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts`): Added `ArtifactValidatorFn` injectable type and `artifactValidator?` to `SchedulerOpts`. In `_runSession`, after the agent exits cleanly (`exitCode === 0`), `artifactValidatorFn` is called with `phaseConfig.output_artifacts` and `worktreePath` **before** post commands run (RC-4). On `validator_fail`: fires the `validator_fail` event via `applyItemTransition`, closes the session, and returns — post commands are not called. On `validators_ok`: continues to post commands unchanged. The constructor defaults to a lazy-imported `validateArtifacts` so production code requires no changes; tests supply a stub. 4 new scheduler integration tests: AV-1 (validators pass → `completed`), AV-2 (`validator_fail` → `awaiting_retry`), AV-3 (post runner not called on failure), AV-4 (correct `artifacts` + `worktreePath` forwarded).
+
+917 tests pass; `tsc --noEmit` clean.
+
 ## feat-prepost-runner — implement attempt 1 (2026-04-13)
 
 Single blocking fix from review attempt 1 (RC-5): changed `SIGKILL_GRACE_MS` from 5,000 ms to 10,000 ms in `src/server/prepost/runner.ts` to match the process manager's documented SIGTERM+10s grace+SIGKILL escalation contract. Updated the associated code comment. All 31 prepost runner tests pass; `tsc --noEmit` clean.

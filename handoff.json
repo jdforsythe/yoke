@@ -1,5 +1,29 @@
 [
   {
+    "feature": "feat-artifact-validators",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T19:25:00Z",
+        "intended_files": [
+          "src/server/artifacts/validator.ts",
+          "tests/artifacts/validator.test.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/scheduler/scheduler.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The scheduler's validator_fail branch closes the session and returns without calling endSession's usage stats (inFlightEntry.usage is used but the session ends before a full stream parse can accumulate usage). This is consistent with how other early-exit paths (pre_command_failed, spawn failure) are handled — the session is recorded with zero usage — but reviewers should confirm this is acceptable for billing dashboards.",
+          "The session.ended broadcast reason field uses the string literal 'validator_fail'. The ServerFrameType / session.ended payload type may not enumerate this reason value. If TypeScript strict mode enforces the reason enum, this will surface as a type error in a future strict pass. Currently passes tsc --noEmit because the payload is typed as `unknown`.",
+          "No DB-layer event row is written with the structured AJV failure payload. The validator_fail state transition writes a generic events row (via writeEvent inside applyItemTransition). The full ArtifactFailure[] is only in memory on the scheduler side. If downstream tooling (e.g. the dashboard) needs per-failure detail, it will need to read from a dedicated table or the event extra field. This is a known gap that is out of scope for feat-artifact-validators (which only specifies that callers receive the raw error array, not that it is persisted to SQLite)."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-prepost-runner",
     "entries": [
       {
