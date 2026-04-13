@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-heartbeat (2026-04-13)
+
+Implemented `src/server/process/heartbeat.ts` — the two-signal heartbeat for a running child process. The `Heartbeat` class owns a single `setInterval` (tick = `liveness_interval_s` from `ResolvedConfig`). On each tick, it calls `isRateLimited()` fresh (AC-5/RC-2 — suppression state is never cached); if not suppressed, it runs two independent probes: (1) the liveness probe calls `process.kill(pid, 0)` — signal 0 delivers no signal but causes ESRCH if the PID is gone — and emits one `stream.system_notice{subtype:'liveness_stale'}` warning on the first ESRCH (subsequent ESRCH is muted since the session is ending); (2) the stream-activity watchdog computes `Date.now() - lastStdoutAt` and emits one `stream.system_notice{subtype:'stream_idle'}` if idle time exceeds `activity_timeout_s`; the watchdog is reset by `notifyStdoutLine()` so each new idle period can warn once. Neither probe sends SIGTERM or SIGKILL (RC-1). `stop()` calls `clearInterval` (RC-3). Added `liveness_interval_s?: number` (default 30 s) to `Heartbeat` in `src/shared/types/config.ts` and to the schema `$def` in `docs/design/schemas/yoke-config.schema.json` — required to satisfy AC-4 (interval from `ResolvedConfig`, not hard-coded). 22 tests in `tests/process/heartbeat.test.ts` using vitest fake timers and `vi.spyOn(process, 'kill')` cover all 5 acceptance criteria and 3 review criteria; all 392 tests pass; `tsc --noEmit` clean.
+
 ## feat-process-mgr-ndjson (2026-04-13)
 
 Implemented `src/server/process/stream-json.ts` — the NDJSON line-buffered stream-json parser that

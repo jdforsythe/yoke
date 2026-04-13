@@ -1,4 +1,30 @@
 {
+  "feature": "feat-process-mgr-heartbeat",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T22:10:00Z",
+      "intended_files": [
+        "src/server/process/heartbeat.ts",
+        "tests/process/heartbeat.test.ts",
+        "src/shared/types/config.ts",
+        "docs/design/schemas/yoke-config.schema.json"
+      ],
+      "deferred_criteria": [
+        "Pipeline Engine wiring: the Heartbeat class is complete but is not yet instantiated by anything. The Pipeline Engine must: (1) construct Heartbeat at session spawn time with pid from the SpawnHandle and config from ResolvedConfig phase.heartbeat; (2) pass an isRateLimited callback that reads current item status from SQLite; (3) call notifyStdoutLine() when the SpawnHandle emits 'stdout_line'; (4) forward stream.system_notice events to the Session Log Store and WebSocket; (5) call stop() on the 'exit' event from the SpawnHandle.",
+        "per_tool_budgets: the config schema accepts the per_tool_budgets field (from plan-draft3 §Heartbeat D23: per-tool wall-clock budget enforcement) but heartbeat.ts does not yet implement it. The feature spec for feat-process-mgr-heartbeat covers only kill(pid,0) liveness and stream-activity watchdog. Per-tool budget enforcement requires tracking the current tool_use_id from the stream-json parser, which is a separate concern deferred to a future feature.",
+        "stream_idle warning fires for stdout silence including silence during long tool_use calls. Plan-draft3 §Heartbeat says 'stdout-silence threshold applies only outside a tool_use'. This nuance (suppressing stream_idle while inside a tool_use) is not implemented. The current implementation warns on any stdout silence regardless of tool_use state. Suppression inside tool_use requires observing stream.tool_use / stream.tool_result boundaries from the stream-json parser — deferred."
+      ],
+      "known_risks": [
+        "Fake timers in tests mock Date.now() via vitest. The Heartbeat uses Date.now() for lastStdoutAt and activityWarnedAt. If vitest's fake timer implementation does not advance Date.now() along with setInterval ticks, the stream-activity watchdog tests would yield wrong idle-time calculations. Verified: vitest fake timers do advance Date.now(); no issue observed during test run.",
+        "notifyStdoutLine() sets activityWarnedAt = null unconditionally. If the caller calls notifyStdoutLine() during a rate-limited period (while isRateLimited() returns true), the watchdog warned flag is cleared even though no tick fired. On the next non-rate-limited tick, the idle clock starts fresh (from notifyStdoutLine call time). This is correct behavior but could delay the warning if rate-limiting is lifted after a long silence.",
+        "livenessWarnedOnce is never reset. If the Pipeline Engine calls start() + stop() + start() on the same Heartbeat instance (restart scenario), and the PID was previously dead (ESRCH), the liveness probe will not warn again after restart. In practice the Pipeline Engine should create a fresh Heartbeat for each new SpawnHandle (new pid)."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-process-mgr-ndjson",
   "entries": [
     {
@@ -213,5 +239,7 @@
   }
   ]
   }
+  ]
+}
   ]
 }
