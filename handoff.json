@@ -69,6 +69,42 @@
         "openSessionLog() calls db.writer directly (not inside a db.transaction()). If the caller needs to atomically write the sessions row AND set session_log_path, they must wrap both operations in their own transaction and call db.writer.prepare(...).run() directly rather than using openSessionLog().",
         "The HTTP server has no request timeout. Acceptable for v1 (127.0.0.1 only); add a request timeout when the Fastify server is scaffolded."
       ]
+    },
+    {
+      "phase": "review",
+      "attempt": 1,
+      "ts": "2026-04-13T13:07:31Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-2 \u2014 Pre/Post Runner not implemented `src/server/prepost/runner.ts` does not exist. Command output frames from `pre:` and `post:` commands cannot be written to the session log. The criterion requires the runner to be implemented, not just planned. The handoff note is not a substitute for the code. Fix path: implement `prepost/runner.ts`; at runner startup, call `openSessionLog()` (or accept an already-open `SessionLogWriter` at the same `logPath`) and call `writer.writeLine(frame)` for each command output frame."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "ts": "2026-04-13T09:30:00Z",
+      "intended_files": [
+        "src/server/prepost/action-grammar.ts",
+        "src/server/prepost/runner.ts",
+        "tests/prepost/action-grammar.test.ts",
+        "tests/prepost/runner.test.ts"
+      ],
+      "fixes": [
+        "AC-2 (blocking): implemented src/server/prepost/action-grammar.ts (pure resolveAction + isContinue) and src/server/prepost/runner.ts (runCommands: sequential spawn with shell:false, per-command timeout SIGTERM\u2192SIGKILL, prepost.command.* frames written to SessionLogWriter via serialised _writeQueue, RunCommandsResult discriminated union returned for the Pipeline Engine)."
+      ],
+      "deferred_criteria": [
+        "AC-1 full orchestration: openSessionLog() provides the hook; the orchestration loop (feat-scheduler/feat-server-main) must call it before ProcessManager.spawn() and pass { logWriter: writer } in SpawnOpts. The wiring between openSessionLog() and runCommands() — specifically, sharing the same writer for pre-commands (before the session) and handing it off to ProcessManager.spawn() — is the orchestration loop's responsibility.",
+        "prepost_runs table: runner.ts does not write to prepost_runs. The orchestration loop must insert a prepost_runs row and then fire the appropriate state-machine event via applyItemTransition. The runner returns RunCommandsResult for the caller to act on.",
+        "HTTP server Fastify migration: createHttpServer() uses Node.js built-in http. When feat-server-main scaffolds Fastify, the handleSessionLog() route handler must be migrated; no logic changes required.",
+        "Retention policy enforcement (RC-2): no background cleanup task exists. A future maintenance feature must scan ~/.yoke/<fingerprint>/logs/ and prune files per retention.stream_json_logs config.",
+        "WS backfill path: readLogPage() provides the paging interface; wiring into the WS server is deferred to feat-api-ws."
+      ],
+      "known_risks": [
+        "runCommands() accepts a caller-provided SessionLogWriter that is already open. For pre-commands that run before the session spawns, the orchestration loop must open the writer (via openSessionLog()), pass it to runCommands(), and keep it open for ProcessManager.spawn(). If the orchestration loop closes the writer between pre-commands and spawn, frames from the agent session will be lost. This contract must be documented in the orchestration layer.",
+        "The SIGTERM\u2192SIGKILL escalation fires a 5 s background setTimeout after the outcome promise resolves. If the Node.js process exits within those 5 s (e.g., after a forced shutdown), the SIGKILL will not be delivered. For v1 (sequential, single-session), the child will be adopted and reaped by the OS. Acceptable risk.",
+        "runOneCommand() uses child.on('close') (waits for all streams) rather than child.on('exit'). On Node.js 18+ this is correct. On older Node versions, 'close' may fire before the readline 'close' event in edge cases with very large stdout. The _writeQueue drain after settlement mitigates this — all queued writes complete before the result is returned.",
+        "Empty run arrays (cmd.run = []) return spawn_failed immediately with a descriptive error. The config schema should validate that run has at least one element; if it does not, the runner is the last line of defence."
+      ]
     }
   ],
   "prior_features": [
