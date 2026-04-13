@@ -41,6 +41,7 @@ import {
   DEFAULT_MAX_OUTER_RETRIES,
 } from './retry-ladder.js';
 import type { RetryMode } from './retry-ladder.js';
+import type { PrePostRunRecord } from '../prepost/runner.js';
 
 // ---------------------------------------------------------------------------
 // Public types — action grammar (subset consumed by the engine)
@@ -100,6 +101,13 @@ export interface GuardContext {
   currentRetryMode?: Exclude<RetryMode, 'awaiting_user'>;
   /** For phase advance: the name of the next phase in the stage. */
   nextPhase?: string;
+  /**
+   * Per-command execution records from pre and/or post command arrays.
+   * The engine persists these to `prepost_runs` inside the same
+   * db.transaction() as the corresponding state transition (AC-6, RC-4).
+   * If absent or empty, no prepost_runs rows are written.
+   */
+  prepostRuns?: PrePostRunRecord[];
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +721,42 @@ function cascadeBlockDependents(
 }
 
 // ---------------------------------------------------------------------------
+// Internal: write a single prepost_runs row (within an existing transaction)
+// ---------------------------------------------------------------------------
+
+function writePrepostRun(
+  db: SqliteDb,
+  run: PrePostRunRecord,
+  p: {
+    sessionId: string | null;
+    workflowId: string;
+    itemId: string | null;
+    stage: string;
+    phase: string;
+  },
+): void {
+  db.prepare(`
+    INSERT INTO prepost_runs
+      (session_id, workflow_id, item_id, stage, phase, when_phase,
+       command_name, argv, started_at, ended_at, exit_code, action_taken)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    p.sessionId,
+    p.workflowId,
+    p.itemId,
+    p.stage,
+    p.phase,
+    run.when,
+    run.commandName,
+    JSON.stringify(run.argv),
+    run.startedAt,
+    run.endedAt,
+    run.exitCode,
+    run.actionTaken !== null ? JSON.stringify(run.actionTaken) : null,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Internal: apply side effects that are pure SQLite operations
 // ---------------------------------------------------------------------------
 
@@ -934,6 +978,20 @@ export function applyItemTransition(
       db.prepare(
         `UPDATE workflows SET status = 'pending_stage_approval', updated_at = ? WHERE id = ?`,
       ).run(now, params.workflowId);
+    }
+
+    // AC-6 / RC-4: persist prepost_runs rows inside the same transaction as
+    // the state transition so they are atomically visible with the new state.
+    if (ctx.prepostRuns && ctx.prepostRuns.length > 0) {
+      for (const run of ctx.prepostRuns) {
+        writePrepostRun(db, run, {
+          sessionId: params.sessionId,
+          workflowId: params.workflowId,
+          itemId: params.itemId,
+          stage: params.stage,
+          phase: params.phase,
+        });
+      }
     }
 
     return {
