@@ -221,7 +221,7 @@ function buildScheduler(opts: {
     config: opts.config ?? makeConfig(),
     processManager: opts.processManager ?? new StubProcessManager(),
     worktreeManager: opts.worktreeManager ?? makeWorktreeManager(),
-    prepostRunner: async () => ({ kind: 'complete' }),
+    prepostRunner: async () => ({ kind: 'complete', runs: [] }),
     assemblePrompt: async () => 'stub prompt',
     broadcast: (workflowId, sessionId, frameType, payload) => {
       broadcasts.push({ workflowId, sessionId, frameType, payload });
@@ -483,7 +483,7 @@ describe('AC-8: graceful drain on stop()', () => {
       config,
       processManager: pm,
       worktreeManager: makeWorktreeManager(),
-      prepostRunner: async () => ({ kind: 'complete' }),
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
       assemblePrompt: async () => 'stub prompt',
       broadcast: (wid, sid, ft, p) => broadcasts.push({ workflowId: wid, sessionId: sid, frameType: ft, payload: p }),
       maxParallel: 4,
@@ -542,9 +542,9 @@ describe('AC-4: pre-phase non-continue action blocks spawn', () => {
       // Pre runner returns stop-and-ask → pre_command_failed → awaiting_user.
       prepostRunner: async (opts) => {
         if (opts.when === 'pre') {
-          return { kind: 'action' as const, command: 'pre-check', action: 'stop-and-ask' as const };
+          return { kind: 'action' as const, command: 'pre-check', action: 'stop-and-ask' as const, runs: [] };
         }
-        return { kind: 'complete' as const };
+        return { kind: 'complete' as const, runs: [] };
       },
       assemblePrompt: async () => 'stub prompt',
       broadcast: () => {},
@@ -611,9 +611,10 @@ describe('AC-5 (spec): post-phase non-continue action forwarded to engine', () =
             kind: 'action' as const,
             command: 'review',
             action: { fail: { reason: 'review-failed' } },
+            runs: [],
           };
         }
-        return { kind: 'complete' as const };
+        return { kind: 'complete' as const, runs: [] };
       },
       assemblePrompt: async () => 'stub prompt',
       broadcast: () => {},

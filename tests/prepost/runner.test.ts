@@ -71,7 +71,8 @@ describe('runCommands — complete path', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'complete' });
+    expect(result.kind).toBe('complete');
+    expect(result.runs).toHaveLength(1);
   });
 
   it('returns { kind: complete } when multiple commands all exit 0 with continue', async () => {
@@ -85,7 +86,8 @@ describe('runCommands — complete path', () => {
       logWriter,
       when: 'pre',
     });
-    expect(result).toEqual({ kind: 'complete' });
+    expect(result.kind).toBe('complete');
+    expect(result.runs).toHaveLength(3);
   });
 
   it('returns { kind: complete } for an empty commands array', async () => {
@@ -95,7 +97,8 @@ describe('runCommands — complete path', () => {
       logWriter,
       when: 'pre',
     });
-    expect(result).toEqual({ kind: 'complete' });
+    expect(result.kind).toBe('complete');
+    expect(result.runs).toHaveLength(0);
   });
 });
 
@@ -106,7 +109,7 @@ describe('runCommands — complete path', () => {
 describe('runCommands — action returned', () => {
   it('returns { kind: action } when first command exits with a non-continue action', async () => {
     const command = cmd('check', ['node', '-e', 'process.exit(1)'], {
-      actions: { '0': 'continue', '1': { goto: 'plan' } },
+      actions: { '0': 'continue', '1': { goto: 'plan' }, '*': { fail: { reason: 'unexpected' } } },
     });
     const result = await runCommands({
       commands: [command],
@@ -114,7 +117,8 @@ describe('runCommands — action returned', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'action', command: 'check', action: { goto: 'plan' } });
+    expect(result).toMatchObject({ kind: 'action', command: 'check', action: { goto: 'plan' } });
+    expect(result.runs).toHaveLength(1);
   });
 
   it('stops at the first failing command and does not run subsequent commands', async () => {
@@ -133,7 +137,7 @@ describe('runCommands — action returned', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'action', command: 'cmd1', action: 'stop-and-ask' });
+    expect(result).toMatchObject({ kind: 'action', command: 'cmd1', action: 'stop-and-ask' });
     // cmd2 must not have run.
     const flagExists = await fs.promises.access(flagFile).then(() => true).catch(() => false);
     expect(flagExists).toBe(false);
@@ -151,7 +155,7 @@ describe('runCommands — action returned', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'action', command: 'second', action: 'stop' });
+    expect(result).toMatchObject({ kind: 'action', command: 'second', action: 'stop' });
   });
 
   it('returns stop-and-ask action correctly', async () => {
@@ -165,7 +169,7 @@ describe('runCommands — action returned', () => {
       logWriter,
       when: 'pre',
     });
-    expect(result).toEqual({ kind: 'action', command: 'check', action: 'stop-and-ask' });
+    expect(result).toMatchObject({ kind: 'action', command: 'check', action: 'stop-and-ask' });
   });
 
   it('wildcard action is returned for an undeclared exit code', async () => {
@@ -179,7 +183,7 @@ describe('runCommands — action returned', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'action', command: 'check', action: { fail: { reason: 'oops' } } });
+    expect(result).toMatchObject({ kind: 'action', command: 'check', action: { fail: { reason: 'oops' } } });
   });
 });
 
@@ -199,7 +203,7 @@ describe('runCommands — unhandled exit code', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'unhandled_exit', command: 'check', exitCode: 42 });
+    expect(result).toMatchObject({ kind: 'unhandled_exit', command: 'check', exitCode: 42 });
   });
 });
 
@@ -465,7 +469,7 @@ describe('runCommands — timeout', () => {
       logWriter,
       when: 'post',
     });
-    expect(result).toEqual({ kind: 'timeout', command: 'slow' });
+    expect(result).toMatchObject({ kind: 'timeout', command: 'slow' });
   }, 10_000);
 
   it('writes a timed_out exit frame to the log', async () => {
@@ -518,5 +522,136 @@ describe('runCommands — when field', () => {
     for (const f of frames) {
       expect(f['when']).toBe('post');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. runs array — per-command execution records (AC-6)
+// ---------------------------------------------------------------------------
+
+describe('runCommands — runs array (AC-6)', () => {
+  it('complete result carries one record per command', async () => {
+    const result = await runCommands({
+      commands: [
+        cmd('a', ['node', '-e', 'process.exit(0)']),
+        cmd('b', ['node', '-e', 'process.exit(0)']),
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'pre',
+    });
+    expect(result.kind).toBe('complete');
+    expect(result.runs).toHaveLength(2);
+    expect(result.runs[0].commandName).toBe('a');
+    expect(result.runs[1].commandName).toBe('b');
+  });
+
+  it('run record carries correct argv, when, exitCode, actionTaken for continue', async () => {
+    const result = await runCommands({
+      commands: [cmd('check', ['node', '-e', 'process.exit(0)'])],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'post',
+    });
+    expect(result.kind).toBe('complete');
+    const rec = result.runs[0];
+    expect(rec.commandName).toBe('check');
+    expect(rec.argv).toEqual(['node', '-e', 'process.exit(0)']);
+    expect(rec.when).toBe('post');
+    expect(rec.exitCode).toBe(0);
+    expect(rec.actionTaken).toBe('continue');
+    expect(typeof rec.startedAt).toBe('string');
+    expect(typeof rec.endedAt).toBe('string');
+  });
+
+  it('action result carries records for all commands that ran', async () => {
+    const result = await runCommands({
+      commands: [
+        cmd('first', ['node', '-e', 'process.exit(0)']),
+        cmd('second', ['node', '-e', 'process.exit(1)'], {
+          actions: { '1': 'stop-and-ask', '*': 'stop' },
+        }),
+        cmd('third', ['node', '-e', 'process.exit(0)']),  // must NOT run
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'post',
+    });
+    expect(result.kind).toBe('action');
+    // Only two records: first (continue) and second (stop-and-ask). Third never ran.
+    expect(result.runs).toHaveLength(2);
+    expect(result.runs[0].commandName).toBe('first');
+    expect(result.runs[0].actionTaken).toBe('continue');
+    expect(result.runs[1].commandName).toBe('second');
+    expect(result.runs[1].actionTaken).toBe('stop-and-ask');
+    expect(result.runs[1].exitCode).toBe(1);
+  });
+
+  it('timeout record has exitCode=null and actionTaken=null', async () => {
+    const result = await runCommands({
+      commands: [
+        cmd('slow', ['node', '-e', 'setTimeout(() => {}, 60_000);'], {
+          actions: { '0': 'continue', '*': 'stop' },
+          timeout_s: 0.2,
+        }),
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'pre',
+    });
+    expect(result.kind).toBe('timeout');
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0].exitCode).toBeNull();
+    expect(result.runs[0].actionTaken).toBeNull();
+  }, 10_000);
+
+  it('spawn_failed record has exitCode=null and actionTaken=null', async () => {
+    const result = await runCommands({
+      commands: [
+        cmd('missing', ['this-binary-does-not-exist-xyz-yoke-test'], {
+          actions: { '0': 'continue', '*': 'stop' },
+        }),
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'pre',
+    });
+    expect(result.kind).toBe('spawn_failed');
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0].exitCode).toBeNull();
+    expect(result.runs[0].actionTaken).toBeNull();
+  });
+
+  it('unhandled_exit record has the exit code and actionTaken=null', async () => {
+    const result = await runCommands({
+      commands: [
+        cmd('check', ['node', '-e', 'process.exit(42)'], {
+          actions: { '0': 'continue', '*': 'continue' },
+        }),
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'post',
+    });
+    // Exit code 42 with no exact match and wildcard is 'continue' → unhandled? No:
+    // '*' maps to 'continue', so it returns kind='continue_next', then complete.
+    // Let's use a map with no '*' key to force unhandled.
+    // Actually the 'cmd' helper adds '*', so override it here.
+    const result2 = await runCommands({
+      commands: [
+        {
+          name: 'check2',
+          run: ['node', '-e', 'process.exit(42)'],
+          actions: { '0': 'continue' },  // no '*'
+        },
+      ],
+      worktreePath: tmpDir,
+      logWriter,
+      when: 'post',
+    });
+    expect(result2.kind).toBe('unhandled_exit');
+    expect(result2.runs).toHaveLength(1);
+    expect(result2.runs[0].exitCode).toBe(42);
+    expect(result2.runs[0].actionTaken).toBeNull();
   });
 });

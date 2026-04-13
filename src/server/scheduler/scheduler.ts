@@ -892,7 +892,7 @@ export class Scheduler {
 
     if (exitCode === 0) {
       // --- Post: commands (AC-5) ---
-      let postResult: RunCommandsResult = { kind: 'complete' };
+      let postResult: RunCommandsResult = { kind: 'complete', runs: [] };
       if (phaseConfig.post && phaseConfig.post.length > 0) {
         postResult = await this.prepostRunner({
           commands: phaseConfig.post,
