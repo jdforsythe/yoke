@@ -235,6 +235,42 @@ describe('GET /api/sessions/:id/log — read-only (AC-6)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AC-6 strengthened: non-GET methods on the log path return 404
+// ---------------------------------------------------------------------------
+
+describe('GET /api/sessions/:id/log — read-only method check (AC-6)', () => {
+  /** Issue an HTTP request with an arbitrary method; return status code. */
+  async function method(verb: string, urlStr: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(urlStr, { method: verb }, (res) => {
+        res.resume(); // drain body
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('POST /api/sessions/:id/log returns 404 — no write path exposed', async () => {
+    const id = insertSession(null);
+    const status = await method('POST', `${baseUrl}/api/sessions/${id}/log`);
+    expect(status).toBe(404);
+  });
+
+  it('DELETE /api/sessions/:id/log returns 404 — no delete path exposed', async () => {
+    const id = insertSession(null);
+    const status = await method('DELETE', `${baseUrl}/api/sessions/${id}/log`);
+    expect(status).toBe(404);
+  });
+
+  it('PUT /api/sessions/:id/log returns 404 — no write path exposed', async () => {
+    const id = insertSession(null);
+    const status = await method('PUT', `${baseUrl}/api/sessions/${id}/log`);
+    expect(status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // RC-3: reads from JSONL file, not from SQLite
 // ---------------------------------------------------------------------------
 

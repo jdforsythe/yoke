@@ -6,16 +6,27 @@
  * suite completes in well under 5 seconds.
  */
 
+import * as fs from 'node:fs';
 import os from 'node:os';
-import { describe, expect, it } from 'vitest';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JigProcessManager } from '../../src/server/process/jig-manager.js';
 import {
   ProcessError,
   type ProcessManager,
   type SpawnHandle,
 } from '../../src/server/process/manager.js';
+import { SessionLogWriter } from '../../src/server/session-log/writer.js';
 
 const TMP = os.tmpdir();
+
+let tmpDir: string;
+beforeEach(async () => {
+  tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'yoke-jig-'));
+});
+afterEach(async () => {
+  await fs.promises.rm(tmpDir, { recursive: true, force: true });
+});
 
 /** Wait for the 'exit' event on a handle, resolving with [code, signal]. */
 function waitForExit(handle: SpawnHandle): Promise<[number | null, NodeJS.Signals | null]> {
@@ -545,5 +556,85 @@ describe('environment variable injection', () => {
 
     const lines = await collectStdoutLines(handle);
     expect(lines[0]).toBe('injected_value');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Session log writer wiring (AC-1)
+// ---------------------------------------------------------------------------
+
+describe('session log writer wiring (AC-1)', () => {
+  it('copies each stdout_line verbatim to the log file when logWriter is provided', async () => {
+    const logPath = path.join(tmpDir, 'session.jsonl');
+    const writer = new SessionLogWriter(logPath);
+    await writer.open();
+
+    const mgr = new JigProcessManager();
+    const script = [
+      'process.stdout.write(\'{"type":"text","text":"hello"}\\n\');',
+      'process.stdout.write(\'{"type":"text","text":"world"}\\n\');',
+      'process.exit(0);',
+    ].join('');
+
+    const handle = await mgr.spawn({
+      command: 'node',
+      args: ['-e', script],
+      cwd: TMP,
+      promptBuffer: '',
+      logWriter: writer,
+    });
+
+    // 'exit' fires only after the log is drained and closed (_wireExit drain chain).
+    await waitForExit(handle);
+
+    const content = await fs.promises.readFile(logPath, 'utf8');
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0])).toEqual({ type: 'text', text: 'hello' });
+    expect(JSON.parse(lines[1])).toEqual({ type: 'text', text: 'world' });
+  });
+
+  it('preserves line order in the log when many lines are written rapidly', async () => {
+    const logPath = path.join(tmpDir, 'ordered.jsonl');
+    const writer = new SessionLogWriter(logPath);
+    await writer.open();
+
+    const COUNT = 50;
+    const script = [
+      `for (let i = 0; i < ${COUNT}; i++) process.stdout.write(JSON.stringify({seq:i})+'\\n');`,
+      'process.exit(0);',
+    ].join('');
+
+    const mgr = new JigProcessManager();
+    const handle = await mgr.spawn({
+      command: 'node',
+      args: ['-e', script],
+      cwd: TMP,
+      promptBuffer: '',
+      logWriter: writer,
+    });
+
+    await waitForExit(handle);
+
+    const content = await fs.promises.readFile(logPath, 'utf8');
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(COUNT);
+    lines.forEach((line, i) => {
+      expect(JSON.parse(line).seq).toBe(i);
+    });
+  });
+
+  it('spawn without logWriter still emits stdout_line events normally (no regression)', async () => {
+    const mgr = new JigProcessManager();
+    const handle = await mgr.spawn({
+      command: 'node',
+      args: ['-e', 'process.stdout.write("marker\\n"); process.exit(0);'],
+      cwd: TMP,
+      promptBuffer: '',
+      // logWriter intentionally omitted
+    });
+
+    const lines = await collectStdoutLines(handle);
+    expect(lines).toContain('marker');
   });
 });
