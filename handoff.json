@@ -57,21 +57,70 @@
         "AC-1 (blocking): widened stageComplete guard from `newState === 'complete'` to `STAGE_TERMINAL_STATES.has(newState)` so that user_block and user_cancel transitions to blocked/abandoned also fire the stage-complete probe.",
         "RC-4 (blocking): added `needsApproval?: boolean` to ApplyItemTransitionParams; when stageComplete && needsApproval, inserts pending_attention{kind=stage_needs_approval} and sets workflows.status='pending_stage_approval' inside the same transaction.",
         "StaleSesssion typo (non-blocking): renamed to StaleSession; deprecated alias kept for one release.",
-        "buildCrashRecovery transaction (non-blocking): all recovery_state writes now committed in one db.transaction() — all-or-nothing for multi-workflow probes."
+        "buildCrashRecovery transaction (non-blocking): all recovery_state writes now committed in one db.transaction() \u2014 all-or-nothing for multi-workflow probes."
       ],
       "deferred_criteria": [
         "Orchestration event loop (carried from attempt 0): applyItemTransition, checkStageComplete, and buildCrashRecovery are implemented and tested in isolation, but the scheduling loop that fires deps_satisfied, backoff_elapsed, rate_limit_window_elapsed, and coordinates WorktreeManager/ProcessManager/PrePostRunner with the engine does not yet exist.",
-        "Stage advancement writing to workflows.current_stage (carried from attempt 0): the engine returns stageComplete=true but does not write the next stage name to workflows.current_stage — that requires the orchestration loop to have the pipeline config.",
+        "Stage advancement writing to workflows.current_stage (carried from attempt 0): the engine returns stageComplete=true but does not write the next stage name to workflows.current_stage \u2014 that requires the orchestration loop to have the pipeline config.",
         "stage_approval_granted resume path: workflows.status='pending_stage_approval' is set; the orchestration loop must receive a stage_approval_granted event and reset workflows.status before resuming. Neither the event listener nor the status reset is implemented.",
         "Workflow-level state machine (carried): workflows.status is updated to pending_stage_approval but has no formal state-machine transitions for other workflow-level states.",
-        "prepost_runs table (carried): the engine does not write prepost_runs rows — the Pre/Post Runner (not yet implemented) must do that.",
-        "Artifact validators (carried): applyItemTransition accepts validator_fail/diff_check_fail but does not run ajv validators — caller responsibility.",
+        "prepost_runs table (carried): the engine does not write prepost_runs rows \u2014 the Pre/Post Runner (not yet implemented) must do that.",
+        "Artifact validators (carried): applyItemTransition accepts validator_fail/diff_check_fail but does not run ajv validators \u2014 caller responsibility.",
         "WS frame emission (carried): sideEffects labels are returned but the orchestration loop must map them to concrete WebSocket frames."
       ],
       "known_risks": [
         "needs_approval is a caller-supplied flag on applyItemTransition, not derived from config. If the orchestration loop fails to set needsApproval=true when the next stage requires approval, the pending_attention row will not be inserted silently. Config-load-time validation that checks needs_approval on each stage and passes it down would prevent this omission.",
-        "workflows.status='pending_stage_approval' is a new status value introduced by this change. Any query that enumerates terminal workflow statuses (e.g., the TERMINAL_WF_STATUSES list in buildCrashRecovery) must not accidentally exclude workflows in this state — they are non-terminal, correctly so.",
+        "workflows.status='pending_stage_approval' is a new status value introduced by this change. Any query that enumerates terminal workflow statuses (e.g., the TERMINAL_WF_STATUSES list in buildCrashRecovery) must not accidentally exclude workflows in this state \u2014 they are non-terminal, correctly so.",
         "StaleSesssion deprecated alias: callers that import the typo'd name will still compile but get a @deprecated warning. The alias should be removed in the next major feature that touches the public API."
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 1,
+      "ts": "2026-04-13T12:02:32Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-5 violated: `WorktreeManager` writes directly to SQLite (`manager.ts:201`, `manager.ts:253`). `createWorktree` mutates `workflows.branch_name` and `workflows.worktree_path` via `db.transaction()`. `runBootstrap` inserts into `pending_attention` via `db.transaction()`. Both are in scope of the criterion (\"workflow/item/session state\"). The engine test correctly tags AC-5 as \"(structural)\" but the structural property is not satisfied. Fix path: remove the `db` parameter from `createWorktree` and return `{ branchName, worktreePath }` for the engine to write. Remove `db` from `runBootstrap` and have the engine write `pending_attention` after receiving the `BootstrapEvent`. This aligns with the architecture's stated principle and the existing handoff note: \"This module never calls transition() itself (RC-1).\""
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 2,
+      "ts": "2026-04-13T12:03:11Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-5 violated: `WorktreeManager` writes directly to SQLite (`manager.ts:201`, `manager.ts:253`). `createWorktree` mutates `workflows.branch_name` and `workflows.worktree_path` via `db.transaction()`. `runBootstrap` inserts into `pending_attention` via `db.transaction()`. Both are in scope of the criterion (\"workflow/item/session state\"). The engine test correctly tags AC-5 as \"(structural)\" but the structural property is not satisfied. Fix path: remove the `db` parameter from `createWorktree` and return `{ branchName, worktreePath }` for the engine to write. Remove `db` from `runBootstrap` and have the engine write `pending_attention` after receiving the `BootstrapEvent`. This aligns with the architecture's stated principle and the existing handoff note: \"This module never calls transition() itself (RC-1).\""
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "ts": "2026-04-13T12:05:00Z",
+      "intended_files": [
+        "src/server/worktree/manager.ts",
+        "src/server/pipeline/engine.ts",
+        "tests/worktree/manager.test.ts",
+        "tests/pipeline/engine.test.ts"
+      ],
+      "fixes": [
+        "AC-5 (blocking): removed db:DbPool param from createWorktree() and runBootstrap() — WorktreeManager no longer writes to SQLite at all. Added applyWorktreeCreated() to the Pipeline Engine to persist worktree creation (branch_name + worktree_path) inside a db.transaction() with a worktree_created events row.",
+        "bootstrap_fail pending_attention: the TRANSITIONS table already carries 'insert pending_attention{kind=bootstrap_failed}' as a sideEffect of bootstrap_fail; applyItemTransition() handles it. Removed the redundant db.transaction() from runBootstrap().",
+        "Removed workflowId from RunBootstrapOpts: it was only needed for the removed SQLite write.",
+        "Removed 4 SQLite-asserting tests from manager.test.ts; updated all createWorktree/runBootstrap call sites to drop db argument.",
+        "Added 3 engine integration tests for applyWorktreeCreated() covering workflows update, events row, and reader-visible atomicity."
+      ],
+      "deferred_criteria": [
+        "Orchestration event loop (carried): applyWorktreeCreated, applyItemTransition, checkStageComplete, and buildCrashRecovery are all implemented and tested in isolation, but the scheduling loop that sequences WorktreeManager.createWorktree() → applyWorktreeCreated() → runBootstrap() → applyItemTransition(bootstrap_ok/fail) does not yet exist.",
+        "Stage advancement writing to workflows.current_stage (carried): the engine returns stageComplete=true but does not write the next stage name to workflows.current_stage — that requires the orchestration loop to have the pipeline config.",
+        "stage_approval_granted resume path (carried): workflows.status='pending_stage_approval' is set; the orchestration loop must reset it.",
+        "Workflow-level state machine (carried): workflows.status transitions for all workflow-level states are not yet driven by the engine.",
+        "prepost_runs table (carried): Pre/Post Runner not yet implemented.",
+        "Artifact validators (carried): ajv validators not yet run by the engine.",
+        "WS frame emission (carried): sideEffects labels returned but orchestration loop must emit frames."
+      ],
+      "known_risks": [
+        "applyWorktreeCreated() takes branchName and worktreePath as plain strings. If the orchestration loop passes stale values (e.g. re-uses the same worktree path for a new workflow), the workflows row will be updated with incorrect data. Config-load-time uniqueness checks on worktree paths would prevent this.",
+        "WorktreeManager tests no longer cover the SQLite write for createWorktree or the pending_attention insert for runBootstrap — those responsibilities are now tested only in engine.test.ts. If the engine's applyWorktreeCreated() or the bootstrap_fail sideEffects path regresses, the manager tests will not catch it. The engine tests are the authoritative coverage."
       ]
     }
   ],
