@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@fastify/websocket": "^8.3.1",
+    "@octokit/rest": "^22.0.1",
     "ajv": "^8.17.1",
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
