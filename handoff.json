@@ -1,4 +1,37 @@
 {
+  "feature": "feat-pipeline-engine",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T23:50:00Z",
+      "intended_files": [
+        "src/server/pipeline/retry-ladder.ts",
+        "src/server/pipeline/engine.ts",
+        "tests/pipeline/retry-ladder.test.ts",
+        "tests/pipeline/engine.test.ts"
+      ],
+      "deferred_criteria": [
+        "Orchestration event loop: applyItemTransition, checkStageComplete, and buildCrashRecovery are implemented and tested in isolation, but the scheduling loop that actually drives workflows (fires deps_satisfied when deps complete, fires backoff_elapsed after the timer elapses, fires rate_limit_window_elapsed after the reset_at timer, coordinates WorktreeManager/ProcessManager/PrePostRunner calls with the engine) does not yet exist. This is a higher-level concern deferred to a future integration feature (e.g., feat-scheduler or feat-server-main).",
+        "Stage advancement writing to workflows.current_stage: checkStageCompleteInTxn returns true/false but does NOT write the next stage to workflows.current_stage. The orchestration loop must call db.writer.prepare('UPDATE workflows SET current_stage = ? WHERE id = ?') after detecting stageComplete=true from applyItemTransition. The engine intentionally does not do this because it does not know the next stage name (requires parsing the pipeline JSON from config).",
+        "needs_approval stage pausing (RC-4): the engine detects stageComplete but has no code path to insert pending_attention{kind=stage_needs_approval} or pause the workflow at the workflow level. This requires the orchestration loop to check the needs_approval flag on the next stage config and call applyItemTransition at the workflow level with a stage_approval_granted event.",
+        "Workflow-level state machine: workflows.status is never updated by the engine (only items.status is). The orchestration loop must update workflows.status when all items across all stages are terminal.",
+        "backoff timer and rate_limit_window_elapsed timer: the engine returns retryMode and the caller must store it (e.g., in a local map or events table extra field) to pass as guardCtx.currentRetryMode when the backoff timer fires backoff_elapsed. A production scheduler would use setTimeout or a SQLite-backed schedule to fire these events. Neither is implemented.",
+        "prepost_runs table: the engine writes events rows for every transition but does NOT write to prepost_runs. The Pre/Post Runner (not yet implemented) must write prepost_runs rows and then call applyItemTransition with the resulting action. The engine does not run pre/post commands itself.",
+        "Artifact validators: applyItemTransition accepts validator_fail and diff_check_fail events but does not run ajv validators or items_from diff checks. These are caller responsibilities (the orchestration loop runs validators, then fires the appropriate event).",
+        "WS frame emission: the sideEffects labels returned by applyItemTransition include labels like 'spawn agent session' and 'SIGTERM process group'. The caller (orchestration loop) is responsible for mapping these labels to concrete actions and for emitting workflow.update/item.update WebSocket frames after each transition."
+      ],
+      "known_risks": [
+        "cascade_block BFS can produce N events rows for N transitive dependents in one transaction. In pathological graphs (e.g., a diamond DAG with 1000 dependents), this is a large write. better-sqlite3 synchronous writes are fast, but very deep/wide dependency trees may cause transaction latency visible as a heartbeat stall. V1 graphs are expected to be small (10–50 items).",
+        "probeProcess(pid) uses process.kill(pid, 0) which on macOS may return EPERM for zombie processes (PID exists in the table but the process is effectively dead, waiting for parent to reap). The engine treats EPERM as 'alive', which is conservative — recovery_state won't be set for zombies. In practice, the harness uses detached children (child.unref()), so zombie accumulation is unlikely.",
+        "The selectConditionalOutcome function indexes into the outcomes array by position (outcomes[0], outcomes[1], etc.). This coupling to the TRANSITIONS array structure means any reordering of outcomes in transitions.ts without corresponding reordering in engine.ts will silently pick the wrong outcome. A structural test asserting outcome ordering would catch this drift.",
+        "buildCrashRecovery writes recovery_state to workflows but does NOT mark sessions as cancelled. A running session row with status='running' and a stale PID will remain as 'running' after crash recovery. The orchestration loop must update those sessions to status='cancelled' before restarting. If it does not, future crash recovery calls will re-detect the same stale PID repeatedly.",
+        "The engine does not validate that the guardCtx.postCommandAction.goto destination phase actually exists in the stage's phase list. An invalid destination phase will be stored in items.current_phase and may cause confusion in the orchestration loop. Config-load-time validation of goto destinations (checking that the target is a real phase name in the same stage) would catch this early."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-prompt-asm",
   "entries": [
     {
@@ -297,6 +330,10 @@
         "Ajv2020 imported from ajv/dist/2020.js; if a future ajv 9.x breaking change removes or renames this path, the import and the AnySchema cast will both need updating."
       ]
     }
+  ]
+  }
+  ]
+  }
   ]
   }
   ]
