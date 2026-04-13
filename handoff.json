@@ -1,4 +1,34 @@
 {
+  "feature": "feat-prompt-asm",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T23:08:00Z",
+      "intended_files": [
+        "src/server/prompt/engine.ts",
+        "src/server/prompt/assembler.ts",
+        "src/server/prompt/context.ts",
+        "tests/prompt/assembler.test.ts",
+        "tests/prompt/context.test.ts"
+      ],
+      "deferred_criteria": [
+        "Pipeline Engine wiring: buildPromptContext() and assemblePrompt() are implemented and tested in isolation, but the Pipeline Engine that calls them at phase-start time does not yet exist. The Engine must: (1) query the item row and workflow row from SQLite; (2) construct a GitHelper using execFileAsync('git', ...) in the worktree CWD; (3) determine diffFrom (last completed-phase commit SHA, stored in the events table or a dedicated column) and diffTo (HEAD of the worktree branch); (4) call buildPromptContext(); (5) call assemblePrompt() with the loaded template; (6) validate the assembled prompt byte length against the 4 MB ceiling (plan-draft3 §Process Management D21); (7) pass the prompt as stdin to the Process Manager.",
+        "Template loading at config-load time (prompt-template-spec.md §7): templates are not yet loaded at startup; the Pipeline Engine currently has no config-loader integration for prompt_template file paths. The assembler accepts raw template strings, so loading is a caller responsibility. The variable-discovery pre-scan (regex scan at load time, cached) described in §7 is not implemented — the assembler rescans on every call. This is acceptable for v1 but the pre-scan optimization and load-time error reporting are deferred.",
+        "Dry-run preview endpoint (prompt-template-spec.md §8): the previewPrompt(workflowId, phase, featureId?) helper that wraps buildPromptContext + assemblePrompt without spawning is not implemented as a standalone export. It can be built by calling the two functions directly; a named helper is deferred to the API layer (feat-api-http).",
+        "once-stage variables: the context builder populates base variables for once-stage phases but does NOT populate items_summary (prompt-template-spec.md §3.3). The items_summary variable (summary of all items with current states) requires a SQLite query across the items table — the builder currently accepts no DbPool. Adding items_summary would require injecting a reader connection into PromptContextInputs. Deferred pending Pipeline Engine design."
+      ],
+      "known_risks": [
+        "item.data is parsed via JSON.parse() which throws SyntaxError on invalid JSON. The context builder propagates this throw to the caller (documented in JSDoc). The Pipeline Engine must catch SyntaxError from buildPromptContext() and treat it as a phase failure — not a harness crash.",
+        "The PromptContext index signature is Record<string, string | Record<string, unknown>>. Array values at the top level (e.g. ctx['items'] = [...]) are not accepted by the TypeScript type but are handled correctly at runtime by the engine's JSON.stringify branch. The type is intentionally conservative (matches spec doc §4) but callers passing arrays must cast. The engine does not enforce the type at runtime — it uses JSON.stringify for any non-string value.",
+        "Dot-traversal stops at the first array intermediate: {{item.list.something}} where item.list is an array produces [MISSING:item.list.something]. The engine does not support array indexing ({{item.list.0}}). This is per-spec (v1 out of scope), but template authors who put arrays inside item.data must access them via {{item.list}} (full JSON) rather than {{item.list.0}} (index access).",
+        "The git.diffRange stub in tests returns a fixed string. The real implementation (to be wired by the Pipeline Engine) must call 'git -C <worktreePath> diff <from> <to>' and handle the case where one or both refs do not exist (e.g. the item was just created and has no completed-phase commit yet). The context builder treats diffFrom absence as 'return empty string' — this is the correct default for new items.",
+        "readHandoffEntries parses handoff.json with JSON.parse() and throws SyntaxError if the file is malformed. If a previous phase session wrote a truncated handoff.json (e.g. due to a crash mid-write), the context builder will throw on the next phase. The Pipeline Engine should catch this and either skip the handoff variable (provide '') or treat it as a phase failure."
+      ]
+    }
+  ],
+  "prior_features": [
+  {
   "feature": "feat-worktree-mgr",
   "entries": [
     {
@@ -230,7 +260,7 @@
       ],
       "deferred_criteria": [
         "busy_timeout on read-only connections: the PRAGMA is set and verified to return 5000 in tests. However, exercising an actual SQLITE_BUSY contention scenario on a reader (two concurrent processes, one holding a write lock) is not covered — it would require a multi-process fixture. The unit test verifies the PRAGMA value only.",
-        "synchronous=NORMAL is not applied to the reader connection: omitted because setting it on a readonly connection risks SQLITE_READONLY on some builds. Readers don't fsync writes, so this is a no-op concern for them.",
+        "synchronous=NORMAL is not applied to the reader connection: omitted because setting it on a readonly connection risks SQLITE_READONLY on some SQLite builds. Readers don't fsync writes, so this is a no-op concern for them.",
         "A true multi-slot read-only pool (N pre-opened readers for dashboard concurrency) is not implemented — reader() returns a single pre-opened connection. If the dashboard has concurrent synchronous reads, a larger pool may be needed; that is a separate feature."
       ],
       "known_risks": [
@@ -267,6 +297,8 @@
         "Ajv2020 imported from ajv/dist/2020.js; if a future ajv 9.x breaking change removes or renames this path, the import and the AnySchema cast will both need updating."
       ]
     }
+  ]
+  }
   ]
   }
   ]
