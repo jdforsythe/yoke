@@ -1,64 +1,93 @@
 {
-    "feature": "feat-scheduler",
-    "entries": [
-        {
-            "phase": "implement",
-            "attempt": 0,
-            "ts": "2026-04-13T18:00:00Z",
-            "intended_files": [
-                "src/server/api/ws.ts",
-                "src/server/api/server.ts",
-                "src/server/pipeline/engine.ts",
-                "src/server/scheduler/ingest.ts",
-                "src/server/scheduler/scheduler.ts",
-                "src/cli/start.ts",
-                "tests/scheduler/scheduler.test.ts"
-            ],
-            "deferred_criteria": [
-                "run:per-item stages: ingestWorkflow seeds one placeholder item per per-item stage (for ordering deps), but actual item rows must be created lazily when the stage activates by reading the manifest file from the worktree. The scheduler's _processWorkflow will need a 'seed_per_item_items' branch when a per-item stage's placeholder item transitions to ready.",
-                "AckAttentionFn / ServerCallbacks not wired in start.ts: createServer(db) is called without callbacks, so POST /api/workflows/:id/attention/:attentionId/ack returns 501 in production. Wire the callback with the engine-layer ack handler.",
-                "rate_limit_detected event path: StreamJsonParser fires 'rate_limit_detected' and the scheduler fires the 'rate_limit_detected' transition, but this path is untested (no fixture emitting a rate_limit_event line). Verify the transition exists in TRANSITIONS before marking tested."
-            ],
-            "known_risks": [
-                "WorktreeManager requires a real git repo at config.configDir — will throw if yoke is run outside a git repository. Add a git root check to startServer or yoke doctor.",
-                "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) may block CI if tsc --noEmit is run on test files. Escalate to owner of SpawnHandle.on overload definitions.",
-                "openSessionLog path (~/.yoke/<fingerprint>/logs/...) differs from the tmpdir used in tests, so session log paths in tests use the test tmpdir; this is intentional but means the fingerprint-based production path is untested end-to-end."
-            ]
-        },
-        {
-            "phase": "implement",
-            "attempt": 0,
-            "ts": "2026-04-13T15:05:00Z",
-            "intended_files": [
-                "src/cli/index.ts",
-                "src/cli/init.ts",
-                "src/cli/start.ts",
-                "src/cli/status.ts",
-                "src/cli/cancel.ts",
-                "src/cli/doctor.ts",
-                "src/cli/record.ts",
-                "src/server/process/scripted-manager.ts",
-                "src/server/api/server.ts",
-                "tests/cli/init.test.ts",
-                "tests/cli/start.test.ts",
-                "tests/cli/status.test.ts",
-                "tests/cli/cancel.test.ts",
-                "tests/cli/doctor.test.ts",
-                "tests/cli/record.test.ts",
-                "tests/process/scripted-manager.test.ts"
-            ],
-            "deferred_criteria": [
-                "yoke record capture mode integration: record.ts writes .yoke/record.json as a marker, and ScriptedProcessManager replays fixtures. The pipeline engine (feat-server-main or feat-scheduler) must read readRecordMarker() at session-spawn time and, if enabled: (1) open a fixture file at the capturePath, (2) tee each stdout_line from JigSpawnHandle to the fixture file as { type: 'stdout', line } JSONL records, (3) write a { type: 'exit', code } record on process exit, (4) call clearRecordMarker() after the session ends. This wiring is a pipeline engine concern, not a CLI concern.",
-                "bin entry point: src/cli/index.ts exports main() but there is no bin/yoke.js wrapper or build pipeline to produce a runnable binary. A bin field in package.json and a tsconfig.build.json for emit=true are needed before npm link / npx yoke works. Adding tsx as a devDependency and a bin wrapper is deferred to feat-server-main or a dedicated packaging step.",
-                "yoke start does not pass a ResolvedConfig to the pipeline engine: it opens the DB and starts Fastify, but no pipeline engine loop exists yet. The CLI contract (spawn the pipeline engine) is satisfied structurally but no workflow processing occurs until the engine is wired (feat-pipeline-orchestration).",
-                "yoke status --watch: polling mode (repeated clears + prints) is not implemented; single-shot table is the current behaviour."
-            ],
-            "known_risks": [
-                "server.ts active_sessions subquery adds a correlated subquery per workflow row; on large installs (100s of workflows) this could be slow. If performance is an issue, add an index on sessions(workflow_id, ended_at) or materialise the count in the workflows row.",
-                "yoke cancel does not verify the workflow exists before sending the POST; if the server returns 404 the error message includes the raw JSON body which may be verbose.",
-                "yoke start writes .yoke/server.json even when started with port 0 (OS-assigned); the file is correct, but a second concurrent yoke start would overwrite it, causing the first instance's URL to be lost. Single-instance enforcement is not implemented.",
-                "checkSqlite() in doctor.ts imports better-sqlite3 dynamically; if the native addon fails to load in an ESM context the error message may reference the CJS import path rather than the actual native module path."
-            ]
-        }
-    ]
+  "feature": "feat-scheduler",
+  "entries": [
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "ts": "2026-04-13T19:20:00Z",
+      "intended_files": [
+        "tests/scheduler/scheduler.test.ts",
+        "src/server/pipeline/engine.ts",
+        "src/server/scheduler/scheduler.ts",
+        "tests/pipeline/engine.test.ts"
+      ],
+      "deferred_criteria": [
+        "run:per-item stages: ingestWorkflow seeds one placeholder item per per-item stage (for ordering deps), but actual item rows must be created lazily when the stage activates by reading the manifest file from the worktree. The scheduler's _processWorkflow will need a 'seed_per_item_items' branch when a per-item stage's placeholder item transitions to ready.",
+        "AckAttentionFn / ServerCallbacks not wired in start.ts: createServer(db) is called without callbacks, so POST /api/workflows/:id/attention/:attentionId/ack returns 501 in production. Wire the callback with the engine-layer ack handler."
+      ],
+      "known_risks": [
+        "WorktreeManager requires a real git repo at config.configDir — will throw if yoke is run outside a git repository. Add a git root check to startServer or yoke doctor.",
+        "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) may block CI if tsc --noEmit is run on test files. Escalate to owner of SpawnHandle.on overload definitions.",
+        "openSessionLog path (~/.yoke/<fingerprint>/logs/...) differs from the tmpdir used in tests, so session log paths in tests use the test tmpdir; this is intentional but means the fingerprint-based production path is untested end-to-end."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T18:00:00Z",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/server/api/server.ts",
+        "src/server/pipeline/engine.ts",
+        "src/server/scheduler/ingest.ts",
+        "src/server/scheduler/scheduler.ts",
+        "src/cli/start.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [
+        "run:per-item stages: ingestWorkflow seeds one placeholder item per per-item stage (for ordering deps), but actual item rows must be created lazily when the stage activates by reading the manifest file from the worktree. The scheduler's _processWorkflow will need a 'seed_per_item_items' branch when a per-item stage's placeholder item transitions to ready.",
+        "AckAttentionFn / ServerCallbacks not wired in start.ts: createServer(db) is called without callbacks, so POST /api/workflows/:id/attention/:attentionId/ack returns 501 in production. Wire the callback with the engine-layer ack handler.",
+        "rate_limit_detected event path: StreamJsonParser fires 'rate_limit_detected' and the scheduler fires the 'rate_limit_detected' transition, but this path is untested (no fixture emitting a rate_limit_event line). Verify the transition exists in TRANSITIONS before marking tested."
+      ],
+      "known_risks": [
+        "WorktreeManager requires a real git repo at config.configDir \u2014 will throw if yoke is run outside a git repository. Add a git root check to startServer or yoke doctor.",
+        "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) may block CI if tsc --noEmit is run on test files. Escalate to owner of SpawnHandle.on overload definitions.",
+        "openSessionLog path (~/.yoke/<fingerprint>/logs/...) differs from the tmpdir used in tests, so session log paths in tests use the test tmpdir; this is intentional but means the fingerprint-based production path is untested end-to-end."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 0,
+      "ts": "2026-04-13T15:05:00Z",
+      "intended_files": [
+        "src/cli/index.ts",
+        "src/cli/init.ts",
+        "src/cli/start.ts",
+        "src/cli/status.ts",
+        "src/cli/cancel.ts",
+        "src/cli/doctor.ts",
+        "src/cli/record.ts",
+        "src/server/process/scripted-manager.ts",
+        "src/server/api/server.ts",
+        "tests/cli/init.test.ts",
+        "tests/cli/start.test.ts",
+        "tests/cli/status.test.ts",
+        "tests/cli/cancel.test.ts",
+        "tests/cli/doctor.test.ts",
+        "tests/cli/record.test.ts",
+        "tests/process/scripted-manager.test.ts"
+      ],
+      "deferred_criteria": [
+        "yoke record capture mode integration: record.ts writes .yoke/record.json as a marker, and ScriptedProcessManager replays fixtures. The pipeline engine (feat-server-main or feat-scheduler) must read readRecordMarker() at session-spawn time and, if enabled: (1) open a fixture file at the capturePath, (2) tee each stdout_line from JigSpawnHandle to the fixture file as { type: 'stdout', line } JSONL records, (3) write a { type: 'exit', code } record on process exit, (4) call clearRecordMarker() after the session ends. This wiring is a pipeline engine concern, not a CLI concern.",
+        "bin entry point: src/cli/index.ts exports main() but there is no bin/yoke.js wrapper or build pipeline to produce a runnable binary. A bin field in package.json and a tsconfig.build.json for emit=true are needed before npm link / npx yoke works. Adding tsx as a devDependency and a bin wrapper is deferred to feat-server-main or a dedicated packaging step.",
+        "yoke start does not pass a ResolvedConfig to the pipeline engine: it opens the DB and starts Fastify, but no pipeline engine loop exists yet. The CLI contract (spawn the pipeline engine) is satisfied structurally but no workflow processing occurs until the engine is wired (feat-pipeline-orchestration).",
+        "yoke status --watch: polling mode (repeated clears + prints) is not implemented; single-shot table is the current behaviour."
+      ],
+      "known_risks": [
+        "server.ts active_sessions subquery adds a correlated subquery per workflow row; on large installs (100s of workflows) this could be slow. If performance is an issue, add an index on sessions(workflow_id, ended_at) or materialise the count in the workflows row.",
+        "yoke cancel does not verify the workflow exists before sending the POST; if the server returns 404 the error message includes the raw JSON body which may be verbose.",
+        "yoke start writes .yoke/server.json even when started with port 0 (OS-assigned); the file is correct, but a second concurrent yoke start would overwrite it, causing the first instance's URL to be lost. Single-instance enforcement is not implemented.",
+        "checkSqlite() in doctor.ts imports better-sqlite3 dynamically; if the native addon fails to load in an ESM context the error message may reference the CJS import path rather than the actual native module path."
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 0,
+      "ts": "2026-04-13T16:51:06Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "**RC-2 violation in `_handleStageComplete`** (`scheduler.ts:1050`, `scheduler.ts:1060`).   Direct `db.writer` calls in the scheduler body for updating `workflows.current_stage` and `workflows.status`. The engine has no function mediating these mutations. Fix: extract `applyStageAdvance(db, workflowId, nextStageId)` and `applyWorkflowComplete(db, workflowId, finalStatus)` into `engine.ts`, wrap in `db.transaction()`, and call those from `_handleStageComplete`."
+      ]
+    }
+  ]
 }

@@ -1,5 +1,13 @@
 # Yoke — Build Progress
 
+## feat-scheduler — implement attempt 1 (2026-04-13)
+
+Closed three deferred test gaps from attempt 0 and fixed the RC-2 blocker from the review.
+
+**AC-4/AC-5/AC-6 tests** (`tests/scheduler/scheduler.test.ts`): Added three integration tests that exercise previously untested code paths. AC-4: `prepostRunner` returning `stop-and-ask` for `when='pre'` blocks `ProcessManager.spawn` — verified by asserting `spawnCount=0` and `item.status='awaiting_user'`. AC-5: `prepostRunner` returning `{ fail: { reason: ... } }` for `when='post'` after a successful session exit forwards the action to `applyItemTransition` via `post_command_action` — item reaches `awaiting_retry` (not `complete`). AC-6: a `rate_limit_event` JSON stdout line triggers `StreamJsonParser`→`rate_limit_detected` event→`applyItemTransition(rate_limit_detected)`→item transitions to `rate_limited`; a 200 ms probe after the cancel confirms `spawnCount` stays at 1 (backoff window `resetsAt=9999999999` prevents re-spawn).
+
+**RC-2 fix** (`src/server/pipeline/engine.ts`, `src/server/scheduler/scheduler.ts`): The review found direct `db.writer` calls in `Scheduler._handleStageComplete`. Extracted two new engine-layer functions: `applyStageAdvance(db, workflowId, nextStageId)` and `applyWorkflowComplete(db, workflowId, finalStatus)`, both wrapped in `db.transaction()`. `_handleStageComplete` now calls these instead of `db.writer` directly — zero `db.writer` calls remain in `scheduler.ts`. Added 5 engine integration tests (writer update, reader atomicity, both `completed`/`completed_with_blocked` values). 861 tests pass; `tsc --noEmit` clean (5 pre-existing errors in scripted-manager.test.ts only).
+
 ## feat-scheduler — implement attempt 0 (2026-04-13)
 
 Implemented the Scheduler orchestration loop that drives the Yoke pipeline end-to-end. Six files created or modified across three modules.
