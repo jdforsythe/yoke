@@ -62,4 +62,9 @@ run-implement:
 run-review:
 	./yoke-v0 run review $(FEATURE)
 
-.PHONY: last-status last-output last-logs tail-session tail-session-raw run-implement run-review
+# deps FEATURE=<id> — print transitive dependency closure in topological order
+# Use FEATURES_FILE= to override the default features.json path.
+deps:
+	@python3 scripts/deps.py $(FEATURE) $(if $(FEATURES_FILE),$(FEATURES_FILE),)
+
+.PHONY: last-status last-output last-logs tail-session tail-session-raw run-implement run-review deps

@@ -518,12 +518,12 @@ For each feature in topological order:
   - ❌ **Clean exit + tests failing** → this shouldn't happen if the hook is working. If it does, the hook is broken — diagnose before continuing.
   - ❌ **Hook blocked stop, session gave up** → `./yoke-v0 continue implement <feature-id>` once; if still failing, fresh session with handoff.json updated with failure summary; if still failing after that, flag the feature as blocked and skip (mark `awaiting_user`)
   - ❌ **Process died unexpectedly** → check `.yoke/logs/` for the crash, `./yoke-v0 continue` once, else fresh
-- [ ] Check implement result: `make last-status PHASE=implement FEATURE=<feature-id>` — look for `Verdict : PASS`; on FAIL, check `make last-output PHASE=implement FEATURE=<feature-id>` for details
+- [x] Check implement result: `make last-status PHASE=implement FEATURE=<feature-id>` — look for `Verdict : PASS`; on FAIL, check `make last-output PHASE=implement FEATURE=<feature-id>` for details
 
-- [ ] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
-- [ ] After each feature: `./yoke-v0 run review <feature-id>` — review against acceptance and review criteria; if blocking issues found, address then re-implement before moving on
-- [ ] Check review result: `make last-status PHASE=review FEATURE=<feature-id>` — `Verdict : PASS` + `Blocking: none` required to proceed; on FAIL run `make last-output PHASE=review FEATURE=<feature-id>` to read the full report
-- [ ] After each feature: `pnpm test` (skip until `package.json` exists; once it does, run after every feature)
+- [x] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
+- [x] After each feature: `./yoke-v0 run review <feature-id>` — review against acceptance and review criteria; if blocking issues found, address then re-implement before moving on
+- [x] Check review result: `make last-status PHASE=review FEATURE=<feature-id>` — `Verdict : PASS` + `Blocking: none` required to proceed; on FAIL run `make last-output PHASE=review FEATURE=<feature-id>` to read the full report
+- [x] After each feature: `pnpm test` (skip until `package.json` exists; once it does, run after every feature)
 
 ### δ.3 — Self-hosting checkpoint
 
