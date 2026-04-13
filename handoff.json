@@ -40,5 +40,20 @@
         "The scheduler now imports from '../../cli/record.js' (readRecordMarker, clearRecordMarker). This is a cli→server dependency direction inversion. If the project enforces a strict layer boundary (cli must not be imported by server), these helpers should move to a shared module. No boundary enforcement exists today but this should be flagged in review."
       ]
     }
+  ,
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "ts": "2026-04-13T22:45:00Z",
+      "intended_files": [
+        "src/server/process/record-marker.ts",
+        "src/cli/record.ts",
+        "src/server/scheduler/scheduler.ts",
+        "progress.md",
+        "handoff.json"
+      ],
+      "deferred_criteria": [],
+      "known_risks": []
+    }
   ]
 }

@@ -1,5 +1,13 @@
 # Yoke — Build Progress
 
+## feat-process-mgr-scripted — implement attempt 2 (2026-04-13)
+
+Fixed the architectural import-direction inversion flagged as a known risk in attempt 1: the Scheduler (server layer) was importing `readRecordMarker` and `clearRecordMarker` directly from `src/cli/record.ts`, violating the rule that server modules must not import from the CLI layer.
+
+**`src/server/process/record-marker.ts`** (new): Canonical home for `RecordMarker` type, `readRecordMarker`, and `clearRecordMarker`. Documented with the marker file schema and the rationale for its placement in the server layer. **`src/cli/record.ts`** now re-exports these three symbols from the server module via `export type` / `export { }` re-export syntax so existing tests and the CLI command handler continue to work without any changes. **`src/server/scheduler/scheduler.ts`** import updated from `../../cli/record.js` → `../process/record-marker.js` — the only edit needed on the consumer side.
+
+No behaviour change; 883 tests pass; `tsc --noEmit` clean.
+
 ## feat-process-mgr-scripted — implement attempt 1 (2026-04-13)
 
 Completed AC-2 (the only previously deferred acceptance criterion): `yoke record` capture mode now fully tee-s a live session's stream-json output to a JSONL fixture file.
