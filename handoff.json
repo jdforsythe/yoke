@@ -1,6 +1,30 @@
 {
-    "feature": "feat-cli",
+    "feature": "feat-scheduler",
     "entries": [
+        {
+            "phase": "implement",
+            "attempt": 0,
+            "ts": "2026-04-13T18:00:00Z",
+            "intended_files": [
+                "src/server/api/ws.ts",
+                "src/server/api/server.ts",
+                "src/server/pipeline/engine.ts",
+                "src/server/scheduler/ingest.ts",
+                "src/server/scheduler/scheduler.ts",
+                "src/cli/start.ts",
+                "tests/scheduler/scheduler.test.ts"
+            ],
+            "deferred_criteria": [
+                "run:per-item stages: ingestWorkflow seeds one placeholder item per per-item stage (for ordering deps), but actual item rows must be created lazily when the stage activates by reading the manifest file from the worktree. The scheduler's _processWorkflow will need a 'seed_per_item_items' branch when a per-item stage's placeholder item transitions to ready.",
+                "AckAttentionFn / ServerCallbacks not wired in start.ts: createServer(db) is called without callbacks, so POST /api/workflows/:id/attention/:attentionId/ack returns 501 in production. Wire the callback with the engine-layer ack handler.",
+                "rate_limit_detected event path: StreamJsonParser fires 'rate_limit_detected' and the scheduler fires the 'rate_limit_detected' transition, but this path is untested (no fixture emitting a rate_limit_event line). Verify the transition exists in TRANSITIONS before marking tested."
+            ],
+            "known_risks": [
+                "WorktreeManager requires a real git repo at config.configDir — will throw if yoke is run outside a git repository. Add a git root check to startServer or yoke doctor.",
+                "The 5 pre-existing TypeScript errors in tests/process/scripted-manager.test.ts ('exit' vs 'error' event overloads) may block CI if tsc --noEmit is run on test files. Escalate to owner of SpawnHandle.on overload definitions.",
+                "openSessionLog path (~/.yoke/<fingerprint>/logs/...) differs from the tmpdir used in tests, so session log paths in tests use the test tmpdir; this is intentional but means the fingerprint-based production path is untested end-to-end."
+            ]
+        },
         {
             "phase": "implement",
             "attempt": 0,
