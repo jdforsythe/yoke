@@ -4,6 +4,14 @@ export interface DbPool {
   readonly writer: Database.Database;
   reader(): Database.Database;
   close(): void;
+  /**
+   * Runs fn inside a single BEGIN/COMMIT transaction on the writer connection.
+   * If fn throws, the transaction is rolled back and the exception is re-thrown
+   * to the caller without wrapping. Returns the value returned by fn.
+   *
+   * No catch block — better-sqlite3 handles rollback-on-throw internally.
+   */
+  transaction<T>(fn: (db: Database.Database) => T): T;
 }
 
 /**
@@ -70,6 +78,9 @@ export function openDbPool(dbPath: string): DbPool {
     close(): void {
       readerConn.close();
       writer.close();
+    },
+    transaction<T>(fn: (db: Database.Database) => T): T {
+      return writer.transaction(fn)(writer);
     },
   };
 }
