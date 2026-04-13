@@ -50,7 +50,7 @@ import type { ResolvedConfig } from '../../shared/types/config.js';
 import type { Stage, Phase } from '../../shared/types/config.js';
 import type { ProcessManager, SpawnHandle } from '../process/manager.js';
 import type { WorktreeManager } from '../worktree/manager.js';
-import type { RunCommandsOpts, RunCommandsResult } from '../prepost/runner.js';
+import type { RunCommandsOpts, RunCommandsResult, PrePostRunRecord } from '../prepost/runner.js';
 import type { ServerFrameType } from '../api/frames.js';
 import type { ItemStatePayload } from '../api/frames.js';
 import {
@@ -645,6 +645,8 @@ export class Scheduler {
     });
 
     // --- Pre: commands (AC-4) ---
+    // Collect runs for later persistence via the engine (AC-6, RC-4).
+    let preRuns: PrePostRunRecord[] = [];
     if (phaseConfig.pre && phaseConfig.pre.length > 0) {
       const preResult = await this.prepostRunner({
         commands: phaseConfig.pre,
@@ -653,6 +655,7 @@ export class Scheduler {
         when: 'pre',
         env: correlationEnv,
       });
+      preRuns = preResult.runs;
 
       if (preResult.kind !== 'complete') {
         // Pre-command blocked spawn.
@@ -669,7 +672,7 @@ export class Scheduler {
           phase: phaseKey,
           attempt,
           event: 'pre_command_failed',
-          guardCtx: { preCommandAction: preAction },
+          guardCtx: { preCommandAction: preAction, prepostRuns: preRuns },
         });
         this._broadcastItemState(wf.id, item.id, item.stage_id, result);
         await logWriter.close();
@@ -903,6 +906,9 @@ export class Scheduler {
         });
       }
 
+      // All runs (pre + post) are persisted together with the state transition.
+      const allRuns: PrePostRunRecord[] = [...preRuns, ...postResult.runs];
+
       if (postResult.kind === 'complete') {
         // session_ok → complete (last phase) or in_progress (advance phase).
         const result = applyItemTransition({
@@ -920,6 +926,7 @@ export class Scheduler {
             allPostCommandsOk: true,
             validatorsOk: true,
             diffCheckOk: true,
+            prepostRuns: allRuns,
           },
         });
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
@@ -937,7 +944,7 @@ export class Scheduler {
           phase: freshItem.current_phase ?? '',
           attempt,
           event: 'post_command_action',
-          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase },
+          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns },
         });
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
 
@@ -956,13 +963,14 @@ export class Scheduler {
           phase: freshItem.current_phase ?? '',
           attempt,
           event: 'session_fail',
-          guardCtx: { classifierResult },
+          guardCtx: { classifierResult, prepostRuns: allRuns },
         });
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
       }
 
     } else {
-      // Non-zero exit → session_fail.
+      // Non-zero exit → session_fail. Only pre runs (post commands are skipped
+      // when the agent exits non-zero, per AC-3).
       const classifierResult = classify(stderr, { parseErrors, lastEventType: 'none' });
       const result = applyItemTransition({
         db: this.db,
@@ -973,7 +981,7 @@ export class Scheduler {
         phase: freshItem.current_phase ?? '',
         attempt,
         event: 'session_fail',
-        guardCtx: { classifierResult },
+        guardCtx: { classifierResult, prepostRuns: preRuns },
       });
       // Arm retry timer if item entered awaiting_retry.
       if (result.newState === 'awaiting_retry') {
