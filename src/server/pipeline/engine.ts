@@ -119,6 +119,19 @@ export interface ApplyItemTransitionParams {
   attempt: number;
   event: Event;
   guardCtx?: GuardContext;
+  /**
+   * RC-4: whether the *next* stage (or this stage, for a re-entry gate) has
+   * `needs_approval: true` in the pipeline config.
+   *
+   * When this is true AND `stageComplete` becomes true inside the transaction,
+   * the engine:
+   *   1. Inserts `pending_attention{kind='stage_needs_approval'}`.
+   *   2. Sets `workflows.status = 'pending_stage_approval'`.
+   *
+   * The workflow resumes when the orchestration loop receives a
+   * `stage_approval_granted` event and resets `workflows.status`.
+   */
+  needsApproval?: boolean;
 }
 
 export interface ApplyItemTransitionResult {
@@ -899,9 +912,28 @@ export function applyItemTransition(
     }
 
     // Check stage completion (AC-1): fires when all items are terminal.
+    // Use STAGE_TERMINAL_STATES so that blocked/abandoned transitions (e.g.
+    // awaiting_user → blocked via user_block, or awaiting_user → abandoned via
+    // user_cancel) also trigger the stage-complete probe.
     let stageComplete = false;
-    if (newState === 'complete' || cascadeBlocked) {
+    if (STAGE_TERMINAL_STATES.has(newState) || cascadeBlocked) {
       stageComplete = checkStageCompleteInTxn(db, params.workflowId, params.stage);
+    }
+
+    // RC-4: if the next stage requires approval and this transition completed
+    // the stage, insert a pending_attention row and pause the workflow.
+    // Both mutations are inside the same db.transaction() (AC-6).
+    if (stageComplete && params.needsApproval) {
+      writePendingAttention(
+        db,
+        params.workflowId,
+        'stage_needs_approval',
+        { stage: params.stage },
+        now,
+      );
+      db.prepare(
+        `UPDATE workflows SET status = 'pending_stage_approval', updated_at = ? WHERE id = ?`,
+      ).run(now, params.workflowId);
     }
 
     return {
@@ -965,7 +997,7 @@ function checkStageCompleteInTxn(
 // buildCrashRecovery — public
 // ---------------------------------------------------------------------------
 
-export interface StaleSesssion {
+export interface StaleSession {
   sessionId: string;
   itemId: string | null;
   phase: string;
@@ -973,9 +1005,12 @@ export interface StaleSesssion {
   pgid: number | null;
 }
 
+/** @deprecated Use StaleSession — kept for one release to avoid breaking callers. */
+export type StaleSesssion = StaleSession;
+
 export interface WorkflowRecoveryInfo {
   workflowId: string;
-  staleSessions: StaleSesssion[];
+  staleSessions: StaleSession[];
   detectedAt: string;
 }
 
@@ -1005,10 +1040,13 @@ export function buildCrashRecovery(db: DbPool): WorkflowRecoveryInfo[] {
     )
     .all(...TERMINAL_WF_STATUSES) as { id: string }[];
 
-  const affected: WorkflowRecoveryInfo[] = [];
+  // --- Phase 1: probe PIDs outside SQLite (system calls, no DB state) -------
+  // Collect WorkflowRecoveryInfo for every workflow that has stale sessions.
+  // PID probes are intentionally outside the transaction so that a long probe
+  // loop does not hold a write lock on the DB.
+  const toWrite: WorkflowRecoveryInfo[] = [];
 
   for (const wf of workflows) {
-    // Find running sessions with a non-null PID.
     const runningSessions = db.writer
       .prepare(`
         SELECT id, item_id, phase, pid, pgid
@@ -1019,12 +1057,11 @@ export function buildCrashRecovery(db: DbPool): WorkflowRecoveryInfo[] {
       `)
       .all(wf.id) as SessionRunRow[];
 
-    const stale: StaleSesssion[] = [];
+    const stale: StaleSession[] = [];
 
     for (const sess of runningSessions) {
       if (sess.pid == null) continue;
-      const isAlive = probeProcess(sess.pid);
-      if (!isAlive) {
+      if (!probeProcess(sess.pid)) {
         stale.push({
           sessionId: sess.id,
           itemId: sess.item_id,
@@ -1036,25 +1073,25 @@ export function buildCrashRecovery(db: DbPool): WorkflowRecoveryInfo[] {
     }
 
     if (stale.length > 0) {
-      const recoveryState: WorkflowRecoveryInfo = {
-        workflowId: wf.id,
-        staleSessions: stale,
-        detectedAt: now,
-      };
-
-      // Set recovery_state on the workflow row (AC-4).
-      // This is the ONLY SQLite mutation during recovery — no item transitions.
-      db.writer
-        .prepare(
-          `UPDATE workflows SET recovery_state = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(JSON.stringify(recoveryState), now, wf.id);
-
-      affected.push(recoveryState);
+      toWrite.push({ workflowId: wf.id, staleSessions: stale, detectedAt: now });
     }
   }
 
-  return affected;
+  if (toWrite.length === 0) return [];
+
+  // --- Phase 2: commit all recovery_state writes in ONE transaction ---------
+  // All-or-nothing: a crash mid-loop no longer leaves some workflows with
+  // recovery_state written and others not (non-blocking review feedback).
+  db.transaction((writer) => {
+    const stmt = writer.prepare(
+      `UPDATE workflows SET recovery_state = ?, updated_at = ? WHERE id = ?`,
+    );
+    for (const info of toWrite) {
+      stmt.run(JSON.stringify(info), now, info.workflowId);
+    }
+  });
+
+  return toWrite;
 }
 
 // ---------------------------------------------------------------------------

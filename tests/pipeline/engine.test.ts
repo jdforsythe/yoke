@@ -13,7 +13,8 @@
  *   RC-1  No long-lived in-memory state; every call re-reads SQLite.
  *   RC-2  Crash recovery sets recovery_state only, no item transitions.
  *   RC-3  max_revisits tracked per (item_id, destination_phase) pair.
- *   RC-4  needs_approval:true inserts pending_attention{kind=stage_needs_approval}.
+ *   RC-4  needs_approval:true inserts pending_attention{kind=stage_needs_approval}
+ *         and sets workflows.status='pending_stage_approval' (workflow-level pause).
  *   RC-5  Events table row written for every transition with full correlation.
  */
 
@@ -1300,5 +1301,270 @@ describe('buildCrashRecovery — AC-4', () => {
     const parsed = JSON.parse(wfRow.recovery_state);
     expect(parsed.detectedAt).toBeTruthy();
     expect(typeof parsed.detectedAt).toBe('string');
+  });
+
+  it('commits recovery_state for all affected workflows in one transaction', () => {
+    // Two workflows, each with a stale session.  Both should be written;
+    // neither should be skipped if a future crash interrupts the loop.
+    const wfId1 = makeWfId();
+    const wfId2 = makeWfId();
+    insertWorkflow(wfId1);
+    insertWorkflow(wfId2);
+    insertSession(`sess-stale-${wfId1}`, wfId1, { status: 'running', pid: 99999990 });
+    insertSession(`sess-stale-${wfId2}`, wfId2, { status: 'running', pid: 99999991 });
+
+    const result = buildCrashRecovery(pool);
+    expect(result).toHaveLength(2);
+
+    const wf1Row = pool.writer.prepare('SELECT recovery_state FROM workflows WHERE id = ?').get(wfId1) as { recovery_state: string };
+    const wf2Row = pool.writer.prepare('SELECT recovery_state FROM workflows WHERE id = ?').get(wfId2) as { recovery_state: string };
+    expect(wf1Row.recovery_state).toBeTruthy();
+    expect(wf2Row.recovery_state).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stageComplete — widened guard (AC-1 fix)
+// ---------------------------------------------------------------------------
+
+describe('stageComplete — widened guard covers all terminal states (AC-1)', () => {
+  it('stageComplete=true when last item transitions to blocked (awaiting_user → blocked)', () => {
+    // awaiting_user → user_block → blocked; if this is the last item, stage is complete.
+    const wfId = makeWfId();
+    const item1 = makeItemId();
+    const item2 = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(item1, wfId, 'stage1', { status: 'complete' });       // already terminal
+    insertItem(item2, wfId, 'stage1', { status: 'awaiting_user' });  // last non-terminal
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: item2,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 0,
+      event: 'user_block',
+    });
+
+    expect(result.newState).toBe('blocked');
+    expect(result.stageComplete).toBe(true);
+  });
+
+  it('stageComplete=true when last item transitions to abandoned (awaiting_user → abandoned)', () => {
+    const wfId = makeWfId();
+    const item1 = makeItemId();
+    const item2 = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(item1, wfId, 'stage1', { status: 'blocked' });
+    insertItem(item2, wfId, 'stage1', { status: 'awaiting_user' });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: item2,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 0,
+      event: 'user_cancel',
+    });
+
+    expect(result.newState).toBe('abandoned');
+    expect(result.stageComplete).toBe(true);
+  });
+
+  it('stageComplete=false when transitioning to blocked but other items remain non-terminal', () => {
+    const wfId = makeWfId();
+    const item1 = makeItemId();
+    const item2 = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(item1, wfId, 'stage1', { status: 'in_progress' }); // still running
+    insertItem(item2, wfId, 'stage1', { status: 'awaiting_user' });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: item2,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 0,
+      event: 'user_block',
+    });
+
+    expect(result.newState).toBe('blocked');
+    expect(result.stageComplete).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RC-4: needs_approval — stage_needs_approval pending_attention
+// ---------------------------------------------------------------------------
+
+describe('needs_approval — RC-4', () => {
+  it('inserts pending_attention{kind=stage_needs_approval} when needsApproval=true and stage completes', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false },
+      needsApproval: true,
+    });
+
+    expect(result.newState).toBe('complete');
+    expect(result.stageComplete).toBe(true);
+
+    const kinds = pendingAttentionKinds(wfId);
+    expect(kinds).toContain('stage_needs_approval');
+  });
+
+  it('sets workflows.status = pending_stage_approval when needsApproval=true and stage completes', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false },
+      needsApproval: true,
+    });
+
+    const wfRow = pool.writer
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wfId) as { status: string };
+    expect(wfRow.status).toBe('pending_stage_approval');
+  });
+
+  it('does NOT insert stage_needs_approval when needsApproval=false (default)', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false },
+      // needsApproval omitted → defaults to false
+    });
+
+    expect(result.stageComplete).toBe(true);
+    const kinds = pendingAttentionKinds(wfId);
+    expect(kinds).not.toContain('stage_needs_approval');
+  });
+
+  it('does NOT insert stage_needs_approval when needsApproval=true but stage is NOT yet complete', () => {
+    const wfId = makeWfId();
+    const item1 = makeItemId();
+    const item2 = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(item1, wfId, 'stage1', { status: 'in_progress' }); // still running
+    insertItem(item2, wfId, 'stage1', { status: 'in_progress' });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: item2,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false },
+      needsApproval: true,
+    });
+
+    expect(result.stageComplete).toBe(false); // item1 still running
+    const kinds = pendingAttentionKinds(wfId);
+    expect(kinds).not.toContain('stage_needs_approval');
+  });
+
+  it('stage_needs_approval and transition are committed atomically (AC-6)', () => {
+    // Verify both the item status change AND pending_attention are visible
+    // to the reader in the same read after applyItemTransition returns.
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false },
+      needsApproval: true,
+    });
+
+    // Both visible via the read-only connection
+    const itemStatus = pool.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(itemId) as { status: string };
+    const attentionCount = pool.reader()
+      .prepare("SELECT COUNT(*) AS n FROM pending_attention WHERE workflow_id = ? AND kind = 'stage_needs_approval'")
+      .get(wfId) as { n: number };
+
+    expect(itemStatus.status).toBe('complete');
+    expect(attentionCount.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session_fail: policy classifier — non-blocking review feedback
+// ---------------------------------------------------------------------------
+
+describe('session_fail — policy classifier', () => {
+  it('policy classifier → awaiting_user with no retry (same as unknown)', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress', retryCount: 0 });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_fail',
+      guardCtx: { classifierResult: 'policy' },
+    });
+
+    // policy is treated as unknown: awaiting_user, no retry
+    expect(result.newState).toBe('awaiting_user');
+    expect(result.retryMode).toBeUndefined();
+    expect(getItem(itemId)?.status).toBe('awaiting_user');
   });
 });
