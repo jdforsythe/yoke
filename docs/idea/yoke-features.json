@@ -711,7 +711,8 @@
         "PATCH endpoint validates display_name before writing; no raw user input reaches SQLite without validation.",
         "display_name uniqueness is NOT enforced — collisions are fine (UUIDs are the real key).",
         "ingestWorkflow resume path reads and returns existing display_name without touching it."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-workflow-run-files",
@@ -738,7 +739,8 @@
         "PID liveness check uses kill(pid, 0) — same pattern as buildCrashRecovery.",
         "ingestWorkflow tests use explicit { workflowId, isResume } — no tests rely on the old (name, configDir) lookup.",
         "Scheduler archiveRunFile is called inside the terminal-state transition handler, not in a separate cleanup pass."
-      ]
+      ],
+      "status": "complete"
     }
   ]
 }

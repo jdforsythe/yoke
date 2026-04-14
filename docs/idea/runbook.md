@@ -602,8 +602,8 @@ Now Yoke drives its own frontend build. Use `yoke start` for each feature.
 
 ### ε.1 — Plan the dashboard features
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt (via `yoke start plan docs/idea/dashboard-spec.md` if you have the planner phase wired up, else manually):
+- [x] `/clear` / fresh session
+- [x] Run this prompt (via `yoke start plan docs/idea/dashboard-spec.md` if you have the planner phase wired up, else manually):
 
 ```
 You are the Yoke frontend engineer, operating in planner mode for this session. Before anything else, read docs/agents/frontend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
@@ -633,7 +633,7 @@ Produce docs/idea/dashboard-features.json — features.json for the dashboard bu
 Target 12-20 features. Populate depends_on, acceptance_criteria, review_criteria. Topologically sorted. Write to docs/idea/dashboard-features.json. Stop.
 ```
 
-- [ ] 📝 `docs/idea/dashboard-features.json` exists and validates
+- [x] 📝 `docs/idea/dashboard-features.json` exists and validates
 
 ### ε.2 — Drive dashboard implementation
 
