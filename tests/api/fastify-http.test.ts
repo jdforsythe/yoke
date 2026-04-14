@@ -478,6 +478,33 @@ describe('RC-3: attention ack requires injected callback', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AC-3: POST /api/push/subscriptions — browser-push stub → 501
+// ---------------------------------------------------------------------------
+
+describe('POST /api/push/subscriptions', () => {
+  it('returns 501 Not Implemented with a JSON body', async () => {
+    const res = await inject('POST', '/api/push/subscriptions', {});
+    expect(res.statusCode).toBe(501);
+    const body = res.body as { error: string; message: string };
+    expect(body.error).toBe('not_implemented');
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
+  });
+
+  it('does not attempt VAPID key generation (RC-2) — response contains no vapid or push-specific fields', async () => {
+    const res = await inject('POST', '/api/push/subscriptions', {
+      endpoint: 'https://example.com/push/12345',
+      keys: { auth: 'abc', p256dh: 'def' },
+    });
+    expect(res.statusCode).toBe(501);
+    const body = res.body as Record<string, unknown>;
+    // No subscription_id, vapid_public_key, or similar fields.
+    expect(body.subscription_id).toBeUndefined();
+    expect(body.vapid_public_key).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // RC: read-only — no writes from API layer (RC-3)
 // ---------------------------------------------------------------------------
 

@@ -398,6 +398,16 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
     },
   );
 
+  // POST /api/push/subscriptions — browser-push stub (AC-3, RC-2).
+  // Returns 501 Not Implemented. Real web-push (VAPID, subscription storage) is
+  // deferred; no VAPID key generation or delivery attempt is made.
+  fastify.post('/api/push/subscriptions', async (_req: FastifyRequest, reply: FastifyReply) => {
+    return reply.status(501).send({
+      error: 'not_implemented',
+      message: 'Browser push delivery is not yet implemented. This endpoint is a stub.',
+    });
+  });
+
   // POST /api/workflows/:id/attention/:attentionId/ack
   // Clear a pending attention item.
   // The write is delegated to callbacks.ackAttention (RC-3 — no writes in API layer).
