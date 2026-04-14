@@ -156,7 +156,10 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
       git,
     });
 
-    const template = promptOpts.phaseConfig.prompt_template;
+    // prompt_template is a path relative to the config directory.
+    // Read the file content before handing it to the assembler.
+    const templatePath = path.resolve(config.configDir, promptOpts.phaseConfig.prompt_template);
+    const template = fs.readFileSync(templatePath, 'utf8');
     return assemblePrompt(template, ctx);
   };
 

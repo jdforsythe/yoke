@@ -229,8 +229,9 @@ export class Scheduler {
     if (this.stopped) throw new Error('Scheduler already stopped');
 
     // Step 1: Ingest workflow + items from config (AC-1).
-    const { workflowId } = ingestWorkflow(this.db, this.config);
+    const { workflowId, isResume } = ingestWorkflow(this.db, this.config);
     this.workflowId = workflowId;
+    console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
 
     // Step 2: Crash recovery — detect stale sessions from a previous run (RC-4).
     const recoveryInfos = buildCrashRecovery(this.db);
@@ -241,9 +242,11 @@ export class Scheduler {
         if (!stale.itemId) continue;
         const item = this._readItem(stale.itemId);
         if (!item || item.status !== 'in_progress') continue;
-        // Fire session_fail with unknown classifier → awaiting_user or awaiting_retry
-        // (budget-dependent). The user or auto-resume will restart the item.
-        applyItemTransition({
+        console.log(`[scheduler] crash recovery: stale session ${stale.sessionId} for ${item.stage_id} → session_fail (transient)`);
+        // Fire session_fail with transient classifier → awaiting_retry (auto-restarts).
+        // A crashed/killed session is a transient failure, not a permanent one
+        // requiring user intervention.
+        const recoveryResult = applyItemTransition({
           db: this.db,
           workflowId: info.workflowId,
           itemId: stale.itemId,
@@ -252,12 +255,14 @@ export class Scheduler {
           phase: item.current_phase ?? '',
           attempt: item.retry_count + 1,
           event: 'session_fail',
-          guardCtx: { classifierResult: 'unknown' },
+          guardCtx: { classifierResult: 'transient' },
         });
+        console.log(`[scheduler] crash recovery: ${item.stage_id} → ${recoveryResult.newState}`);
       }
     }
 
     // Step 3: Start the poll loop (AC-1: scheduling begins within 2 s).
+    console.log(`[scheduler] poll loop starting (interval ${this.pollIntervalMs}ms)`);
     this._scheduleTick();
   }
 
@@ -279,10 +284,12 @@ export class Scheduler {
       this.pollTimer = null;
     }
 
-    // Cancel all in-flight sessions and collect their exit promises.
+    // Collect session IDs for in-flight entries that have a live handle.
+    const inFlightSessionIds: string[] = [];
     const drainPromises: Promise<void>[] = [];
     for (const [, entry] of this.inFlight) {
       if (entry !== 'pending' && entry.handle) {
+        inFlightSessionIds.push(entry.sessionId);
         drainPromises.push(entry.handle.cancel());
       }
     }
@@ -292,6 +299,19 @@ export class Scheduler {
       Promise.allSettled(drainPromises),
       new Promise<void>((resolve) => setTimeout(resolve, this.gracePeriodMs)),
     ]);
+
+    // Close any sessions that are still marked running in SQLite.
+    // This covers both in-flight sessions cancelled above AND any sessions
+    // that were running when the server was killed (e.g. SIGKILL to the parent).
+    const now = new Date().toISOString();
+    this.db.transaction((writer) => {
+      writer
+        .prepare(
+          `UPDATE sessions SET status = 'failed', ended_at = ? WHERE ended_at IS NULL`,
+        )
+        .run(now);
+    });
+    console.log('[scheduler] stopped; open sessions marked failed');
   }
 
   // -------------------------------------------------------------------------
@@ -374,6 +394,7 @@ export class Scheduler {
           });
           // Only broadcast if the state actually changed.
           if (result.newState !== 'pending') {
+            console.log(`[scheduler] ${item.stage_id} pending → ${result.newState}`);
             this._broadcastItemState(wf.id, item.id, item.stage_id, result);
           }
           break;
@@ -407,10 +428,12 @@ export class Scheduler {
           this._broadcastItemState(wf.id, item.id, item.stage_id, result);
 
           if (result.newState === 'bootstrapping') {
+            console.log(`[scheduler] ${item.stage_id}/${item.current_phase} → bootstrapping worktree`);
             this.inFlight.set(item.id, 'pending');
             effectiveRunning++;
             void this._doBootstrapThenSpawn(wf, item, stage);
           } else if (result.newState === 'in_progress') {
+            console.log(`[scheduler] ${item.stage_id}/${item.current_phase} → in_progress (resume path)`);
             this.inFlight.set(item.id, 'pending');
             effectiveRunning++;
             void this._runSession(wf, this._readItem(item.id) ?? item, stage);
@@ -514,14 +537,17 @@ export class Scheduler {
 
         let wtInfo: { branchName: string; worktreePath: string };
         try {
+          console.log(`[scheduler] creating worktree for ${wf.name} in ${baseDir}`);
           wtInfo = await this.worktreeManager.createWorktree({
             workflowId: wf.id,
             workflowName: wf.name,
             baseDir,
             branchPrefix: this.config.worktrees?.branch_prefix ?? 'yoke/',
           });
-        } catch {
+          console.log(`[scheduler] worktree created: ${wtInfo.worktreePath} (${wtInfo.branchName})`);
+        } catch (err) {
           // Worktree creation failed → bootstrap_fail (triggers pending_attention).
+          console.error(`[scheduler] worktree creation failed for ${item.stage_id}:`, err);
           const result = applyItemTransition({
             db: this.db,
             workflowId: wf.id,
@@ -567,6 +593,7 @@ export class Scheduler {
       this._broadcastItemState(wf.id, item.id, item.stage_id, result);
 
       if (result.newState === 'in_progress') {
+        console.log(`[scheduler] bootstrap ok for ${item.stage_id}, spawning session`);
         // Bootstrap succeeded — continue to session spawn without a tick delay.
         const freshItem = this._readItem(item.id);
         if (freshItem) {
@@ -576,6 +603,8 @@ export class Scheduler {
             return;
           }
         }
+      } else {
+        console.error(`[scheduler] bootstrap failed for ${item.stage_id}: newState=${result.newState}`);
       }
     } catch (err) {
       console.error(`[scheduler] bootstrap error for item ${item.id}:`, err);
@@ -715,6 +744,8 @@ export class Scheduler {
     }
 
     // --- Spawn session (RC-3: after in_progress transition is committed) ---
+    console.log(`[scheduler] spawning ${item.stage_id}/${phaseKey} attempt=${attempt} cwd=${worktreePath}`);
+    console.log(`[scheduler]   cmd: ${phaseConfig.command} ${phaseConfig.args.join(' ')}`);
     let handle: SpawnHandle;
     try {
       handle = await this.processManager.spawn({
@@ -725,6 +756,7 @@ export class Scheduler {
         promptBuffer: promptText,
         logWriter,
       });
+      console.log(`[scheduler] spawned pid=${handle.pid} session=${sessionId}`);
     } catch (err) {
       console.error(`[scheduler] spawn failed for item ${item.id}:`, err);
       const result = applyItemTransition({
@@ -840,9 +872,14 @@ export class Scheduler {
     );
 
     parser.flush();
+    console.log(`[scheduler] session exited pid=${handle.pid} exitCode=${exitCode} stage=${item.stage_id}/${phaseKey}`);
+    if (stderr) {
+      console.error(`[scheduler] stderr (${stderr.length}b): ${stderr.slice(0, 300)}`);
+    }
 
-    // Guard: if stop() was called while session ran, skip all post-session work.
+    // Guard: if stop() was called while session ran, record the exit and bail.
     if (this.stopped) {
+      endSession(this.db, sessionId, { exitCode });
       await logWriter.close();
       this.inFlight.delete(item.id);
       return;
@@ -873,6 +910,7 @@ export class Scheduler {
       // --- Post: commands (AC-5) ---
       let postResult: RunCommandsResult = { kind: 'complete' };
       if (phaseConfig.post && phaseConfig.post.length > 0) {
+        console.log(`[scheduler] running ${phaseConfig.post.length} post-command(s) for ${item.stage_id}/${phaseKey}`);
         postResult = await this.prepostRunner({
           commands: phaseConfig.post,
           worktreePath,
@@ -880,6 +918,7 @@ export class Scheduler {
           when: 'post',
           env: correlationEnv,
         });
+        console.log(`[scheduler] post-commands result: kind=${postResult.kind}${postResult.kind === 'action' ? ` action=${JSON.stringify(postResult.action)}` : ''}`);
       }
 
       if (postResult.kind === 'complete') {
@@ -901,6 +940,7 @@ export class Scheduler {
             diffCheckOk: true,
           },
         });
+        console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} session_ok → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
 
       } else if (postResult.kind === 'action') {
@@ -918,6 +958,10 @@ export class Scheduler {
           event: 'post_command_action',
           guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase },
         });
+        console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} post_command_action=${JSON.stringify(resolvedAction)} → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
+        if (result.newState === 'awaiting_user') {
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+        }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
 
       } else {
@@ -937,12 +981,16 @@ export class Scheduler {
           event: 'session_fail',
           guardCtx: { classifierResult },
         });
+        if (result.newState === 'awaiting_user') {
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+        }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
       }
 
     } else {
       // Non-zero exit → session_fail.
       const classifierResult = classify(stderr, { parseErrors, lastEventType: 'none' });
+      console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} session_fail exitCode=${exitCode} classifier=${classifierResult}`);
       const result = applyItemTransition({
         db: this.db,
         workflowId: wf.id,
@@ -957,6 +1005,10 @@ export class Scheduler {
       // Arm retry timer if item entered awaiting_retry.
       if (result.newState === 'awaiting_retry') {
         this.retryAfterAt.set(freshItem.id, Date.now() + RETRY_BACKOFF_MS);
+      }
+      console.log(`[scheduler] → ${result.newState}`);
+      if (result.newState === 'awaiting_user') {
+        console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
       }
       this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
     }
