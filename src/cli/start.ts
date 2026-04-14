@@ -34,6 +34,7 @@ import { runCommands } from '../server/prepost/runner.js';
 import { buildPromptContext, type GitHelper } from '../server/prompt/context.js';
 import { assemblePrompt } from '../server/prompt/assembler.js';
 import { Scheduler, type PromptAssemblerFn } from '../server/scheduler/scheduler.js';
+import { dispatchNotification } from '../server/notifications/dispatcher.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -169,6 +170,19 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     assemblePrompt: assemblePromptFn,
     broadcast: (workflowId, sessionId, frameType, payload) =>
       state.registry.broadcast(workflowId, sessionId, frameType, payload),
+    notify: ({ workflowId, pendingAttentionRowId }) => {
+      // Fire-and-forget: dispatch the requires_attention notification after
+      // the pending_attention row is committed (AC-4, AC-5, feat-notifications).
+      void dispatchNotification(
+        { db, baseUrl: url },
+        {
+          severity: 'requires_attention',
+          message: 'Action required',
+          workflowId,
+          pendingAttentionRowId,
+        },
+      );
+    },
   });
 
   await scheduler.start();

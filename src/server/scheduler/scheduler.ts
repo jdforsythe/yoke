@@ -126,6 +126,18 @@ export type BroadcastFn = (
   payload: unknown,
 ) => void;
 
+/**
+ * Injectable notification callback.
+ * Called after applyItemTransition whenever a pending_attention row was
+ * inserted (result.pendingAttentionRowId !== null). The caller is responsible
+ * for reading the DB row and firing the appropriate native / console
+ * notification (feat-notifications).
+ */
+export type NotifyFn = (opts: {
+  workflowId: string;
+  pendingAttentionRowId: number;
+}) => void;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -201,6 +213,12 @@ export interface SchedulerOpts {
    * and constructs the appropriate implementation (RC-4).
    */
   faultInjector?: FaultInjector;
+  /**
+   * Optional notification callback (feat-notifications).
+   * Called after any applyItemTransition that inserts a pending_attention row.
+   * If omitted, no notification dispatch occurs (safe for tests that don't need it).
+   */
+  notify?: NotifyFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +235,7 @@ export class Scheduler {
   private readonly assemblePromptFn: PromptAssemblerFn;
   private readonly broadcastFn: BroadcastFn;
   private readonly faultInjector: FaultInjector;
+  private readonly notifyFn?: NotifyFn;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -255,9 +274,34 @@ export class Scheduler {
     this.assemblePromptFn = opts.assemblePrompt;
     this.broadcastFn = opts.broadcast;
     this.faultInjector = opts.faultInjector ?? new NoopFaultInjector();
+    this.notifyFn = opts.notify;
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
+  }
+
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Thin wrapper around applyItemTransition that fires the optional notify
+   * callback whenever a pending_attention row was inserted (feat-notifications).
+   *
+   * All callers in this file use _applyTransition instead of applyItemTransition
+   * directly so that notification dispatch is uniform and not scattered.
+   */
+  private _applyTransition(
+    params: Parameters<typeof applyItemTransition>[0],
+  ): ReturnType<typeof applyItemTransition> {
+    const result = applyItemTransition(params);
+    if (result.pendingAttentionRowId != null && this.notifyFn) {
+      this.notifyFn({
+        workflowId: params.workflowId,
+        pendingAttentionRowId: result.pendingAttentionRowId,
+      });
+    }
+    return result;
   }
 
   // -------------------------------------------------------------------------
@@ -286,7 +330,7 @@ export class Scheduler {
         if (!item || item.status !== 'in_progress') continue;
         // Fire session_fail with unknown classifier → awaiting_user or awaiting_retry
         // (budget-dependent). The user or auto-resume will restart the item.
-        applyItemTransition({
+        this._applyTransition({
           db: this.db,
           workflowId: info.workflowId,
           itemId: stale.itemId,
@@ -405,7 +449,7 @@ export class Scheduler {
         // pending → try deps_satisfied
         // ------------------------------------------------------------------
         case 'pending': {
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -436,7 +480,7 @@ export class Scheduler {
           const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
           const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -488,7 +532,7 @@ export class Scheduler {
           const retryAt = this.retryAfterAt.get(item.id)!;
           if (Date.now() < retryAt) break;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -511,7 +555,7 @@ export class Scheduler {
           // If reset_at is unknown (scheduler restart), fire immediately.
           if (resetAt !== undefined && Date.now() < resetAt * 1000) break;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -565,7 +609,7 @@ export class Scheduler {
           });
         } catch {
           // Worktree creation failed → bootstrap_fail (triggers pending_attention).
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -606,7 +650,7 @@ export class Scheduler {
         this.faultInjector.check('bootstrap_ok');
       }
 
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -634,7 +678,7 @@ export class Scheduler {
         // Fault injection at bootstrap_ok: simulate a crash before the
         // bootstrap_ok transition is committed.  Fire bootstrap_fail so the
         // item enters the bootstrap_fail recovery path (AC-2).
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: item.id,
@@ -730,7 +774,7 @@ export class Scheduler {
           ? (preResult.action === 'stop-and-ask' ? 'stop-and-ask' as const : 'fail' as const)
           : 'fail' as const;
 
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: item.id,
@@ -768,7 +812,7 @@ export class Scheduler {
       });
     } catch (err) {
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -799,7 +843,7 @@ export class Scheduler {
       });
     } catch (err) {
       console.error(`[scheduler] spawn failed for item ${item.id}:`, err);
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -875,7 +919,7 @@ export class Scheduler {
     // Rate limit detection (AC-6).
     parser.on('rate_limit_detected', (ev: RateLimitDetectedEvent) => {
       this.rateLimitResetAt.set(item.id, ev.resetAt ?? (Date.now() / 1000 + 3600));
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -977,7 +1021,7 @@ export class Scheduler {
       if (validationResult.kind === 'validator_fail') {
         // One or more artifacts failed validation — fire validator_fail event.
         // Post commands are skipped (they run only when all validators pass).
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -1032,7 +1076,7 @@ export class Scheduler {
         this.faultInjector.check('session_ok');
 
         // session_ok → complete (last phase) or in_progress (advance phase).
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -1056,7 +1100,7 @@ export class Scheduler {
         // post_command_action — forward the resolved action to the engine.
         const actionValue = postResult.action;
         const resolvedAction = this._toResolvedAction(actionValue);
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -1075,7 +1119,7 @@ export class Scheduler {
           parseErrors,
           lastEventType: 'none',
         });
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -1093,7 +1137,7 @@ export class Scheduler {
       // Non-zero exit → session_fail. Only pre runs (post commands are skipped
       // when the agent exits non-zero, per AC-3).
       const classifierResult = classify(stderr, { parseErrors, lastEventType: 'none' });
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: freshItem.id,
