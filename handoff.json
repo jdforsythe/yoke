@@ -1,5 +1,25 @@
 [
   {
+    "feature": "feat-record-capture-wiring",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T23:55:00Z",
+        "note": "tsc clean; 1031/1031 tests pass (2 new). The scheduler-side capture wiring (readRecordMarker → FixtureWriter.open → stdout/stderr tee → close(exitCode) → clearRecordMarker) was already present from feat-process-mgr-scripted attempt 2. This session added the two missing tests: (1) a ScriptedProcessManager capture→replay round-trip test (RC-2), and (2) a clearRecordMarker-on-error test (AC-2 error path, classifier=unknown → awaiting_user).",
+        "intended_files": [
+          "tests/scheduler/scheduler.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The capture mode reads readRecordMarker(this.config.configDir) once at the start of each _runSession call. If two sessions spawn concurrently (maxParallel > 1), both will see the same marker and both will attempt to open FixtureWriter on the same capturePath — the second open() will truncate the file written by the first. In practice, yoke record is a single-session capture tool and concurrent capture is not a specified use case. The spec does not address concurrent capture; reviewers should confirm this limitation is acceptable."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-worktree-git-check",
     "entries": [
       {
