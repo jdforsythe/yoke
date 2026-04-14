@@ -1313,3 +1313,280 @@ describe('feat-artifact-validators: scheduler wiring', () => {
     expect(capturedWorktreePath).toBe(wt);
   }, 15_000);
 });
+
+// ---------------------------------------------------------------------------
+// feat-hook-contract: scheduler wiring (diff check + manifest reader)
+// ---------------------------------------------------------------------------
+
+/**
+ * A process manager whose spawn() mutates a file in the worktree before
+ * returning the handle.  This lets us simulate the items_from file changing
+ * during a session without real process timing constraints.
+ */
+class FileMutatingProcessManager implements ProcessManager {
+  constructor(
+    private readonly absFilePath: string,
+    private readonly newContent: string,
+  ) {}
+
+  async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+    fs.writeFileSync(this.absFilePath, this.newContent, 'utf8');
+    const handle = new StubSpawnHandle([{ type: 'exit', code: 0 }]);
+    handle.start();
+    return handle;
+  }
+}
+
+describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
+  it('HC-1: diff_check_fail → item enters awaiting_retry when items_from changes', async () => {
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(wt, { recursive: true });
+
+    const itemsFromPath = 'items.json';
+    // Write the file BEFORE the scheduler starts so takeSnapshot captures it.
+    fs.writeFileSync(path.join(wt, itemsFromPath), '["original"]', 'utf8');
+
+    const config = makeConfig({
+      pipeline: {
+        stages: [
+          {
+            id: 'stage-alpha',
+            run: 'once',
+            phases: ['phase-one'],
+            items_from: itemsFromPath,
+          },
+        ],
+      },
+    });
+
+    // PM writes new content to items.json inside spawn() — after takeSnapshot,
+    // before checkDiff — simulating the agent modifying the file.
+    const pm = new FileMutatingProcessManager(
+      path.join(wt, itemsFromPath),
+      '["original","added-by-session"]',
+    );
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: {
+        async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
+        async runBootstrap() { return { type: 'bootstrap_ok' }; },
+        async cleanup() { return { worktreeRemoved: true, branchRetained: false }; },
+      } as unknown as import('../../src/server/worktree/manager.js').WorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      artifactValidator: async () => ({ kind: 'validators_ok' }),
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    // Item must reach awaiting_retry or awaiting_user (diff_check_fail → retry ladder).
+    await pollUntil(() => {
+      const row = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(item.id) as { status: string };
+      return ['awaiting_retry', 'awaiting_user'].includes(row.status);
+    }, { timeoutMs: 10_000 });
+
+    const row = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(item.id) as { status: string };
+    expect(['awaiting_retry', 'awaiting_user']).toContain(row.status);
+    // Must NOT have completed — diff check failed.
+    expect(row.status).not.toBe('complete');
+
+    await sched.stop();
+  }, 15_000);
+
+  it('HC-2: diff_check_ok → workflow completes when items_from file unchanged', async () => {
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(wt, { recursive: true });
+
+    const itemsFromPath = 'items.json';
+    fs.writeFileSync(path.join(wt, itemsFromPath), '["unchanged"]', 'utf8');
+
+    const config = makeConfig({
+      pipeline: {
+        stages: [
+          {
+            id: 'stage-alpha',
+            run: 'once',
+            phases: ['phase-one'],
+            items_from: itemsFromPath,
+          },
+        ],
+      },
+    });
+
+    // PM does NOT touch the items_from file → diff_check_ok path.
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: {
+        async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
+        async runBootstrap() { return { type: 'bootstrap_ok' }; },
+        async cleanup() { return { worktreeRemoved: true, branchRetained: false }; },
+      } as unknown as import('../../src/server/worktree/manager.js').WorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      artifactValidator: async () => ({ kind: 'validators_ok' }),
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+
+    // Workflow must complete normally.
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    const wf = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wf.status).toBe('completed');
+
+    await sched.stop();
+  }, 15_000);
+});
+
+describe('feat-hook-contract: last-check.json manifest warnings', () => {
+  it('HC-4: malformed manifest → stream.system_notice{source:"hook",severity:"warn"} broadcast (AC-5)', async () => {
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(path.join(wt, '.yoke'), { recursive: true });
+
+    // Write a malformed manifest (invalid JSON) BEFORE the session.
+    fs.writeFileSync(path.join(wt, '.yoke', 'last-check.json'), 'NOT-JSON!!!', 'utf8');
+
+    const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const sched = new Scheduler({
+      db,
+      config: makeConfig(),
+      processManager: pm,
+      worktreeManager: {
+        async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
+        async runBootstrap() { return { type: 'bootstrap_ok' }; },
+        async cleanup() { return { worktreeRemoved: true, branchRetained: false }; },
+      } as unknown as import('../../src/server/worktree/manager.js').WorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      artifactValidator: async () => ({ kind: 'validators_ok' }),
+      broadcast: (workflowId, sessionId, frameType, payload) => {
+        broadcasts.push({ workflowId, sessionId, frameType, payload });
+      },
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+
+    // Workflow must still complete — malformed manifest must not block acceptance (RC-3).
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    // stream.system_notice must have been broadcast with source:"hook", severity:"warn".
+    const notices = broadcasts.filter((b) => b.frameType === 'stream.system_notice');
+    const hookNotice = notices.find((b) => {
+      const p = b.payload as Record<string, unknown>;
+      return p['source'] === 'hook' && p['severity'] === 'warn';
+    });
+    expect(hookNotice).toBeDefined();
+
+    // Workflow must still be completed — manifest didn't block acceptance.
+    const wf = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wf.status).toBe('completed');
+
+    await sched.stop();
+  }, 15_000);
+
+  it('HC-5: unknown hook_version → stream.system_notice with rawJson, session still completes (AC-6)', async () => {
+    const wt = path.join(tmpDir, 'wt');
+    fs.mkdirSync(path.join(wt, '.yoke'), { recursive: true });
+
+    const manifestContent = JSON.stringify({ hook_version: '99', note: 'future version' });
+    fs.writeFileSync(path.join(wt, '.yoke', 'last-check.json'), manifestContent, 'utf8');
+
+    const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const sched = new Scheduler({
+      db,
+      config: makeConfig(),
+      processManager: pm,
+      worktreeManager: {
+        async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
+        async runBootstrap() { return { type: 'bootstrap_ok' }; },
+        async cleanup() { return { worktreeRemoved: true, branchRetained: false }; },
+      } as unknown as import('../../src/server/worktree/manager.js').WorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      artifactValidator: async () => ({ kind: 'validators_ok' }),
+      broadcast: (workflowId, sessionId, frameType, payload) => {
+        broadcasts.push({ workflowId, sessionId, frameType, payload });
+      },
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    // stream.system_notice with source:"hook", severity:"warn", and rawJson.
+    const notices = broadcasts.filter((b) => b.frameType === 'stream.system_notice');
+    const hookNotice = notices.find((b) => {
+      const p = b.payload as Record<string, unknown>;
+      return p['source'] === 'hook' && p['severity'] === 'warn';
+    });
+    expect(hookNotice).toBeDefined();
+    if (hookNotice) {
+      const p = hookNotice.payload as Record<string, unknown>;
+      expect(p['rawJson']).toBe(manifestContent);
+      expect(String(p['message'])).toMatch(/99/); // hookVersion "99" in the message
+    }
+
+    // Session still completes — manifest did not block acceptance.
+    const wf = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wf.status).toBe('completed');
+
+    await sched.stop();
+  }, 15_000);
+});
