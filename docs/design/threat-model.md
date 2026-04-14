@@ -190,7 +190,7 @@ Plan-draft3 §Threat Model → v1 non-goals:
   they want it (D55).
 - **Rate-limited budget enforcement.** v1.1 (D61).
 - **Multi-user access control.** Never (D57).
-- **Supply-chain defense** (npm audit at bootstrap time). Out of
+- **Supply-chain defense** (pnpm audit at bootstrap time). Out of
   scope.
 
 ---
@@ -218,7 +218,7 @@ Plan-draft3 §Threat Model → v1 non-goals:
 - Attackers with physical access.
 - Attackers who have compromised the user's Claude Code binary or
   jig binary. Those are trusted dependencies.
-- Attackers who have compromised the user's npm install of Yoke
+- Attackers who have compromised the user's pnpm install of Yoke
   itself. Yoke is installed the same way as any npm package.
 - Multi-tenant attack scenarios. Yoke is single-user forever (D57).
 

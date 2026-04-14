@@ -141,8 +141,8 @@ phases:
 # Worktrees
 #
 # Bootstrap symlinks the repo-root node_modules so each worktree can run
-# tests without a full npm install. Safe here because all stages build the
-# same package and no stage adds new npm dependencies.
+# tests without a full pnpm install. Safe here because all stages build the
+# same package and no stage adds new pnpm dependencies.
 # ---------------------------------------------------------------------------
 
 worktrees:
