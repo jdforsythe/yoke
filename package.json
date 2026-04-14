@@ -10,14 +10,19 @@
   },
   "dependencies": {
     "@fastify/websocket": "^8.3.1",
+    "@octokit/rest": "^22.0.1",
     "ajv": "^8.17.1",
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "fastify": "^4.29.1",
+    "jsonpath-plus": "^10.4.0",
     "yaml": "^2.7.0"
   },
   "bin": {
     "yoke": "bin/yoke"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

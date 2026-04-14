@@ -1,12 +1,11 @@
-LOG_DIR := .yoke/logs
+DB := .yoke/yoke.db
 
 # last-status [PHASE=implement|review] [FEATURE=<id>]
 # Prints PASS/FAIL verdict for the most recent matching session.
 # Defaults to the most recent log of any phase/feature.
 last-status:
-	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
-	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
-	echo "Log: $$log"; \
+	@log=$$(FEATURE=$(FEATURE) PHASE=$(PHASE) python3 scripts/get-log.py) && \
+	echo "Log: $$log" && \
 	python3 -c " \
 import sys, json; \
 obj = json.loads(open('$$log').readlines()[-1]); \
@@ -28,30 +27,29 @@ print(f'Verdict : {verdict}'); \
 # last-output [PHASE=implement|review] [FEATURE=<id>]
 # Prints the full result text from the most recent matching session.
 last-output:
-	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
-	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
-	echo "Log: $$log"; echo ""; \
+	@log=$$(FEATURE=$(FEATURE) PHASE=$(PHASE) python3 scripts/get-log.py) && \
+	echo "Log: $$log" && echo "" && \
 	python3 -c " \
 import sys, json; \
 obj = json.loads(open('$$log').readlines()[-1]); \
 print(obj.get('result', '(no result field)')); \
 "
 
-# last-logs — list all session logs, newest first
+# last-logs — list all session logs newest first (queries SQLite)
 last-logs:
-	@ls -lt $(LOG_DIR)/*.jsonl 2>/dev/null | awk '{print $$NF}' || echo "No logs in $(LOG_DIR)"
+	@python3 scripts/list-logs.py
 
-# tail-session — pretty-print tail of the most recent session log (PHASE= and FEATURE= filters supported)
+# tail-session — pretty-print the most recent session log (static snapshot)
+# Use FEATURE=<id> and/or PHASE=implement|review to filter.
 tail-session:
-	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
-	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
+	@log=$$(FEATURE=$(FEATURE) PHASE=$(PHASE) python3 scripts/get-log.py) && \
+	echo "Tailing: $$log" && \
 	python3 scripts/tail-session.py "$$log"
 
-# tail-session-raw — raw JSON tail (original behaviour)
+# tail-session-raw — follow live output from the most recent session log
 tail-session-raw:
-	@log=$$(ls -t $(LOG_DIR)/$(if $(PHASE),*$(PHASE)*,*)$(if $(FEATURE),*$(FEATURE)*,*).jsonl 2>/dev/null | head -1); \
-	if [ -z "$$log" ]; then echo "No matching logs in $(LOG_DIR)"; exit 1; fi; \
-	echo "Tailing: $$log"; \
+	@log=$$(FEATURE=$(FEATURE) PHASE=$(PHASE) python3 scripts/get-log.py) && \
+	echo "Tailing: $$log" && \
 	tail -f "$$log"
 
 # run-implement FEATURE=<id> — run the implement phase for a feature

@@ -41,6 +41,7 @@ import {
   DEFAULT_MAX_OUTER_RETRIES,
 } from './retry-ladder.js';
 import type { RetryMode } from './retry-ladder.js';
+import type { PrePostRunRecord } from '../prepost/runner.js';
 
 // ---------------------------------------------------------------------------
 // Public types — action grammar (subset consumed by the engine)
@@ -100,6 +101,28 @@ export interface GuardContext {
   currentRetryMode?: Exclude<RetryMode, 'awaiting_user'>;
   /** For phase advance: the name of the next phase in the stage. */
   nextPhase?: string;
+  /**
+   * Per-command execution records from pre and/or post command arrays.
+   * The engine persists these to `prepost_runs` inside the same
+   * db.transaction() as the corresponding state transition (AC-6, RC-4).
+   * If absent or empty, no prepost_runs rows are written.
+   */
+  prepostRuns?: PrePostRunRecord[];
+  /**
+   * Files written by the session — path (relative to worktree) + sha256.
+   * Persisted to `artifact_writes` inside the same db.transaction() as the
+   * post-session state transition (feat-hook-contract RC-4).
+   * If absent or empty, no artifact_writes rows are written.
+   */
+  artifactWrites?: ArtifactWriteRecord[];
+}
+
+/** Opaque write record from the hook-contract scanner (feat-hook-contract). */
+export interface ArtifactWriteRecord {
+  /** Relative path within the worktree. */
+  path: string;
+  /** SHA-256 hex digest (streaming hash). */
+  sha256: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +173,12 @@ export interface ApplyItemTransitionResult {
   cascadeBlocked: boolean;
   /** True if all items in the stage reached terminal states this transition. */
   stageComplete: boolean;
+  /**
+   * Row ID of the pending_attention row inserted during this transition, or
+   * null if no pending_attention row was inserted.
+   * Callers use this to drive post-commit notification dispatch (feat-notifications).
+   */
+  pendingAttentionRowId: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,11 +262,12 @@ function writePendingAttention(
   kind: string,
   payload: Record<string, unknown>,
   now: string,
-): void {
-  db.prepare(`
+): number {
+  const result = db.prepare(`
     INSERT INTO pending_attention (workflow_id, kind, payload, created_at)
     VALUES (?, ?, ?, ?)
   `).run(workflowId, kind, JSON.stringify(payload), now);
+  return Number(result.lastInsertRowid);
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +743,42 @@ function cascadeBlockDependents(
 }
 
 // ---------------------------------------------------------------------------
+// Internal: write a single prepost_runs row (within an existing transaction)
+// ---------------------------------------------------------------------------
+
+function writePrepostRun(
+  db: SqliteDb,
+  run: PrePostRunRecord,
+  p: {
+    sessionId: string | null;
+    workflowId: string;
+    itemId: string | null;
+    stage: string;
+    phase: string;
+  },
+): void {
+  db.prepare(`
+    INSERT INTO prepost_runs
+      (session_id, workflow_id, item_id, stage, phase, when_phase,
+       command_name, argv, started_at, ended_at, exit_code, action_taken)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    p.sessionId,
+    p.workflowId,
+    p.itemId,
+    p.stage,
+    p.phase,
+    run.when,
+    run.commandName,
+    JSON.stringify(run.argv),
+    run.startedAt,
+    run.endedAt,
+    run.exitCode,
+    run.actionTaken !== null ? JSON.stringify(run.actionTaken) : null,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Internal: apply side effects that are pure SQLite operations
 // ---------------------------------------------------------------------------
 
@@ -724,11 +790,12 @@ function applyPendingSideEffects(
   stage: string,
   phase: string,
   now: string,
-): void {
+): number | null {
   const kind = pendingAttentionKindFromEffects(sideEffects);
   if (kind) {
-    writePendingAttention(db, workflowId, kind, { item_id: itemId, stage, phase }, now);
+    return writePendingAttention(db, workflowId, kind, { item_id: itemId, stage, phase }, now);
   }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +865,7 @@ export function applyItemTransition(
         sideEffects: [],
         cascadeBlocked: false,
         stageComplete: false,
+        pendingAttentionRowId: null,
       };
     }
 
@@ -886,7 +954,7 @@ export function applyItemTransition(
     });
 
     // Apply pure-SQLite side effects (pending_attention rows).
-    applyPendingSideEffects(
+    let pendingAttentionRowId: number | null = applyPendingSideEffects(
       db,
       selection.sideEffects,
       params.workflowId,
@@ -924,7 +992,7 @@ export function applyItemTransition(
     // the stage, insert a pending_attention row and pause the workflow.
     // Both mutations are inside the same db.transaction() (AC-6).
     if (stageComplete && params.needsApproval) {
-      writePendingAttention(
+      pendingAttentionRowId = writePendingAttention(
         db,
         params.workflowId,
         'stage_needs_approval',
@@ -936,6 +1004,33 @@ export function applyItemTransition(
       ).run(now, params.workflowId);
     }
 
+    // AC-6 / RC-4: persist prepost_runs rows inside the same transaction as
+    // the state transition so they are atomically visible with the new state.
+    if (ctx.prepostRuns && ctx.prepostRuns.length > 0) {
+      for (const run of ctx.prepostRuns) {
+        writePrepostRun(db, run, {
+          sessionId: params.sessionId,
+          workflowId: params.workflowId,
+          itemId: params.itemId,
+          stage: params.stage,
+          phase: params.phase,
+        });
+      }
+    }
+
+    // feat-hook-contract RC-4: persist artifact_writes rows inside the same
+    // transaction as the post-session state transition.  Only written when
+    // a session_id is present (requires an active session).
+    if (ctx.artifactWrites && ctx.artifactWrites.length > 0 && params.sessionId) {
+      const writtenAt = now;
+      for (const write of ctx.artifactWrites) {
+        db.prepare(`
+          INSERT INTO artifact_writes (session_id, artifact_path, written_at, sha256)
+          VALUES (?, ?, ?, ?)
+        `).run(params.sessionId, write.path, writtenAt, write.sha256);
+      }
+    }
+
     return {
       newState,
       newPhase,
@@ -943,6 +1038,7 @@ export function applyItemTransition(
       retryMode: selection.retryMode,
       cascadeBlocked,
       stageComplete,
+      pendingAttentionRowId,
     };
   });
 }

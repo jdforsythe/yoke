@@ -244,11 +244,12 @@
     "actionsMap": {
       "type": "object",
       "minProperties": 1,
+      "required": ["*"],
       "propertyNames": {
         "pattern": "^([0-9]+|\\*)$"
       },
       "additionalProperties": { "$ref": "#/$defs/action" },
-      "description": "Exit-code → action. Key is an integer exit code or '*' wildcard. See schemas/pre-post-action-grammar.md for the normative grammar."
+      "description": "Exit-code → action. Key is an integer exit code or '*' wildcard. A '*' (wildcard) key is required; omitting it is a config-validation error (feat-prepost-runner AC-4). See schemas/pre-post-action-grammar.md for the normative grammar."
     },
 
     "action": {

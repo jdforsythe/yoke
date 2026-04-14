@@ -1,5 +1,155 @@
 # Yoke — Build Progress
 
+## feat-per-item-seeding — implement attempt 0 (2026-04-13)
+
+Implemented `feat-per-item-seeding` in a single commit (6 files). Created `src/server/scheduler/per-item-seeder.ts`, which reads the `items_from` manifest JSON file from the worktree, applies the `items_list` JSONPath expression (via `jsonpath-plus`) to extract the item array, then — inside a single `db.transaction()` — creates one SQLite item row per manifest entry: status `'complete'` when `items_complete` is truthy at seed time, `'pending'` otherwise. Stable IDs from `items_id` are used to populate the `data` field and detect duplicates. Within-stage deps from `items_depends_on` are resolved from stable IDs to SQLite row UUIDs using a pre-built map before any INSERT. Downstream items whose `depends_on` referenced the placeholder are updated to reference all real item row IDs (so the next stage waits for every seeded item). The placeholder row is deleted in the same transaction. Wired the seeder into `src/server/scheduler/scheduler.ts` by intercepting the `ready` case for `stage.run === 'per-item'` stages — calling `seedPerItemStage()` and `break`ing before `phase_start` fires. Added `items_complete?: string` to the `Stage` type in `src/shared/types/config.ts`. Installed `jsonpath-plus` as a production dependency. 17 unit tests in `tests/scheduler/per-item-seeder.test.ts` cover all RC criteria: empty manifest, all-complete, partial completion, within-stage dependency ordering, JSONPath filter predicates, missing `items_complete`, downstream dep rewiring, and error paths (missing file, bad JSON, non-string stable ID, duplicate stable IDs, missing required fields). `tsc --noEmit` clean; 1048/1048 tests pass (17 new).
+
+## feat-record-capture-wiring — implement attempt 0 (2026-04-13)
+
+Implemented `feat-record-capture-wiring` by adding the two missing tests that close out the feature. The scheduler-side capture wiring (`readRecordMarker` → `FixtureWriter.open` → stdout/stderr tee → `close(exitCode)` → `clearRecordMarker`) was already present from `feat-process-mgr-scripted` attempt 2. What was missing was: (1) a test that exercises the full capture→replay round-trip via `ScriptedProcessManager` (RC-2), and (2) a test that verifies `clearRecordMarker` is called even on a non-zero session exit (AC-2 error path). Both tests were added to the `AC-2b: capture mode` describe block in `tests/scheduler/scheduler.test.ts`. The replay test captures two stdout lines through the scheduler and asserts `ScriptedProcessManager` replays them in identical order with the same exit code. The error-path test uses a stub that exits code 1 — classifier returns `unknown` (empty stderr) → item transitions to `awaiting_user` — then asserts the marker is gone and the fixture is parseable. `tsc --noEmit` clean; 1031/1031 tests pass (2 new).
+
+## feat-worktree-git-check — implement attempt 0 (2026-04-13)
+
+Implemented `feat-worktree-git-check` in a single commit (4 files). Added `GitRepoRequiredError` class and `defaultGitRepoCheck` function to `src/cli/start.ts`; after `loadConfig` succeeds (giving us `config.configDir`), `startServer` now awaits a git-repo check via `execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: config.configDir })` — throwing `GitRepoRequiredError` on failure with a message containing both the directory and the failing command (RC-2). The Commander action was updated to catch `GitRepoRequiredError` and `process.exit(1)` (AC-1, RC-1). In `src/cli/doctor.ts`, added `checkGitRepo(configDir, executor?)` (synchronous, injectable) using `execFileSync` in the same pattern as `checkGit`; `runChecks` now returns 5 checks with the new `'git repository'` check positioned after `git >= 2.20` (AC-2). Injectable executors keep all tests hermetic: existing `startServer` success tests pass `_gitCheck: noopGitCheck` to bypass the real git check, and a new test exercises the default real-git path in a non-git tmp directory. `tsc --noEmit` clean; 1029/1029 tests pass (5 new).
+
+## feat-ack-attention-wiring — implement attempt 2 (2026-04-13)
+
+Verification pass following PASS review verdict on attempts 0 and 1. The only code change in this session was a pre-existing working-tree modification to `src/server/scheduler/scheduler.ts` that was committed as 91d0f5f — a targeted fix for a closed-DB race introduced by `feat-hook-contract`: `stop()` skips `pending` in-flight entries (no handle yet to cancel), creating a window where `db.close()` races a `_runSession` that has already awaited `captureGitHead` and is about to call `insertSession`. The fix adds a `this.stopped` guard immediately after the `captureGitHead` await, before any DB write. No changes to `ack-attention.ts`, `start.ts`, or `ack-attention.test.ts`. `tsc --noEmit` clean; 1024/1024 tests pass.
+
+## feat-ack-attention-wiring — implement attempt 1 (2026-04-13)
+
+Verification pass following PASS review verdict on attempt 0. No code changes required. All 1024/1024 tests pass across 43 test files; `tsc --noEmit` clean. The pre-existing unhandled rejection from `crash-recovery.test.ts` teardown race (feat-fault-injector) is unchanged. The deferred items from attempt 0 (WS payload shape, ref-mutation safety note, single-statement atomicity) remain non-blocking and unchanged.
+
+## feat-ack-attention-wiring — implement attempt 0 (2026-04-13)
+
+Implemented `feat-ack-attention-wiring` in a single commit (3 files). Created `src/server/pipeline/ack-attention.ts` exporting `makeAckAttentionFn(writer, broadcast)`, which reads the `pending_attention` row by `(id, workflow_id)` for cross-workflow isolation, sets `acknowledged_at = datetime('now')` on the writer connection, and calls `broadcast(workflowId)` after the write so connected WS clients receive a `workflow.update` frame. The function is idempotent: a row already acknowledged returns `already_acknowledged` without re-writing or re-broadcasting. Wired the handler into `src/cli/start.ts` using the ref-mutation pattern — a `ServerCallbacks` object is created before `createServer`, and `callbacks.ackAttention` is populated with the real handler after `state.registry` is available (safe because no HTTP request can arrive before `fastify.listen()` completes). Added 6 unit tests in `tests/pipeline/ack-attention.test.ts` covering: successful ack, broadcast side-effect, partial-index disappearance, idempotent re-ack without re-broadcast, `not_found` for unknown id, and cross-workflow isolation — all without a running server per RC-2. `tsc --noEmit` clean; 1024/1024 tests pass (6 new). Pre-existing unhandled rejection from `crash-recovery.test.ts` teardown race (feat-fault-injector) is unchanged.
+
+## feat-hook-contract — implement attempt 2 (2026-04-13)
+
+Verification pass following PASS review verdict on attempts 0 and 1. No code changes required. All 1018 tests pass across 42 test files; `tsc --noEmit` clean. One pre-existing unhandled rejection surfaced during this run originating from the crash-recovery test suite (feat-fault-injector): the async `_runSession` path races `db.close()` in `afterEach` on the AC-4c "rate_limited at restart" test — this is not caused by feat-hook-contract and does not fail any test assertions. The deferred integration-test gap (scanArtifactWrites through scheduler→engine→artifact_writes DB path requiring a git-initialized worktree fixture) remains unchanged and was not blocking the PASS verdict.
+
+## feat-hook-contract — implement attempt 1 (2026-04-13)
+
+Verification pass following a PASS review verdict on attempt 0. No code changes required. TypeScript compiles clean (`tsc --noEmit` exit 0); all 1018 tests pass across 42 test files. The implementation produced in attempt 0 satisfies all six acceptance criteria and five review criteria as confirmed by re-reading the scheduler wiring, engine transaction boundary, and the three hook-contract modules. The one deferred integration-test gap (scanArtifactWrites through the scheduler→engine→artifact_writes DB path requires a git-initialised worktree fixture) remains filed in handoff.json and is unchanged.
+
+## feat-hook-contract — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-hook-contract` feature in two commits: the three core modules plus their wiring into the scheduler and engine, then the complete test suite covering all six acceptance criteria.
+
+**`src/server/hook-contract/diff-checker.ts`**: `takeSnapshot(worktreePath, itemsFromPath)` reads the items_from file from disk before spawn (RC-1: not from git history) and returns its content as a `DiffSnapshot`. `checkDiff(snapshot, worktreePath, itemsFromPath)` runs after session exit, re-reads the file, strips whitespace from both versions, and returns `{ kind: 'ok' }` (AC-2), `{ kind: 'fail', diffSummary }` (AC-1) with a line-delta + char-delta summary, or `{ kind: 'skip' }` when no items_from is configured. Never throws.
+
+**`src/server/hook-contract/artifact-writes.ts`**: `captureGitHead(worktreePath)` returns the current HEAD hash before spawn (or null if git unavailable). `scanArtifactWrites(worktreePath, preSessionHead)` discovers files written during the session via `git diff <preHead>..HEAD --name-only --diff-filter=ACM` (committed changes) plus `git status --porcelain=v1` (staged and untracked), deduplicated. `computeSha256Streaming(absPath)` hashes each file through a Node.js `createReadStream` pipeline — no large-file buffering (RC-2). Deleted files skipped; git errors swallowed; always resolves (AC-3).
+
+**`src/server/hook-contract/manifest-reader.ts`**: `readLastCheckManifest(worktreePath)` reads `.yoke/last-check.json` and returns a discriminated union: `absent` if file missing (AC-4), `malformed` with detail string for any shape violation (AC-5), `unknown_version` with `hookVersion` and `rawJson` passthrough when `hook_version !== "1"` (AC-6), or `ok` with the structured `LastCheckManifest`. Gate-level extra fields pass through verbatim. Never throws (RC-3).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts`): Before `insertSession`, calls `takeSnapshot` and `captureGitHead`. After session exit: `scanArtifactWrites` collects `artifactWrites`; `readLastCheckManifest` inspects the optional manifest — malformed emits `stream.system_notice{source:"hook",severity:"warn"}`, unknown_version emits the same with `rawJson` attached; `checkDiff` runs — `fail` fires `diff_check_fail` event (skips post commands), `ok`/`skip` continues to post commands. All results pass through to `applyItemTransition` via `guardCtx`; none block phase acceptance independently (RC-3). No hook installation, no `.claude/hooks/` verification (RC-5).
+
+**Engine wiring** (`src/server/pipeline/engine.ts`): `GuardContext.artifactWrites?: ArtifactWriteRecord[]` added. Inside `applyItemTransition`'s `db.transaction`, when `artifactWrites` is non-empty and `sessionId` is non-null, one `INSERT INTO artifact_writes` row per record is written atomically with the state transition (RC-4).
+
+**Tests** (1018 total, all passing): 15 unit tests for `diff-checker.ts` (takeSnapshot paths: undefined, absent, readable; checkDiff: skip, ok whitespace-only, fail with creation/deletion/modification summaries). 23 unit tests for `manifest-reader.ts` (absent, 11 malformed shapes, unknown_version passthrough, valid v1 with extra gate fields). 15 unit tests for `artifact-writes.ts` (computeSha256Streaming correctness + 64-char hex shape + ENOENT throw; captureGitHead null for non-git / empty-git / real commit; scanArtifactWrites empty in non-git, picks up uncommitted + committed + skips deleted). 4 engine tests for `artifact_writes` DB insertion (2 rows committed in one transaction, empty → 0 rows, null sessionId → 0 rows, shared `written_at` timestamp). 4 scheduler integration tests (HC-1 diff_check_fail → awaiting_retry; HC-2 diff_check_ok → workflow completes; HC-4 malformed manifest → system_notice + session still completes; HC-5 unknown_version → rawJson in notice + session still completes).
+
+**Untested paths**: `scanArtifactWrites` path exercised in git-repo unit tests but not in the scheduler integration tests (would require a git repo as the worktree fixture). The `diff_check_fail` scheduler integration test uses a custom `FileMutatingProcessManager` that modifies the items_from file during `spawn()` rather than true in-process parallelism — this is correct given the synchronous snapshot/check ordering.
+
+## feat-notifications — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-notifications` feature across four focused commits with 957 tests passing and `tsc --noEmit` clean throughout.
+
+**`src/server/pipeline/engine.ts`**: `writePendingAttention` now returns the inserted rowid as `number`; `applyPendingSideEffects` returns `number | null`; `ApplyItemTransitionResult` gains a new `pendingAttentionRowId: number | null` field populated for both the side-effect-driven insert path and the direct `stage_needs_approval` insert. This is the foundation that lets callers drive post-commit notification dispatch without any additional DB round-trips.
+
+**`src/server/notifications/dispatcher.ts`** (new): Exports `dispatchNotification(deps, opts)` with two severity modes. `info` severity logs to console only (AC-2). `requires_attention` severity: (1) verifies `pendingAttentionRowId` is present (AC-4 guard); (2) reads the `pending_attention` row from SQLite at emission time using the read-only connection — not an in-memory cache (AC-5); (3) if the row is absent, returns silently (AC-4 enforcement); (4) logs to console; (5) skips native notification on non-macOS platforms (RC-3); (6) dynamically imports `node-notifier` via a runtime-constructed module name (avoids `tsc` TS2307 for an optional dependency) and fires `notify()` with the workflow name as title and a deep-link URL `baseUrl/workflows/{workflowId}` (AC-1); (7) wraps the `notify()` call in try/catch to handle a missing native binary without crashing (RC-3). Injectable `NotifierFn` dep keeps tests decoupled from the OS.
+
+**`src/server/api/server.ts`**: Added `POST /api/push/subscriptions` returning HTTP 501 with `{ error: 'not_implemented', message: '...' }`. No VAPID key generation or delivery attempt (AC-3, RC-2).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts` + `src/cli/start.ts`): Added `NotifyFn` export type and optional `notify?: NotifyFn` to `SchedulerOpts`. New private `_applyTransition()` helper wraps `applyItemTransition`, firing `notifyFn` whenever `pendingAttentionRowId` is non-null. All 17 `applyItemTransition` call sites in the scheduler now use `this._applyTransition()` so notification dispatch is uniform. `start.ts` wires `dispatchNotification` as the `notify` callback with the bound server URL for deep-link construction; the call is fire-and-forget (void Promise).
+
+**Tests**: 8 new dispatcher tests (`tests/notifications/dispatcher.test.ts`) covering AC-1 (notifier called with correct title and deep-link URL), AC-2 (info path — notifier never called), AC-4 (no notification without a row ID; no notification when row not found in DB), AC-5 (dispatcher reads DB at emission time — deleting the row after insert prevents notification), RC-3 (graceful completion with no injected notifier). 2 new HTTP tests (`tests/api/fastify-http.test.ts`) verify the 501 shape and absence of push-specific fields.
+
+**Untested paths**: The `info` severity path is not called from the scheduler — only `requires_attention` is wired. The production `loadNodeNotifier()` dynamic-import path is exercised only on macOS with `node-notifier` installed; tests use the injected `NotifierFn` path instead. `start.ts` wiring is tested indirectly via the scheduler and dispatcher tests; no full end-to-end integration test exists.
+
+## feat-github — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-github` feature across four focused commits, covering all five acceptance criteria with no live GitHub API calls in any test.
+
+**Migration 0002** (`src/server/storage/migrations/0002_github_state.sql`): Adds six columns to the `workflows` table — `github_state`, `github_pr_number`, `github_pr_url`, `github_pr_state`, `github_error`, `github_last_checked_at` — implementing the D48 GithubState enum (`disabled | unconfigured | idle | creating | created | failed`). Forward-only, applied automatically by the existing `applyMigrations` runner.
+
+**`src/server/github/types.ts`**: `GithubStatus` union type and `GithubError` discriminated union (`auth_failed | api_failed`), plus `GithubStateRow` mirroring the new DB columns.
+
+**`src/server/github/auth.ts`**: `resolveAuth(deps)` implements the GITHUB_TOKEN → gh auth token resolution chain with fully injectable `AuthDeps`. On failure, returns a structured `GithubAuthError` with an `attempts` array naming every source tried and the specific failure reason — never a raw stack trace (AC-4). `makeProductionAuthDeps()` provides the real-process implementation (dynamic import of `child_process` so tests never load it).
+
+**`src/server/github/push-guard.ts`**: `checkPushed(branch, deps)` runs `git log origin/<branch>..<branch> --oneline` via injectable `PushGuardDeps`. Empty output = fully pushed; any lines = unpushed commits. Remote-branch-not-found errors are caught and returned as a structured failure rather than thrown (AC-3, RC-1: always enforced, not config-gated).
+
+**`src/server/github/pr.ts`**: `OctokitAdapter` and `GhCliAdapter` interfaces with injectable adapters. `OctokitPrError` carries the HTTP status code so the service layer can detect 401/403 for fallback. Production `makeOctokitAdapter()` uses `@octokit/rest` (dynamic import). Production `makeGhCliAdapter()` calls `gh pr create --json number,url` and parses the result.
+
+**`src/server/github/service.ts`**: `createPr(input, deps)` orchestrates the full AC surface: push guard → auth resolution → DB transition to `creating` → Octokit call (with 401/403 fallback to gh CLI) → DB transition to `created` or `failed`. Every `github_state` DB write is paired with an `events` row inside the same `db.transaction()` (RC-4). `initGithubState(db, workflowId, opts)` stamps the initial state at workflow ingest time based on config.
+
+**Tests** (`tests/github/service.test.ts`): 16 integration tests using real SQLite (with migrations) and injectable stub deps — the "scripted fixture" pattern (no live API calls, AC-5/RC-2). Covers: octokit happy path (idle→creating→created with prNumber+prUrl); gh CLI path (GITHUB_TOKEN absent); 401 + 403 fallback to gh CLI; both auth sources exhausted → structured `GithubAuthError` naming each attempt; push guard blocking with unpushed commits and missing remote tracking branch; non-auth Octokit error (422) does not fall back to gh CLI; `initGithubState` stamps all four initial states; events row written atomically with every state change.
+
+`tests/storage/schema.test.ts` updated: workflows column count 12 → 18 and column name list extended with the six new github_state columns.
+
+947 tests pass; `tsc --noEmit` clean.
+
+## feat-fault-injector — implement attempt 0 (2026-04-13)
+
+Implemented `feat-fault-injector` in a single focused commit. **`src/server/fault/injector.ts`** (new): exports `Checkpoint` string union (`bootstrap_ok | session_ok | artifact_validators | post_commands_ok`), `FaultInjector` interface with `check(checkpoint)`, `NoopFaultInjector` (empty body — zero overhead in production, AC-1), `ActiveFaultInjector` (holds a `ReadonlySet<Checkpoint>`; `check()` throws `FaultInjectionError` synchronously at armed checkpoints — no sleep hacks, RC-3), and `FaultInjectionError` (carries `.checkpoint` for instanceof dispatch, AC-5). No `process.env` lookup inside the class; the caller constructs the right implementation (RC-4). **Scheduler wiring** (`src/server/scheduler/scheduler.ts`): added `faultInjector?: FaultInjector` to `SchedulerOpts`, defaults to `new NoopFaultInjector()`; four `check()` call-sites: at `bootstrap_ok` (after `runBootstrap()` succeeds, before `applyItemTransition`) with `FaultInjectionError` caught to fire `bootstrap_fail` immediately (AC-2); at `artifact_validators` (after validators pass, before post commands); at `post_commands_ok` (after post commands complete); at `session_ok` (immediately before `session_ok` is committed). Faults at the last three checkpoints leave the session row as `running` with the live PID so that `buildCrashRecovery` on the next scheduler restart detects the stale PID and fires `session_fail` (AC-3). **Tests**: 10 unit tests in `tests/fault/injector.test.ts` (all checkpoint variants, FaultInjectionError identity, edge cases); 4 integration tests in `tests/scheduler/crash-recovery.test.ts` covering AC-2 (bootstrap_ok fault → `bootstrap_failed`), AC-3/AC-4a-b (session_ok fault + new scheduler restart → stale PID recovery → item leaves `in_progress`), AC-4c (`rate_limited` item with unknown resetAt promoted immediately by new scheduler tick), and the no-op happy path. 931 tests pass; `tsc --noEmit` clean.
+
+## feat-artifact-validators — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-artifact-validators` feature in two focused commits.
+
+**`src/server/artifacts/validator.ts`** (new): Exports `validateArtifacts(artifacts, worktreePath)` which iterates every declared `OutputArtifact` independently, collecting failures without short-circuit (AC-5). For each artifact: (1) checks existence and raises `validator_fail` for missing required artifacts — catching `ENOENT` rather than propagating it (AC-4, RC-3); (2) skips schema validation when no `schema` field is configured; (3) parses the artifact as JSON and raises `validator_fail` for unparseable content; (4) reads the schema file fresh on every call — never from a cache (RC-2); (5) validates with `Ajv2020({ allErrors: true, verbose: true })` so errors carry `instancePath`, `schemaPath`, and `data` (the offending value) (AC-6). The `schemaId` in each `ArtifactFailure` comes from the schema's `$id` field, falling back to the schema file path (AC-2). New AJV instance per artifact guarantees no cross-run compiled-validator retention. Returns `{ kind: 'validators_ok' }` only when all artifacts pass (AC-3). 17 unit tests cover all AC/RC criteria plus edge cases (invalid JSON, unreadable schema, schema change between calls, no-schema existence check).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts`): Added `ArtifactValidatorFn` injectable type and `artifactValidator?` to `SchedulerOpts`. In `_runSession`, after the agent exits cleanly (`exitCode === 0`), `artifactValidatorFn` is called with `phaseConfig.output_artifacts` and `worktreePath` **before** post commands run (RC-4). On `validator_fail`: fires the `validator_fail` event via `applyItemTransition`, closes the session, and returns — post commands are not called. On `validators_ok`: continues to post commands unchanged. The constructor defaults to a lazy-imported `validateArtifacts` so production code requires no changes; tests supply a stub. 4 new scheduler integration tests: AV-1 (validators pass → `completed`), AV-2 (`validator_fail` → `awaiting_retry`), AV-3 (post runner not called on failure), AV-4 (correct `artifacts` + `worktreePath` forwarded).
+
+917 tests pass; `tsc --noEmit` clean.
+
+## feat-prepost-runner — implement attempt 1 (2026-04-13)
+
+Single blocking fix from review attempt 1 (RC-5): changed `SIGKILL_GRACE_MS` from 5,000 ms to 10,000 ms in `src/server/prepost/runner.ts` to match the process manager's documented SIGTERM+10s grace+SIGKILL escalation contract. Updated the associated code comment. All 31 prepost runner tests pass; `tsc --noEmit` clean.
+
+## feat-prepost-runner — implement attempt 0 (2026-04-13)
+
+Implemented the full pre/post command runner feature across four focused commits.
+
+**Wildcard enforcement at config load time (AC-4)**: Added `"required": ["*"]` to the `actionsMap` JSON schema definition (`docs/design/schemas/yoke-config.schema.json`). AJV now rejects any pre/post command whose `actions` map omits the catch-all wildcard entry at load time rather than at runtime. Four new loader tests cover both rejection and acceptance cases.
+
+**`PrePostRunRecord` type + `runs` field (AC-6 data collection)**: Added the `PrePostRunRecord` interface to `src/server/prepost/runner.ts`. Every `RunCommandsResult` variant now carries a `runs: PrePostRunRecord[]` array. The runner populates one record per command with `commandName`, `argv`, `when`, `startedAt`, `endedAt`, `exitCode`, and `actionTaken` (null for timeout, spawn failure, or unhandled exit). Made `shell: false` explicit in the spawn options (RC-1). Updated all 24 existing runner tests and added 7 new tests covering the runs array across every result kind.
+
+**Engine `prepost_runs` write (AC-6, RC-4)**: Added `prepostRuns?: PrePostRunRecord[]` to `GuardContext` in `src/server/pipeline/engine.ts`. Added the `writePrepostRun()` helper and wired it inside `applyItemTransition`'s `db.transaction()`, after the standard state mutation, so every run record is atomically persisted alongside its corresponding state transition.
+
+**Scheduler wiring**: Updated `_runSession` in `src/server/scheduler/scheduler.ts` to collect `preRuns` from pre command results and pass them — together with `postRuns` — as `guardCtx.prepostRuns` to every `applyItemTransition` call that follows. Pre-only runs are passed to `pre_command_failed` and `session_fail` (non-zero exit); pre + post runs are passed to `session_ok` and `post_command_action`. Three new scheduler integration tests verify that `prepost_runs` rows appear in SQLite for the pre-success, pre-fail, and post-success paths.
+
+All 896 tests pass; `tsc --noEmit` clean.
+
+## feat-process-mgr-scripted — implement attempt 2 (2026-04-13)
+
+Fixed the architectural import-direction inversion flagged as a known risk in attempt 1: the Scheduler (server layer) was importing `readRecordMarker` and `clearRecordMarker` directly from `src/cli/record.ts`, violating the rule that server modules must not import from the CLI layer.
+
+**`src/server/process/record-marker.ts`** (new): Canonical home for `RecordMarker` type, `readRecordMarker`, and `clearRecordMarker`. Documented with the marker file schema and the rationale for its placement in the server layer. **`src/cli/record.ts`** now re-exports these three symbols from the server module via `export type` / `export { }` re-export syntax so existing tests and the CLI command handler continue to work without any changes. **`src/server/scheduler/scheduler.ts`** import updated from `../../cli/record.js` → `../process/record-marker.js` — the only edit needed on the consumer side.
+
+No behaviour change; 883 tests pass; `tsc --noEmit` clean.
+
+## feat-process-mgr-scripted — implement attempt 1 (2026-04-13)
+
+Completed AC-2 (the only previously deferred acceptance criterion): `yoke record` capture mode now fully tee-s a live session's stream-json output to a JSONL fixture file.
+
+**`FixtureWriter`** (`src/server/process/fixture-writer.ts`): New class that opens a JSONL fixture file, writes a version-1 header, appends `stdout`/`stderr`/`exit` records synchronously (preserving event order without async buffering), and enforces a 64 KiB stderr cap matching the scheduler's own accumulator. 12 unit tests cover record ordering, the cap, idempotent `close()`, and a round-trip replay via `ScriptedProcessManager`.
+
+**Scheduler capture tee** (`src/server/scheduler/scheduler.ts`): In `_runSession`, after spawn succeeds, `readRecordMarker(this.config.configDir)` is checked. If a marker is present, a `FixtureWriter` is opened and wired as a tee alongside the existing `stdout_line`/`stderr_data` handlers. The writer is closed and the marker cleared at every session-exit path (normal end, rate-limited, and stopped-mid-run). Two integration tests in `tests/scheduler/scheduler.test.ts` verify the full path: fixture written + marker cleared when recording, and no fixture directory created without a marker.
+
+All 883 tests pass; `tsc --noEmit` clean.
+
+## feat-process-mgr-scripted — implement attempt 0 (2026-04-13)
+
+Completed the two remaining gaps in the existing `ScriptedProcessManager` implementation to fully satisfy `feat-process-mgr-scripted`.
+
+**Fixture version checking** (`src/server/process/scripted-manager.ts`): Added `{ "type": "header", "version": 1 }` support to `parseFixture()`. When a header record is the first non-blank line, the version is validated against `CURRENT_FIXTURE_VERSION = 1`; an unrecognised value (including wrong type such as `"1"` as string) throws `Error('Unsupported fixture version: N (expected 1)')`. Fixtures without a header continue to work (backward compatibility for inline test fixtures). The `CURRENT_FIXTURE_VERSION` constant is exported so callers can reference it. The module comment was updated with a full format spec and a failure-mode fixture index (RC-3).
+
+**Failure-mode fixtures** (`tests/fixtures/scripted-manager/`): Created four JSONL fixture files mapping to named rows in the plan-draft3 §D35 Failure Modes table (RC-4): `session-ok.jsonl` (clean exit, exit 0), `nonzero-exit-transient.jsonl` (exit 1 + ECONNRESET stderr), `nonzero-exit-permanent.jsonl` (exit 1 + "Cannot find module" stderr), `rate-limit-mid-stream.jsonl` (rate_limit_event with numeric `resetsAt`, then exit 0). All four include a version-1 header.
+
+**Tests** (`tests/process/scripted-manager.test.ts`): 8 new tests covering AC-5 (header accept/reject) and AC-3 (one replay integration test per failure-mode fixture). The rate-limit fixture test wires `StreamJsonParser` inline to verify `rate_limit_detected` fires with the expected `resetAt` value. 869 tests pass; `tsc --noEmit` clean.
+
+**Deferred**: `yoke record` capture mode (AC-2) — writing fixture files by tee-ing live session stdout — remains deferred to `feat-record-capture-wiring` as planned.
+
 ## feat-scheduler — implement attempt 1 (2026-04-13)
 
 Closed three deferred test gaps from attempt 0 and fixed the RC-2 blocker from the review.

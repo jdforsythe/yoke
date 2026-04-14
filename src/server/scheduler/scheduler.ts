@@ -50,7 +50,8 @@ import type { ResolvedConfig } from '../../shared/types/config.js';
 import type { Stage, Phase } from '../../shared/types/config.js';
 import type { ProcessManager, SpawnHandle } from '../process/manager.js';
 import type { WorktreeManager } from '../worktree/manager.js';
-import type { RunCommandsOpts, RunCommandsResult } from '../prepost/runner.js';
+import type { RunCommandsOpts, RunCommandsResult, PrePostRunRecord } from '../prepost/runner.js';
+import type { ValidateArtifactsResult } from '../artifacts/validator.js';
 import type { ServerFrameType } from '../api/frames.js';
 import type { ItemStatePayload } from '../api/frames.js';
 import {
@@ -70,6 +71,16 @@ import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
 import { classify } from '../state-machine/classifier.js';
+import { FixtureWriter } from '../process/fixture-writer.js';
+import { readRecordMarker, clearRecordMarker } from '../process/record-marker.js';
+import { NoopFaultInjector, FaultInjectionError } from '../fault/injector.js';
+import type { FaultInjector } from '../fault/injector.js';
+import { takeSnapshot, checkDiff } from '../hook-contract/diff-checker.js';
+import type { DiffSnapshot } from '../hook-contract/diff-checker.js';
+import { captureGitHead, scanArtifactWrites } from '../hook-contract/artifact-writes.js';
+import type { ArtifactWriteRecord } from '../pipeline/engine.js';
+import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
+import { seedPerItemStage } from './per-item-seeder.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,6 +110,18 @@ export type PromptAssemblerFn = (opts: {
 export type PrePostRunnerFn = (opts: RunCommandsOpts) => Promise<RunCommandsResult>;
 
 /**
+ * Injectable artifact validator function.
+ * In production: calls validateArtifacts() from artifacts/validator.ts.
+ * In tests: returns a stub result.
+ *
+ * RC-4: called after session exit (exitCode === 0) and before post: commands.
+ */
+export type ArtifactValidatorFn = (
+  artifacts: import('../../shared/types/config.js').OutputArtifact[],
+  worktreePath: string,
+) => Promise<ValidateArtifactsResult>;
+
+/**
  * Broadcast function injected from the server layer.
  * Maps to WsClientRegistry.broadcast().
  */
@@ -108,6 +131,18 @@ export type BroadcastFn = (
   frameType: ServerFrameType,
   payload: unknown,
 ) => void;
+
+/**
+ * Injectable notification callback.
+ * Called after applyItemTransition whenever a pending_attention row was
+ * inserted (result.pendingAttentionRowId !== null). The caller is responsible
+ * for reading the DB row and firing the appropriate native / console
+ * notification (feat-notifications).
+ */
+export type NotifyFn = (opts: {
+  workflowId: string;
+  pendingAttentionRowId: number;
+}) => void;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -165,12 +200,31 @@ export interface SchedulerOpts {
   prepostRunner: PrePostRunnerFn;
   assemblePrompt: PromptAssemblerFn;
   broadcast: BroadcastFn;
+  /**
+   * Injectable artifact validator. Defaults to the production validateArtifacts()
+   * from artifacts/validator.ts. Override in tests to control validation results.
+   */
+  artifactValidator?: ArtifactValidatorFn;
   /** Poll interval in ms. Default: 500. */
   pollIntervalMs?: number;
   /** Grace period for graceful shutdown drain (ms). Default: 10 000. */
   gracePeriodMs?: number;
   /** Max concurrent sessions. Default: 4. */
   maxParallel?: number;
+  /**
+   * Fault injection seam for crash-recovery testing.
+   * Defaults to NoopFaultInjector (zero overhead in production).
+   * Pass an ActiveFaultInjector to trigger crash recovery paths in tests.
+   * The caller (not this class) reads YOKE_FAULT_INJECT from the environment
+   * and constructs the appropriate implementation (RC-4).
+   */
+  faultInjector?: FaultInjector;
+  /**
+   * Optional notification callback (feat-notifications).
+   * Called after any applyItemTransition that inserts a pending_attention row.
+   * If omitted, no notification dispatch occurs (safe for tests that don't need it).
+   */
+  notify?: NotifyFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,8 +237,11 @@ export class Scheduler {
   private readonly processManager: ProcessManager;
   private readonly worktreeManager: WorktreeManager;
   private readonly prepostRunner: PrePostRunnerFn;
+  private readonly artifactValidatorFn: ArtifactValidatorFn;
   private readonly assemblePromptFn: PromptAssemblerFn;
   private readonly broadcastFn: BroadcastFn;
+  private readonly faultInjector: FaultInjector;
+  private readonly notifyFn?: NotifyFn;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -210,11 +267,47 @@ export class Scheduler {
     this.processManager = opts.processManager;
     this.worktreeManager = opts.worktreeManager;
     this.prepostRunner = opts.prepostRunner;
+    // Default to the production validateArtifacts if no override is provided.
+    if (opts.artifactValidator) {
+      this.artifactValidatorFn = opts.artifactValidator;
+    } else {
+      // Lazy import so tests that supply a stub never load AJV.
+      this.artifactValidatorFn = async (artifacts, worktreePath) => {
+        const { validateArtifacts } = await import('../artifacts/validator.js');
+        return validateArtifacts(artifacts, worktreePath);
+      };
+    }
     this.assemblePromptFn = opts.assemblePrompt;
     this.broadcastFn = opts.broadcast;
+    this.faultInjector = opts.faultInjector ?? new NoopFaultInjector();
+    this.notifyFn = opts.notify;
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
+  }
+
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Thin wrapper around applyItemTransition that fires the optional notify
+   * callback whenever a pending_attention row was inserted (feat-notifications).
+   *
+   * All callers in this file use _applyTransition instead of applyItemTransition
+   * directly so that notification dispatch is uniform and not scattered.
+   */
+  private _applyTransition(
+    params: Parameters<typeof applyItemTransition>[0],
+  ): ReturnType<typeof applyItemTransition> {
+    const result = applyItemTransition(params);
+    if (result.pendingAttentionRowId != null && this.notifyFn) {
+      this.notifyFn({
+        workflowId: params.workflowId,
+        pendingAttentionRowId: result.pendingAttentionRowId,
+      });
+    }
+    return result;
   }
 
   // -------------------------------------------------------------------------
@@ -246,7 +339,7 @@ export class Scheduler {
         // Fire session_fail with transient classifier → awaiting_retry (auto-restarts).
         // A crashed/killed session is a transient failure, not a permanent one
         // requiring user intervention.
-        const recoveryResult = applyItemTransition({
+        const recoveryResult = this._applyTransition({
           db: this.db,
           workflowId: info.workflowId,
           itemId: stale.itemId,
@@ -299,19 +392,7 @@ export class Scheduler {
       Promise.allSettled(drainPromises),
       new Promise<void>((resolve) => setTimeout(resolve, this.gracePeriodMs)),
     ]);
-
-    // Close any sessions that are still marked running in SQLite.
-    // This covers both in-flight sessions cancelled above AND any sessions
-    // that were running when the server was killed (e.g. SIGKILL to the parent).
-    const now = new Date().toISOString();
-    this.db.transaction((writer) => {
-      writer
-        .prepare(
-          `UPDATE sessions SET status = 'failed', ended_at = ? WHERE ended_at IS NULL`,
-        )
-        .run(now);
-    });
-    console.log('[scheduler] stopped; open sessions marked failed');
+    console.log('[scheduler] stopped');
   }
 
   // -------------------------------------------------------------------------
@@ -382,7 +463,7 @@ export class Scheduler {
         // pending → try deps_satisfied
         // ------------------------------------------------------------------
         case 'pending': {
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -410,11 +491,41 @@ export class Scheduler {
           const stage = this._findStage(item.stage_id);
           if (!stage) break;
 
+          // ------------------------------------------------------------------
+          // Per-item seeding: intercept before phase_start.
+          // When a per-item stage's placeholder item is ready, seed real item
+          // rows from the manifest instead of spawning a session.
+          // ------------------------------------------------------------------
+          if (stage.run === 'per-item') {
+            const worktreePath = wf.worktree_path;
+            if (!worktreePath) {
+              // Worktree not yet created — wait for the bootstrap phase of a
+              // preceding stage to populate it.
+              break;
+            }
+            const seedResult = seedPerItemStage({
+              db: this.db,
+              workflowId: wf.id,
+              placeholderItemId: item.id,
+              worktreePath,
+              stage,
+            });
+            if (seedResult.kind === 'error') {
+              console.error(
+                `[scheduler] per-item seeding failed for stage '${stage.id}':`,
+                seedResult.message,
+              );
+            }
+            // On success: placeholder deleted, real items pending — next tick
+            // picks them up.  On error: placeholder still ready — retry next tick.
+            break;
+          }
+
           const phaseIdx = stage.phases.indexOf(item.current_phase ?? '');
           const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
           const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -468,7 +579,7 @@ export class Scheduler {
           const retryAt = this.retryAfterAt.get(item.id)!;
           if (Date.now() < retryAt) break;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -491,7 +602,7 @@ export class Scheduler {
           // If reset_at is unknown (scheduler restart), fire immediately.
           if (resetAt !== undefined && Date.now() < resetAt * 1000) break;
 
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -548,7 +659,7 @@ export class Scheduler {
         } catch (err) {
           // Worktree creation failed → bootstrap_fail (triggers pending_attention).
           console.error(`[scheduler] worktree creation failed for ${item.stage_id}:`, err);
-          const result = applyItemTransition({
+          const result = this._applyTransition({
             db: this.db,
             workflowId: wf.id,
             itemId: item.id,
@@ -580,7 +691,16 @@ export class Scheduler {
         commands,
       });
 
-      const result = applyItemTransition({
+      // Checkpoint: bootstrap_ok (AC-2).
+      // Injecting a fault here simulates a crash between bootstrap succeeding
+      // and the bootstrap_ok transition being committed to SQLite.  The catch
+      // block below treats FaultInjectionError as bootstrap_fail so the item
+      // enters the bootstrap_fail recovery path without a scheduler restart.
+      if (bootstrapEvent.type === 'bootstrap_ok') {
+        this.faultInjector.check('bootstrap_ok');
+      }
+
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -607,7 +727,24 @@ export class Scheduler {
         console.error(`[scheduler] bootstrap failed for ${item.stage_id}: newState=${result.newState}`);
       }
     } catch (err) {
-      console.error(`[scheduler] bootstrap error for item ${item.id}:`, err);
+      if (err instanceof FaultInjectionError) {
+        // Fault injection at bootstrap_ok: simulate a crash before the
+        // bootstrap_ok transition is committed.  Fire bootstrap_fail so the
+        // item enters the bootstrap_fail recovery path (AC-2).
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: item.id,
+          sessionId: null,
+          stage: item.stage_id,
+          phase: item.current_phase ?? '',
+          attempt: item.retry_count + 1,
+          event: 'bootstrap_fail',
+        });
+        this._broadcastItemState(wf.id, item.id, item.stage_id, result);
+      } else {
+        console.error(`[scheduler] bootstrap error for item ${item.id}:`, err);
+      }
     }
     this.inFlight.delete(item.id);
   }
@@ -652,6 +789,20 @@ export class Scheduler {
 
     const worktreePath = wf.worktree_path ?? this.config.configDir;
 
+    // --- feat-hook-contract: pre-session snapshots (RC-1, RC-2) ---
+    // Both captures happen before insertSession so they strictly precede spawn.
+    const itemsFromPath = stage.items_from;
+    const diffSnapshot: DiffSnapshot = takeSnapshot(worktreePath, itemsFromPath);
+    const preSessionHead: string | null = await captureGitHead(worktreePath);
+
+    // Guard: if stop() was called while awaiting captureGitHead, bail before any
+    // DB write. stop() skips 'pending' inFlight entries (no handle yet), so without
+    // this check a dangling _runSession could call insertSession on a closed DB.
+    if (this.stopped) {
+      this.inFlight.delete(item.id);
+      return;
+    }
+
     // RC-2: insertSession via engine helper (not db.writer directly).
     // Inserted BEFORE spawn so SQLite concurrency count is immediately accurate.
     insertSession(this.db, {
@@ -672,6 +823,8 @@ export class Scheduler {
     });
 
     // --- Pre: commands (AC-4) ---
+    // Collect runs for later persistence via the engine (AC-6, RC-4).
+    let preRuns: PrePostRunRecord[] = [];
     if (phaseConfig.pre && phaseConfig.pre.length > 0) {
       const preResult = await this.prepostRunner({
         commands: phaseConfig.pre,
@@ -680,6 +833,7 @@ export class Scheduler {
         when: 'pre',
         env: correlationEnv,
       });
+      preRuns = preResult.runs;
 
       if (preResult.kind !== 'complete') {
         // Pre-command blocked spawn.
@@ -687,7 +841,7 @@ export class Scheduler {
           ? (preResult.action === 'stop-and-ask' ? 'stop-and-ask' as const : 'fail' as const)
           : 'fail' as const;
 
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: item.id,
@@ -696,7 +850,7 @@ export class Scheduler {
           phase: phaseKey,
           attempt,
           event: 'pre_command_failed',
-          guardCtx: { preCommandAction: preAction },
+          guardCtx: { preCommandAction: preAction, prepostRuns: preRuns },
         });
         this._broadcastItemState(wf.id, item.id, item.stage_id, result);
         await logWriter.close();
@@ -725,7 +879,7 @@ export class Scheduler {
       });
     } catch (err) {
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -759,7 +913,7 @@ export class Scheduler {
       console.log(`[scheduler] spawned pid=${handle.pid} session=${sessionId}`);
     } catch (err) {
       console.error(`[scheduler] spawn failed for item ${item.id}:`, err);
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -804,6 +958,19 @@ export class Scheduler {
       startedAt: new Date().toISOString(),
     });
 
+    // --- Capture mode: open FixtureWriter if .yoke/record.json is present (AC-2) ---
+    const captureMarker = readRecordMarker(this.config.configDir);
+    let fixtureWriter: FixtureWriter | null = null;
+    if (captureMarker) {
+      fixtureWriter = new FixtureWriter({ capturePath: captureMarker.capturePath });
+      try {
+        fixtureWriter.open();
+      } catch (err) {
+        console.error('[scheduler] capture: failed to open fixture writer:', err);
+        fixtureWriter = null;
+      }
+    }
+
     // --- Wire up NDJSON parser (AC-3) ---
     const parser = new StreamJsonParser();
     let stderr = '';
@@ -822,7 +989,7 @@ export class Scheduler {
     // Rate limit detection (AC-6).
     parser.on('rate_limit_detected', (ev: RateLimitDetectedEvent) => {
       this.rateLimitResetAt.set(item.id, ev.resetAt ?? (Date.now() / 1000 + 3600));
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: item.id,
@@ -848,16 +1015,18 @@ export class Scheduler {
     parser.on('stream.usage',        (ev) => this.broadcastFn(wf.id, sessionId, 'stream.usage',        ev));
     parser.on('stream.system_notice',(ev) => this.broadcastFn(wf.id, sessionId, 'stream.system_notice',ev));
 
-    // Feed stdout lines to parser.
+    // Feed stdout lines to parser; tee to fixture writer in capture mode.
     handle.on('stdout_line', (line: string) => {
       parser.feed(line);
+      fixtureWriter?.appendStdout(line);
     });
 
-    // Accumulate stderr for the failure classifier.
+    // Accumulate stderr for the failure classifier; tee to fixture writer.
     handle.on('stderr_data', (chunk: string) => {
       if (stderr.length < 65_536) {
         stderr += chunk;
       }
+      fixtureWriter?.appendStderr(chunk);
     });
 
     // --- Wait for process exit ---
@@ -880,6 +1049,8 @@ export class Scheduler {
     // Guard: if stop() was called while session ran, record the exit and bail.
     if (this.stopped) {
       endSession(this.db, sessionId, { exitCode });
+      fixtureWriter?.close(exitCode);
+      if (fixtureWriter) clearRecordMarker(this.config.configDir);
       await logWriter.close();
       this.inFlight.delete(item.id);
       return;
@@ -889,6 +1060,8 @@ export class Scheduler {
     const freshItem = this._readItem(item.id);
     if (!freshItem || freshItem.status === 'rate_limited') {
       // Session was cancelled due to rate limit or item no longer exists.
+      fixtureWriter?.close(exitCode);
+      if (fixtureWriter) clearRecordMarker(this.config.configDir);
       this.broadcastFn(wf.id, sessionId, 'session.ended', {
         sessionId,
         endedAt: new Date().toISOString(),
@@ -906,9 +1079,110 @@ export class Scheduler {
     const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
     const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
+    try {
+
     if (exitCode === 0) {
+      // --- Artifact validators (RC-4: after session exit, before post commands) ---
+      const artifacts = phaseConfig.output_artifacts ?? [];
+      const validationResult = await this.artifactValidatorFn(artifacts, worktreePath);
+
+      // Checkpoint: artifact_validators (AC-5).
+      // Injecting here simulates a crash after validators pass but before
+      // post commands run.  The session_ok catch path (below) handles the item.
+      if (validationResult.kind !== 'validator_fail') {
+        this.faultInjector.check('artifact_validators');
+      }
+
+      if (validationResult.kind === 'validator_fail') {
+        // One or more artifacts failed validation — fire validator_fail event.
+        // Post commands are skipped (they run only when all validators pass).
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: freshItem.id,
+          sessionId,
+          stage: freshItem.stage_id,
+          phase: freshItem.current_phase ?? '',
+          attempt,
+          event: 'validator_fail',
+          guardCtx: { prepostRuns: preRuns },
+        });
+        this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'validator_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
+      }
+
+      // --- feat-hook-contract: post-session surfaces ---
+
+      // AC-3 / RC-2: scan worktree diff; sha256 via streaming hash.
+      // Runs after artifact validators (ordering per hook-contract.md §2).
+      const artifactWrites: ArtifactWriteRecord[] =
+        await scanArtifactWrites(worktreePath, preSessionHead);
+
+      // AC-4/AC-5/AC-6: read optional .yoke/last-check.json manifest.
+      const manifestResult = readLastCheckManifest(worktreePath);
+      if (manifestResult.kind === 'malformed') {
+        // AC-5: malformed manifest → warn; MUST NOT affect phase acceptance (RC-3).
+        this.broadcastFn(wf.id, sessionId, 'stream.system_notice', {
+          source: 'hook',
+          severity: 'warn',
+          message: `Malformed .yoke/last-check.json: ${manifestResult.detail}`,
+        });
+      } else if (manifestResult.kind === 'unknown_version') {
+        // AC-6: unknown hook_version → warning badge + raw JSON passthrough.
+        this.broadcastFn(wf.id, sessionId, 'stream.system_notice', {
+          source: 'hook',
+          severity: 'warn',
+          message: `Unknown hook_version "${String(manifestResult.hookVersion)}" in .yoke/last-check.json`,
+          rawJson: manifestResult.rawJson,
+        });
+      }
+
+      // AC-1/AC-2: items_from diff check (RC-1: pre-phase snapshot, not git history).
+      const diffResult = checkDiff(diffSnapshot, worktreePath, itemsFromPath);
+      if (diffResult.kind === 'fail') {
+        // diff_check_fail: fire event and skip post commands.
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: freshItem.id,
+          sessionId,
+          stage: freshItem.stage_id,
+          phase: freshItem.current_phase ?? '',
+          attempt,
+          event: 'diff_check_fail',
+          guardCtx: { prepostRuns: preRuns, artifactWrites },
+        });
+        this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'diff_check_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
+      }
+      // diffResult.kind === 'ok' or 'skip' → continue to post commands.
+
       // --- Post: commands (AC-5) ---
-      let postResult: RunCommandsResult = { kind: 'complete' };
+      let postResult: RunCommandsResult = { kind: 'complete', runs: [] };
       if (phaseConfig.post && phaseConfig.post.length > 0) {
         console.log(`[scheduler] running ${phaseConfig.post.length} post-command(s) for ${item.stage_id}/${phaseKey}`);
         postResult = await this.prepostRunner({
@@ -921,9 +1195,23 @@ export class Scheduler {
         console.log(`[scheduler] post-commands result: kind=${postResult.kind}${postResult.kind === 'action' ? ` action=${JSON.stringify(postResult.action)}` : ''}`);
       }
 
+      // All runs (pre + post) are persisted together with the state transition.
+      const allRuns: PrePostRunRecord[] = [...preRuns, ...postResult.runs];
+
       if (postResult.kind === 'complete') {
+        // Checkpoint: post_commands_ok — all post commands passed (AC-5).
+        // Injecting here simulates a crash between post commands completing
+        // and the session_ok transition being committed to SQLite.
+        this.faultInjector.check('post_commands_ok');
+
+        // Checkpoint: session_ok — commit the successful session outcome (AC-3).
+        // Injecting here simulates a crash immediately before session_ok is
+        // written to SQLite, triggering the crash-recovery restart projection
+        // path on the next scheduler start (stale PID in sessions table).
+        this.faultInjector.check('session_ok');
+
         // session_ok → complete (last phase) or in_progress (advance phase).
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -938,6 +1226,8 @@ export class Scheduler {
             allPostCommandsOk: true,
             validatorsOk: true,
             diffCheckOk: true,
+            prepostRuns: allRuns,
+            artifactWrites,
           },
         });
         console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} session_ok → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
@@ -947,7 +1237,7 @@ export class Scheduler {
         // post_command_action — forward the resolved action to the engine.
         const actionValue = postResult.action;
         const resolvedAction = this._toResolvedAction(actionValue);
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -956,7 +1246,7 @@ export class Scheduler {
           phase: freshItem.current_phase ?? '',
           attempt,
           event: 'post_command_action',
-          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase },
+          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns, artifactWrites },
         });
         console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} post_command_action=${JSON.stringify(resolvedAction)} → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
         if (result.newState === 'awaiting_user') {
@@ -970,7 +1260,7 @@ export class Scheduler {
           parseErrors,
           lastEventType: 'none',
         });
-        const result = applyItemTransition({
+        const result = this._applyTransition({
           db: this.db,
           workflowId: wf.id,
           itemId: freshItem.id,
@@ -979,7 +1269,7 @@ export class Scheduler {
           phase: freshItem.current_phase ?? '',
           attempt,
           event: 'session_fail',
-          guardCtx: { classifierResult },
+          guardCtx: { classifierResult, prepostRuns: allRuns },
         });
         if (result.newState === 'awaiting_user') {
           console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
@@ -988,10 +1278,11 @@ export class Scheduler {
       }
 
     } else {
-      // Non-zero exit → session_fail.
+      // Non-zero exit → session_fail. Only pre runs (post commands are skipped
+      // when the agent exits non-zero, per AC-3).
       const classifierResult = classify(stderr, { parseErrors, lastEventType: 'none' });
       console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} session_fail exitCode=${exitCode} classifier=${classifierResult}`);
-      const result = applyItemTransition({
+      const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
         itemId: freshItem.id,
@@ -1000,7 +1291,7 @@ export class Scheduler {
         phase: freshItem.current_phase ?? '',
         attempt,
         event: 'session_fail',
-        guardCtx: { classifierResult },
+        guardCtx: { classifierResult, prepostRuns: preRuns },
       });
       // Arm retry timer if item entered awaiting_retry.
       if (result.newState === 'awaiting_retry') {
@@ -1013,7 +1304,24 @@ export class Scheduler {
       this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
     }
 
+    } catch (err) {
+      if (err instanceof FaultInjectionError) {
+        // Simulated crash: clean up I/O but leave the session row as 'running'
+        // with its PID intact.  On the next scheduler start, buildCrashRecovery
+        // probes the stale PID (ESRCH) and fires session_fail via the normal
+        // crash-recovery restart projection path (AC-3).
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        await logWriter.close();
+        this.inFlight.delete(item.id);
+        return;
+      }
+      throw err; // re-raise unexpected errors
+    }
+
     // --- Wrap up session ---
+    fixtureWriter?.close(exitCode);
+    if (fixtureWriter) clearRecordMarker(this.config.configDir);
     this.broadcastFn(wf.id, sessionId, 'session.ended', {
       sessionId,
       endedAt: new Date().toISOString(),

@@ -18,14 +18,15 @@ import path from 'node:path';
 import type { Command } from 'commander';
 
 // ---------------------------------------------------------------------------
-// Types
+// Re-exports from server layer
 // ---------------------------------------------------------------------------
+// readRecordMarker and clearRecordMarker live in src/server/process/record-marker.ts
+// (the server layer) so the Scheduler can import them without crossing a downward
+// layer boundary.  The CLI re-exports them here for backward compatibility with
+// existing tests and any external callers.
 
-export interface RecordMarker {
-  enabled: true;
-  capturePath: string;
-  createdAt: string;
-}
+export type { RecordMarker } from '../server/process/record-marker.js';
+export { readRecordMarker, clearRecordMarker } from '../server/process/record-marker.js';
 
 // ---------------------------------------------------------------------------
 // Public API (exported for testing)
@@ -69,8 +70,8 @@ export function runRecord(opts: RecordOptions = {}): RecordResult {
   fs.mkdirSync(yokeDir, { recursive: true });
   fs.mkdirSync(path.dirname(capturePath), { recursive: true });
 
-  const marker: RecordMarker = {
-    enabled: true,
+  const marker = {
+    enabled: true as const,
     capturePath: path.resolve(capturePath),
     createdAt: new Date().toISOString(),
   };
@@ -78,42 +79,6 @@ export function runRecord(opts: RecordOptions = {}): RecordResult {
   fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2), 'utf8');
 
   return { markerPath, capturePath: marker.capturePath };
-}
-
-/**
- * Read the capture marker from .yoke/record.json, if present.
- * Returns null if no marker exists or if it is malformed.
- */
-export function readRecordMarker(cwd?: string): RecordMarker | null {
-  const markerPath = path.join(cwd ?? process.cwd(), '.yoke', 'record.json');
-  if (!fs.existsSync(markerPath)) return null;
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as unknown;
-    if (
-      typeof raw === 'object' &&
-      raw !== null &&
-      (raw as RecordMarker).enabled === true &&
-      typeof (raw as RecordMarker).capturePath === 'string'
-    ) {
-      return raw as RecordMarker;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Clear the capture marker (called by the pipeline engine after a session).
- */
-export function clearRecordMarker(cwd?: string): void {
-  const markerPath = path.join(cwd ?? process.cwd(), '.yoke', 'record.json');
-  try {
-    fs.unlinkSync(markerPath);
-  } catch {
-    // Not fatal if already absent.
-  }
 }
 
 // ---------------------------------------------------------------------------

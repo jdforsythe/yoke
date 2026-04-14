@@ -569,18 +569,18 @@ At some point during δ, you'll have built:
 
 As soon as these exist and pass unit tests, **try self-hosting**:
 
-- [ ] Write a minimal `.yoke.yml` at repo root targeting the remaining features
-- [ ] Run `./yoke start` on the yoke-features.json
-- [ ] If it drives the next feature successfully → graduate to Tier 1 (stop using yoke-v0)
+- [x] Write a minimal `.yoke.yml` at repo root targeting the remaining features
+- [x] Run `./yoke start` on the yoke-features.json
+- [x] If it drives the next feature successfully → graduate to Tier 1 (stop using yoke-v0)
 - [ ] If not → fix the bugs, retry until self-hosting works
 
 🛑 **Self-hosting milestone achieved** when `./yoke start` successfully implements at least one feature without human shepherding beyond starting it.
 
 ### δ.4 — Complete remaining core engine features under v1 self-hosting
 
-- [ ] Continue through yoke-features.json using Yoke v1 itself
-- [ ] Stop hook is now enforcing — trust but verify by spot-checking tests manually on a few features
-- [ ] Every blocked feature: debug, unblock, retry — don't let the backlog grow
+- [x] Continue through yoke-features.json using Yoke v1 itself
+- [x] Stop hook is now enforcing — trust but verify by spot-checking tests manually on a few features
+- [x] Every blocked feature: debug, unblock, retry — don't let the backlog grow
 
 ### 🛑 GATE: Phase δ complete
 

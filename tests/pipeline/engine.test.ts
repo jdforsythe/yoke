@@ -1724,3 +1724,148 @@ describe('applyWorkflowComplete', () => {
     expect(row.updated_at).not.toBe('2026-01-01T00:00:00Z');
   });
 });
+
+// ---------------------------------------------------------------------------
+// feat-hook-contract: artifact_writes insertion (RC-4)
+// ---------------------------------------------------------------------------
+
+describe('feat-hook-contract: artifact_writes rows persisted inside transaction', () => {
+  it('inserts one artifact_writes row per entry in guardCtx.artifactWrites', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    const sessId = `sess-aw-${wfId}`;
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+    insertSession(sessId, wfId, { itemId, status: 'running', phase: 'implement' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: sessId,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: {
+        morePhases: false,
+        allPostCommandsOk: true,
+        validatorsOk: true,
+        diffCheckOk: true,
+        artifactWrites: [
+          { path: 'src/output.ts', sha256: 'a'.repeat(64) },
+          { path: 'docs/notes.md', sha256: 'b'.repeat(64) },
+        ],
+      },
+    });
+
+    const rows = pool.reader()
+      .prepare('SELECT artifact_path, sha256 FROM artifact_writes WHERE session_id = ?')
+      .all(sessId) as { artifact_path: string; sha256: string }[];
+
+    expect(rows).toHaveLength(2);
+    const paths = rows.map((r) => r.artifact_path);
+    expect(paths).toContain('src/output.ts');
+    expect(paths).toContain('docs/notes.md');
+
+    const ouput = rows.find((r) => r.artifact_path === 'src/output.ts');
+    expect(ouput?.sha256).toBe('a'.repeat(64));
+  });
+
+  it('inserts no artifact_writes rows when artifactWrites is empty', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    const sessId = `sess-aw-empty-${wfId}`;
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+    insertSession(sessId, wfId, { itemId, status: 'running', phase: 'implement' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: sessId,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: {
+        morePhases: false,
+        allPostCommandsOk: true,
+        validatorsOk: true,
+        diffCheckOk: true,
+        artifactWrites: [],
+      },
+    });
+
+    const rows = pool.reader()
+      .prepare('SELECT COUNT(*) AS cnt FROM artifact_writes WHERE session_id = ?')
+      .get(sessId) as { cnt: number };
+    expect(rows.cnt).toBe(0);
+  });
+
+  it('inserts no artifact_writes rows when sessionId is null (RC-4)', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+
+    // No session inserted — sessionId is null.
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'deps_satisfied',
+      guardCtx: {
+        artifactWrites: [{ path: 'should-not-appear.ts', sha256: 'c'.repeat(64) }],
+      },
+    });
+
+    const rows = pool.reader()
+      .prepare("SELECT COUNT(*) AS cnt FROM artifact_writes WHERE artifact_path = 'should-not-appear.ts'")
+      .get() as { cnt: number };
+    expect(rows.cnt).toBe(0);
+  });
+
+  it('artifact_writes rows share the same written_at timestamp within a transaction', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    const sessId = `sess-aw-ts-${wfId}`;
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+    insertSession(sessId, wfId, { itemId, status: 'running', phase: 'implement' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: sessId,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: {
+        morePhases: false,
+        allPostCommandsOk: true,
+        validatorsOk: true,
+        diffCheckOk: true,
+        artifactWrites: [
+          { path: 'a.ts', sha256: 'd'.repeat(64) },
+          { path: 'b.ts', sha256: 'e'.repeat(64) },
+        ],
+      },
+    });
+
+    const rows = pool.reader()
+      .prepare('SELECT written_at FROM artifact_writes WHERE session_id = ?')
+      .all(sessId) as { written_at: string }[];
+
+    expect(rows).toHaveLength(2);
+    // Both rows must share the same written_at timestamp (written in one transaction).
+    expect(rows[0].written_at).toBe(rows[1].written_at);
+  });
+});

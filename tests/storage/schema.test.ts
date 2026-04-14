@@ -130,7 +130,7 @@ describe('AC-1: all seven tables present after migration 0001', () => {
     });
   }
 
-  it('workflows has exactly 12 columns', () => {
+  it('workflows has exactly 18 columns', () => {
     const db = makeDb();
     const names = colNames(db, 'workflows');
     db.close();
@@ -138,6 +138,9 @@ describe('AC-1: all seven tables present after migration 0001', () => {
       'id', 'name', 'spec', 'pipeline', 'config', 'status',
       'current_stage', 'worktree_path', 'branch_name', 'recovery_state',
       'created_at', 'updated_at',
+      // migration 0002: github_state columns
+      'github_state', 'github_pr_number', 'github_pr_url',
+      'github_pr_state', 'github_error', 'github_last_checked_at',
     ]);
   });
 
@@ -447,7 +450,7 @@ describe('AC-6: no extra columns in any table', () => {
   it('column counts match the schema exactly', () => {
     const db = makeDb();
     const counts: Record<string, number> = {
-      workflows: 12,
+      workflows: 18,  // 12 original + 6 github_state columns (migration 0002)
       items: 13,
       sessions: 22,
       events: 12,
