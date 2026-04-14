@@ -4,120 +4,35 @@ project:
   name: yoke
 
 # ---------------------------------------------------------------------------
-# Pipeline — δ.3 self-hosting: implement the 9 remaining features.
+# Pipeline — ε self-hosting: drive the dashboard via the v1 harness.
 #
-# WHY run:once INSTEAD OF run:per-item
-# ---------------------------------------------------------------------------
-# Per-item manifest seeding is deferred (open in feat-record-capture-wiring).
-# Until it lands, each feature is a manually-listed run:once stage.
-# Stages are chained automatically by ingest (each depends on the previous).
+# All Phase δ features (including feat-workflow-display-name and
+# feat-workflow-run-files) are complete. This pipeline now targets
+# docs/idea/dashboard-features.json via a single run:per-item stage.
 #
-# FUTURE — once per-item seeding is implemented, replace the entire stages
-# array below with a single per-item stage:
-#
-#   - id: core-features
-#     run: per-item
-#     items_from: docs/idea/yoke-features.json
-#     items_list: "$.features"
-#     items_id: "$.id"
-#     items_depends_on: "$.depends_on"
-#     items_complete: "$.status"
-#     items_display:
-#       title: "$.id"
-#       subtitle: "$.category"
-#     phases:
-#       - implement
-#       - review
-#
-# items_complete: "$.status" — evaluated per item at seed time. If the
-# expression returns a truthy value ("complete"), the item is seeded into
-# SQLite with status:'complete' and the scheduler skips it. Features
-# already built outside Yoke carry status:"complete" in yoke-features.json
-# so they are never re-run. Fresh items have no status field → falsy → seeded
-# as pending. When a feature completes, mark it status:"complete" in
-# yoke-features.json.
+# items_complete: "$.status" — evaluated per item at seed time. Items with
+# status:"complete" are seeded into SQLite as pre-marked done and skipped by
+# the scheduler. Fresh items have no status field → falsy → seeded as pending.
+# When a feature completes, mark it status:"complete" in dashboard-features.json.
 #
 # DO NOT use an items_list JSONPath filter instead (e.g. [?(@.status !=
 # 'complete')]). Filtered items never get SQLite rows, which breaks the
 # dependency graph and isResume semantics. items_complete seeds all items
 # but pre-marks the done ones — SQLite remains the authoritative record.
-#
-# TOPOLOGICAL ORDER for current stages (satisfies depends_on graph):
-#   feat-state-machine-tests   → no remaining deps
-#   feat-artifact-validators   → no remaining deps
-#   feat-fault-injector        → no remaining deps
-#   feat-github                → no remaining deps
-#   feat-notifications         → no remaining deps
-#   feat-hook-contract         → depends on feat-artifact-validators (stage 2)
-#   feat-ack-attention-wiring  → depends on feat-scheduler, feat-fastify-ws (both complete)
-#   feat-worktree-git-check    → depends on feat-cli, feat-worktree-mgr (both complete)
-#   feat-record-capture-wiring → depends on feat-scheduler, feat-cli (both complete)
 # ---------------------------------------------------------------------------
 
 pipeline:
   stages:
-    - id: feat-process-mgr-scripted
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-prepost-runner
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-artifact-validators
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-fault-injector
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-github
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-notifications
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-hook-contract
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-ack-attention-wiring
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-worktree-git-check
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-record-capture-wiring
-      run: once
-      phases:
-        - implement
-        - review
-
-    - id: feat-per-item-seeding
-      run: once
+    - id: dashboard-features
+      run: per-item
+      items_from: docs/idea/dashboard-features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_complete: "$.status"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
       phases:
         - implement
         - review

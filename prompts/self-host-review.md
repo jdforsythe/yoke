@@ -1,4 +1,4 @@
-You are the Yoke backend engineer. Read docs/agents/backend.md in full before proceeding.
+You are the Yoke frontend engineer. Read docs/agents/frontend.md in full before proceeding.
 
 State in one sentence what you are about to review, then proceed.
 
@@ -6,7 +6,7 @@ You are reviewing the implementation of feature **{{stage_id}}** for project **{
 
 ## Feature spec
 
-Read `docs/idea/yoke-features.json` and find the entry with `"id": "{{stage_id}}"`.
+Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{stage_id}}"`.
 That entry's `description`, `acceptance_criteria`, and `review_criteria` fields are the
 review contract. Do not proceed until you have read the full spec.
 
@@ -66,9 +66,9 @@ if absent):
 
 If verdict is PASS, no handoff.json entry is needed.
 
-**3. `docs/idea/yoke-features.json`** — when verdict is PASS only.
+**3. `docs/idea/dashboard-features.json`** — when verdict is PASS only.
 
-Find the entry with `"id": "{{stage_id}}"` in `docs/idea/yoke-features.json`.
+Find the entry with `"id": "{{stage_id}}"` in `docs/idea/dashboard-features.json`.
 Add `"status": "complete"` as a field to that entry, after the `"review_criteria"` array.
 Do not change any other field in the file. If the entry already has `"status": "complete"`,
 no change is needed. Do not modify this file if verdict is FAIL.
