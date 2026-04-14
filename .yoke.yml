@@ -116,7 +116,7 @@ phases:
     prompt_template: prompts/self-host-review.md
     post:
       - name: check-verdict
-        run: ["python3", "scripts/check-review-verdict.py"]
+        run: ["node", "scripts/check-review-verdict.js"]
         timeout_s: 10
         actions:
           "0": continue
