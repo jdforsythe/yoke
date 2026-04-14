@@ -1,5 +1,29 @@
 [
   {
+    "feature": "feat-worktree-git-check",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T22:50:00Z",
+        "note": "tsc clean; 1029/1029 tests pass (5 new). GitRepoRequiredError added to start.ts; checkGitRepo added to doctor.ts; runChecks now returns 5 checks. Existing startServer success tests updated to pass _gitCheck: noopGitCheck.",
+        "intended_files": [
+          "src/cli/start.ts",
+          "src/cli/doctor.ts",
+          "tests/cli/start.test.ts",
+          "tests/cli/doctor.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The _gitCheck injection in StartOptions uses a leading underscore to signal 'test-only'. If a future caller supplies _gitCheck in production, it will silently bypass the repo guard. The pattern is safe today but reviewers should note it.",
+          "checkGitRepo in doctor.ts is synchronous (execFileSync). If git is unusually slow (NFS mount, deeply nested repo), it adds latency to the doctor startup path. In practice git rev-parse --show-toplevel is sub-millisecond."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-ack-attention-wiring",
     "entries": [
       {
