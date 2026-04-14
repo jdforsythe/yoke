@@ -1,5 +1,30 @@
 [
   {
+    "feature": "feat-ack-attention-wiring",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T21:45:00Z",
+        "note": "tsc clean; 1024/1024 tests pass (6 new). Pre-existing unhandled rejection in crash-recovery.test.ts (feat-fault-injector teardown race) is unchanged.",
+        "intended_files": [
+          "src/server/pipeline/ack-attention.ts",
+          "src/cli/start.ts",
+          "tests/pipeline/ack-attention.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "The WS broadcast payload sent after ack is { attentionAcked: true } — a minimal marker. No AC or RC specifies the payload shape, but future dashboard consumers may need more detail (e.g., the acknowledged attentionId). Extending the payload is a non-breaking change."
+        ],
+        "known_risks": [
+          "The ref-mutation pattern in start.ts (callbacks object created before createServer, ackAttention wired after) relies on the JS single-threaded event loop: no HTTP request can arrive between fastify.listen() completing and callbacks.ackAttention being assigned, because both happen in the same synchronous continuation. If someone calls createServer + listen in a multi-threaded environment or refactors start.ts to await on something between the two, this assumption would break. The pattern is safe today but reviewers should note it.",
+          "ackAttention uses db.writer directly (not db.transaction). The UPDATE is a single statement, so it is implicitly atomic in SQLite. However, it is not wrapped in the same transaction as any related workflow-status write (e.g., resuming a paused workflow after ack). If the engine ever needs to atomically ack + advance the workflow state, a db.transaction() wrapper would be required. For the current AC scope (ack only), single-statement atomicity is sufficient."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-hook-contract",
     "entries": [
       {
