@@ -4,6 +4,17 @@
     "entries": [
       {
         "phase": "implement",
+        "attempt": 1,
+        "ts": "2026-04-13T21:00:00Z",
+        "note": "Verification pass only — review-verdict.json was PASS; no code changes made. tsc clean, 1018/1018 tests pass.",
+        "intended_files": [],
+        "deferred_criteria": [
+          "scanArtifactWrites is exercised in git-repo unit tests (artifact-writes.test.ts), but the scheduler integration tests for hook-contract run in a non-git tmp directory and therefore always receive an empty artifactWrites array from scanArtifactWrites. The git-based scanning path (capturing committed and uncommitted changes) is unit-tested but not end-to-end tested through the scheduler → engine → artifact_writes DB path. A full scheduler integration test would require initializing git in the worktree fixture."
+        ],
+        "known_risks": []
+      },
+      {
+        "phase": "implement",
         "attempt": 0,
         "ts": "2026-04-13T20:38:00Z",
         "intended_files": [

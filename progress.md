@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-hook-contract — implement attempt 1 (2026-04-13)
+
+Verification pass following a PASS review verdict on attempt 0. No code changes required. TypeScript compiles clean (`tsc --noEmit` exit 0); all 1018 tests pass across 42 test files. The implementation produced in attempt 0 satisfies all six acceptance criteria and five review criteria as confirmed by re-reading the scheduler wiring, engine transaction boundary, and the three hook-contract modules. The one deferred integration-test gap (scanArtifactWrites through the scheduler→engine→artifact_writes DB path requires a git-initialised worktree fixture) remains filed in handoff.json and is unchanged.
+
 ## feat-hook-contract — implement attempt 0 (2026-04-13)
 
 Implemented the full `feat-hook-contract` feature in two commits: the three core modules plus their wiring into the scheduler and engine, then the complete test suite covering all six acceptance criteria.
