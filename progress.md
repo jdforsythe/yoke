@@ -1,5 +1,21 @@
 # Yoke — Build Progress
 
+## feat-notifications — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-notifications` feature across four focused commits with 957 tests passing and `tsc --noEmit` clean throughout.
+
+**`src/server/pipeline/engine.ts`**: `writePendingAttention` now returns the inserted rowid as `number`; `applyPendingSideEffects` returns `number | null`; `ApplyItemTransitionResult` gains a new `pendingAttentionRowId: number | null` field populated for both the side-effect-driven insert path and the direct `stage_needs_approval` insert. This is the foundation that lets callers drive post-commit notification dispatch without any additional DB round-trips.
+
+**`src/server/notifications/dispatcher.ts`** (new): Exports `dispatchNotification(deps, opts)` with two severity modes. `info` severity logs to console only (AC-2). `requires_attention` severity: (1) verifies `pendingAttentionRowId` is present (AC-4 guard); (2) reads the `pending_attention` row from SQLite at emission time using the read-only connection — not an in-memory cache (AC-5); (3) if the row is absent, returns silently (AC-4 enforcement); (4) logs to console; (5) skips native notification on non-macOS platforms (RC-3); (6) dynamically imports `node-notifier` via a runtime-constructed module name (avoids `tsc` TS2307 for an optional dependency) and fires `notify()` with the workflow name as title and a deep-link URL `baseUrl/workflows/{workflowId}` (AC-1); (7) wraps the `notify()` call in try/catch to handle a missing native binary without crashing (RC-3). Injectable `NotifierFn` dep keeps tests decoupled from the OS.
+
+**`src/server/api/server.ts`**: Added `POST /api/push/subscriptions` returning HTTP 501 with `{ error: 'not_implemented', message: '...' }`. No VAPID key generation or delivery attempt (AC-3, RC-2).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts` + `src/cli/start.ts`): Added `NotifyFn` export type and optional `notify?: NotifyFn` to `SchedulerOpts`. New private `_applyTransition()` helper wraps `applyItemTransition`, firing `notifyFn` whenever `pendingAttentionRowId` is non-null. All 17 `applyItemTransition` call sites in the scheduler now use `this._applyTransition()` so notification dispatch is uniform. `start.ts` wires `dispatchNotification` as the `notify` callback with the bound server URL for deep-link construction; the call is fire-and-forget (void Promise).
+
+**Tests**: 8 new dispatcher tests (`tests/notifications/dispatcher.test.ts`) covering AC-1 (notifier called with correct title and deep-link URL), AC-2 (info path — notifier never called), AC-4 (no notification without a row ID; no notification when row not found in DB), AC-5 (dispatcher reads DB at emission time — deleting the row after insert prevents notification), RC-3 (graceful completion with no injected notifier). 2 new HTTP tests (`tests/api/fastify-http.test.ts`) verify the 501 shape and absence of push-specific fields.
+
+**Untested paths**: The `info` severity path is not called from the scheduler — only `requires_attention` is wired. The production `loadNodeNotifier()` dynamic-import path is exercised only on macOS with `node-notifier` installed; tests use the injected `NotifierFn` path instead. `start.ts` wiring is tested indirectly via the scheduler and dispatcher tests; no full end-to-end integration test exists.
+
 ## feat-github — implement attempt 0 (2026-04-13)
 
 Implemented the full `feat-github` feature across four focused commits, covering all five acceptance criteria with no live GitHub API calls in any test.

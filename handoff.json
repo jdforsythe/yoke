@@ -1,5 +1,35 @@
 [
   {
+    "feature": "feat-notifications",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T20:10:00Z",
+        "intended_files": [
+          "src/server/pipeline/engine.ts",
+          "src/server/notifications/dispatcher.ts",
+          "src/server/api/server.ts",
+          "src/server/scheduler/scheduler.ts",
+          "src/cli/start.ts",
+          "tests/notifications/dispatcher.test.ts",
+          "tests/api/fastify-http.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "AC-2 (info severity) is implemented in the dispatcher but not called from the scheduler. No scheduler path currently emits info-severity notifications — only requires_attention is wired. Info-level notifications from the scheduler (e.g., workflow started, phase advanced) would require new call sites, which are not specified by any AC.",
+          "The production node-notifier dynamic import path is only exercised on macOS with the package installed. Tests inject a mock NotifierFn. A full OS integration test would require a macOS CI runner with node-notifier installed; none exists currently."
+        ],
+        "known_risks": [
+          "start.ts fires dispatchNotification as fire-and-forget (void Promise). If dispatchNotification throws an unhandled rejection (e.g., a bug in the DB read path after a connection close during shutdown), the Node.js process will emit an unhandledRejection event. The dispatcher itself wraps all failure paths in try/catch or early returns, making this extremely unlikely, but it's not zero-risk.",
+          "The notify callback in start.ts uses a static message 'Action required' regardless of the pending_attention kind. The actual kind (awaiting_user_retry, bootstrap_failed, revisit_limit, stage_needs_approval) is available in the DB row that the dispatcher reads, but the current message field in DispatchOpts is caller-supplied. Reviewers may prefer the dispatcher to derive the message from the DB row kind rather than accepting it from the caller. This would be a minor API change.",
+          "node-notifier is not in package.json. The dispatcher uses a runtime-constructed module name ('node' + '-notifier') to avoid tsc TS2307. If node-notifier IS installed (e.g., via npm install node-notifier), it will be found at runtime; if not, the dynamic import throws and is caught gracefully. This means production macOS notifications are silently degraded unless the operator manually installs node-notifier. Adding it as an optionalDependency would make this more explicit."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-fault-injector",
     "entries": [
       {
