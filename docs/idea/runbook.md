@@ -125,9 +125,9 @@ The architect translates plan-draft3 into concrete implementable design artifact
 
 ### β.1 — Spawn architect session
 
-- [ ] `/clear` in your Claude Code session (or open a fresh one)
-- [ ] Set working directory to repo root
-- [ ] Run the architect prompt below
+- [x] `/clear` in your Claude Code session (or open a fresh one)
+- [x] Set working directory to repo root
+- [x] Run the architect prompt below
 
 **Architect prompt (paste into session or pipe via stdin):**
 
@@ -194,41 +194,41 @@ Constraints:
 When done, print a summary listing every file you created with a one-line description. Stop there. Do not propose next steps.
 ```
 
-- [ ] Let the architect session run to completion
+- [x] Let the architect session run to completion
 - [ ] If the session exits mid-work: `claude -c` to continue
 - [ ] If it fails 3 times: loop back to α.5 (the prompt itself may be wrong), do not keep retrying
 
 ### β.2 — Verify architect output
 
-- [ ] 📝 `docs/design/architecture.md` exists (or `docs/design/architecture-proposed.md` if an `architecture.md` already existed at repo root)
-- [ ] 📝 `docs/design/schemas/features.schema.json` exists and is valid JSON
-- [ ] 📝 `docs/design/schemas/yoke-config.schema.json` exists
-- [ ] 📝 `docs/design/schemas/review.schema.json` exists
-- [ ] 📝 `docs/design/schemas/handoff.schema.json` exists
-- [ ] 📝 `docs/design/schemas/sqlite-schema.sql` exists
-- [ ] 📝 `docs/design/schemas/pre-post-action-grammar.md` exists
-- [ ] 📝 `docs/design/state-machine-transitions.md` exists
-- [ ] 📝 `docs/design/protocol-websocket.md` exists
-- [ ] 📝 `docs/design/protocol-stream-json.md` exists
-- [ ] 📝 `docs/design/prompt-template-spec.md` exists
-- [ ] 📝 `docs/design/hook-contract.md` exists
-- [ ] 📝 `docs/design/threat-model.md` exists
-- [ ] 📝 `docs/design/open-questions.md` exists
+- [x] 📝 `docs/design/architecture.md` exists (or `docs/design/architecture-proposed.md` if an `architecture.md` already existed at repo root)
+- [x] 📝 `docs/design/schemas/features.schema.json` exists and is valid JSON
+- [x] 📝 `docs/design/schemas/yoke-config.schema.json` exists
+- [x] 📝 `docs/design/schemas/review.schema.json` exists
+- [x] 📝 `docs/design/schemas/handoff.schema.json` exists
+- [x] 📝 `docs/design/schemas/sqlite-schema.sql` exists
+- [x] 📝 `docs/design/schemas/pre-post-action-grammar.md` exists
+- [x] 📝 `docs/design/state-machine-transitions.md` exists
+- [x] 📝 `docs/design/protocol-websocket.md` exists
+- [x] 📝 `docs/design/protocol-stream-json.md` exists
+- [x] 📝 `docs/design/prompt-template-spec.md` exists
+- [x] 📝 `docs/design/hook-contract.md` exists
+- [x] 📝 `docs/design/threat-model.md` exists
+- [x] 📝 `docs/design/open-questions.md` exists
 
 ### β.3 — User review of design
 
-- [ ] Read `docs/design/open-questions.md` first — if anything is blocking, resolve now
-- [ ] Skim every design artifact for obvious wrongness
-- [ ] Run every schema file through a JSON Schema validator (e.g., `npx ajv compile -s docs/design/schemas/features.schema.json`)
-- [ ] Run the SQLite DDL against an empty in-memory database: `sqlite3 :memory: < docs/design/schemas/sqlite-schema.sql`
+- [x] Read `docs/design/open-questions.md` first — if anything is blocking, resolve now
+- [x] Skim every design artifact for obvious wrongness
+- [x] Run every schema file through a JSON Schema validator (e.g., `npx ajv-cli@5 compile --spec=draft2020 --validate-formats=false -s docs/design/schemas/features.schema.json`)
+- [x] Run the SQLite DDL against an empty in-memory database: `sqlite3 :memory: < docs/design/schemas/sqlite-schema.sql`
 
 ### 🛑 GATE: Design Approval
 
-- [ ] All 14 design artifacts exist and pass basic syntax checks
-- [ ] Open questions are resolved (either answered, accepted as-is, or deferred to a later phase with explicit note)
-- [ ] SQLite DDL runs clean against an empty database
-- [ ] All JSON Schemas compile
-- [ ] You've spot-checked at least 3 design artifacts and agree with the architect's choices
+- [x] All 14 design artifacts exist and pass basic syntax checks
+- [x] Open questions are resolved (either answered, accepted as-is, or deferred to a later phase with explicit note)
+- [x] SQLite DDL runs clean against an empty database
+- [x] All JSON Schemas compile
+- [x] You've spot-checked at least 3 design artifacts and agree with the architect's choices
 
 **On failure:** loop back to β.1 with a new architect session, brief it with the specific rejection (e.g., "the state machine transitions.md is missing X and Y; fix those and preserve everything else"). Never edit the artifacts by hand — always go through a new agent session so the process stays audit-able.
 
@@ -242,8 +242,8 @@ This phase has two parts: (1) verify the load-bearing assumptions before you bui
 
 This is a 🤖 AGENT task, but it's research, not implementation.
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full — that is your role definition, session protocol, and anti-pattern list. Pay particular attention to the "skipping empirical verification" anti-pattern; that is the exact failure this session is designed to prevent.
@@ -285,15 +285,15 @@ Also write docs/research/continue-semantics.md covering the -c behavior you obse
 Do not write any Yoke code. This is a research deliverable only. Cite the captured files by path so a reader can re-check your work.
 ```
 
-- [ ] 📝 `docs/research/stream-json-semantics.md` exists
-- [ ] 📝 `docs/research/continue-semantics.md` exists
-- [ ] 👤 Read both and verify the conclusions are sound
-- [ ] If stream-json is NOT NDJSON, **loop back to β.1** — architect amends plan-draft3 and protocol-stream-json.md
+- [x] 📝 `docs/research/stream-json-semantics.md` exists
+- [x] 📝 `docs/research/continue-semantics.md` exists
+- [x] 👤 Read both and verify the conclusions are sound
+- [x] If stream-json is NOT NDJSON, **loop back to β.1** — architect amends plan-draft3 and protocol-stream-json.md
 
 ### γ.2 — Research task: hook exit code semantics
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. Your anti-patterns and session protocol live there.
@@ -327,16 +327,16 @@ Write findings to docs/research/hook-semantics.md. Include:
 Do not write any Yoke code. Research only. Cite your test scripts and captured outputs.
 ```
 
-- [ ] 📝 `docs/research/hook-semantics.md` exists
-- [ ] 👤 Read and verify
-- [ ] If findings contradict plan-draft3, **loop back to β.1** for architect amendment
+- [x] 📝 `docs/research/hook-semantics.md` exists
+- [x] 👤 Read and verify
+- [x] If findings contradict plan-draft3, **loop back to β.1** for architect amendment
 
 ### γ.3 — Research task: jig invocation specifics (OPTIONAL)
 
 Per D55, Yoke does not depend on jig — `command`/`args` per phase is the spawn contract, default `claude`. This research task exists only to inform the **best-practices doc** that mentions jig as a recommended scoping layer. Skip it if you are not personally using jig; you can always add it later. When done, this research does NOT feed into the Process Manager design (which must be jig-agnostic).
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full.
@@ -360,15 +360,15 @@ Write findings to docs/research/jig-semantics.md. This feeds the best-practices 
 Do not write any Yoke code. Research only.
 ```
 
-- [ ] 📝 `docs/research/jig-semantics.md` exists (optional; may be skipped)
-- [ ] 👤 Read and note anything worth capturing for the best-practices doc
+- [x] 📝 `docs/research/jig-semantics.md` exists (optional; may be skipped)
+- [x] 👤 Read and note anything worth capturing for the best-practices doc
 
 ### γ.4 — Build yoke-v0 (the bootstrap glue)
 
 This is the Tier 0 → 0.5 transition. Write a minimal shell script + prompt template directory so subsequent agent sessions have consistent inputs.
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt:
+- [x] `/clear` / fresh session
+- [x] Run this prompt:
 
 ```
 You are the Yoke backend engineer. Before anything else, read docs/agents/backend.md in full. This session is an exception to one rule in that file: you are writing shell script + a tiny helper, not TypeScript under src/server/. Everything else in the persona applies — especially "inventing abstractions" and "silently widening scope."
@@ -431,18 +431,18 @@ After writing:
 Commit the script, prompts, and usage doc. Print a summary listing every file you created. Stop.
 ```
 
-- [ ] 📝 `yoke-v0` script exists and is executable
-- [ ] 📝 `prompts/plan.md`, `prompts/implement.md`, `prompts/review.md` exist
-- [ ] 📝 `docs/runbook-addenda/yoke-v0-usage.md` exists
-- [ ] 👤 Smoke test: `./yoke-v0 run plan test-feat` on a throwaway feature — verify log is captured
-- [ ] 👤 Open the captured log and confirm stream-json events are readable
+- [x] 📝 `yoke-v0` script exists and is executable
+- [x] 📝 `prompts/plan.md`, `prompts/implement.md`, `prompts/review.md` exist
+- [x] 📝 `docs/runbook-addenda/yoke-v0-usage.md` exists
+- [x] 👤 Smoke test: `./yoke-v0 run plan test-feat` on a throwaway feature — verify log is captured
+- [x] 👤 Open the captured log and confirm stream-json events are readable
 
 ### 🛑 GATE: Phase γ complete
 
-- [ ] All 3 research docs exist and were read by the user
-- [ ] Nothing in research contradicts plan-draft3 (or if it does, an architect amendment landed in β)
-- [ ] yoke-v0 smoke test passes
-- [ ] You understand how to invoke yoke-v0 for any phase
+- [x] All 3 research docs exist and were read by the user
+- [x] Nothing in research contradicts plan-draft3 (or if it does, an architect amendment landed in β)
+- [x] yoke-v0 smoke test passes
+- [x] You understand how to invoke yoke-v0 for any phase
 
 **On failure:** isolate which part failed. Research failures → new research session. yoke-v0 failure → new backend session with a specific rejection brief. Never retry the same failing prompt more than 3 times.
 
@@ -454,8 +454,8 @@ This is where Yoke starts building itself. Use `yoke-v0` to drive feature-by-fea
 
 ### δ.1 — Plan the engine features
 
-- [ ] `/clear` / fresh session
-- [ ] Ask the planner to decompose the v1 core engine (NOT dashboard, NOT QA) into discrete features:
+- [x] `/clear` / fresh session
+- [x] Ask the planner to decompose the v1 core engine (NOT dashboard, NOT QA) into discrete features:
 
 ```
 You are the Yoke backend engineer, operating in planner mode for this session. Before anything else, read docs/agents/backend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
@@ -478,7 +478,7 @@ Each feature must have:
 - review_criteria — what reviewers will check
 
 Core engine scope (group into categories):
-- config (yaml parser, ajv validation, version pin)
+- config (yaml parser, ajv-cli validation, version pin)
 - db (sqlite setup, WAL, migrations, each table + indexes, transaction wrapper)
 - state-machine (transition table, transition fn, unit tests)
 - process-mgr (JigProcessManager, ScriptedProcessManager, NDJSON parser, heartbeat, spawn/kill, EPIPE)
@@ -486,7 +486,7 @@ Core engine scope (group into categories):
 - prompt-asm (template engine, PromptContext builder)
 - pipeline-engine (load config, run phase, advance state, dependency resolution)
 - hook-contract (manifest validator, checksum recorder, tamper detector)
-- artifact-validators (ajv against features/review/handoff schemas, diff check)
+- artifact-validators (ajv-cli against features/review/handoff schemas, diff check)
 - session-log-store (per-session JSONL, paging endpoint stub)
 - fastify-ws (envelope, subscribe/backfill, protocol version check)
 - cli (yoke init, start, status, cancel, doctor, record)
@@ -499,10 +499,10 @@ Do NOT include the React dashboard (that's Phase ε) — only the ws/http server
 Write to docs/idea/yoke-features.json. Print the resulting topological order. Stop.
 ```
 
-- [ ] 📝 `docs/idea/yoke-features.json` exists and is valid per the schema
-- [ ] 👤 Validate: `npx ajv validate -s docs/design/schemas/features.schema.json -d docs/idea/yoke-features.json`
-- [ ] 👤 Check topological order — no cycles, dependencies reasonable
-- [ ] 👤 Manually pick the first 3 features to implement (typically: config parser, db setup, state-machine)
+- [x] 📝 `docs/idea/yoke-features.json` exists and is valid per the schema
+- [x] 👤 Validate: `npx ajv-cli@5 validate --spec=draft2020 --validate-formats=false -s docs/design/schemas/features.schema.json -d docs/idea/yoke-features.json`
+- [x] 👤 Check topological order — no cycles, dependencies reasonable
+- [x] 👤 Manually pick the first 3 features to implement (typically: config parser, db setup, state-machine)
 
 ### δ.2 — Implement each feature (loop)
 
@@ -510,17 +510,50 @@ The implement prompt template (`prompts/implement.md`, built in γ.4) must inclu
 
 For each feature in topological order:
 
-- [ ] `/clear` / fresh session (if not using `yoke-v0` to drive, otherwise yoke-v0 handles the fresh session)
-- [ ] Invoke: `./yoke-v0 run implement <feature-id>`
-- [ ] Watch the stream-json log (in another terminal: `tail -f .yoke/logs/<latest>.jsonl` or just let yoke-v0 print it)
-- [ ] When the session exits:
+- [x] `/clear` / fresh session (if not using `yoke-v0` to drive, otherwise yoke-v0 handles the fresh session)
+- [x] Invoke: `./yoke-v0 run implement <feature-id>`
+- [x] Watch the stream-json log (in another terminal: `tail -f .yoke/logs/<latest>.jsonl` or just let yoke-v0 print it)
+- [x] When the session exits:
   - ✅ **Clean exit + hook manifest OK** → feature done, mark status in yoke-features.json, append to handoff.json, move to next
   - ❌ **Clean exit + tests failing** → this shouldn't happen if the hook is working. If it does, the hook is broken — diagnose before continuing.
   - ❌ **Hook blocked stop, session gave up** → `./yoke-v0 continue implement <feature-id>` once; if still failing, fresh session with handoff.json updated with failure summary; if still failing after that, flag the feature as blocked and skip (mark `awaiting_user`)
   - ❌ **Process died unexpectedly** → check `.yoke/logs/` for the crash, `./yoke-v0 continue` once, else fresh
+- [x] Check implement result: `make last-status PHASE=implement FEATURE=<feature-id>` — look for `Verdict : PASS`; on FAIL, check `make last-output PHASE=implement FEATURE=<feature-id>` for details
 
-- [ ] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
-- [ ] After each feature: run the project's tests manually (`pnpm test`) as a cross-check until the hook infrastructure is trustworthy
+- [x] After each feature: `git status && git diff --stat` — sanity check that only expected files changed
+- [x] After each feature: `./yoke-v0 run review <feature-id>` — review against acceptance and review criteria; if blocking issues found, address then re-implement before moving on
+- [x] Check review result: `make last-status PHASE=review FEATURE=<feature-id>` — `Verdict : PASS` + `Blocking: none` required to proceed; on FAIL run `make last-output PHASE=review FEATURE=<feature-id>` to read the full report
+
+**Review fail → re-implement procedure** (D56: default `retry_mode: fresh`):
+
+When `Verdict: FAIL` with blocking issues:
+
+1. **Update `handoff.json`** — append a `review_failure` entry inside `entries[]` for this feature:
+   ```json
+   {
+     "phase": "review",
+     "attempt": <N>,
+     "ts": "<ISO timestamp>",
+     "verdict": "FAIL",
+     "blocking_issues": [
+       "<exact text of each blocking issue from the review output>"
+     ],
+     "non_blocking": [
+       "<optional: copy non-blocking observations if relevant to the fix>"
+     ]
+   }
+   ```
+   This is the mechanism: yoke-v0 injects `handoff.json` entries into `{{handoff_entries}}` in `prompts/implement.md`, so the re-implement session sees the failure context without any shared state.
+
+2. **Fresh implement session** (D56 default): `./yoke-v0 run implement <feature-id>` — do NOT use `-c`; a fresh session forces the implementer to re-read the updated handoff and re-derive context from scratch, which is what you want.
+
+3. **Re-run review**: `./yoke-v0 run review <feature-id>`.
+
+4. **Attempt cap**: max **2 re-implement attempts** (attempt 1, attempt 2 after the original). If still `Verdict: FAIL` after attempt 2, mark the feature `awaiting_user` in `yoke-features.json`, note the failure summary in `handoff.json`, and move to the next unblocked feature. Do not keep retrying without user intervention.
+
+5. **Non-blocking observations**: do not block re-implement; the implementer may address them at discretion. If you want them fixed, add them to `handoff.json` alongside the blocking issues.
+
+- [x] After each feature: `pnpm test` (skip until `package.json` exists; once it does, run after every feature)
 
 ### δ.3 — Self-hosting checkpoint
 
@@ -536,27 +569,30 @@ At some point during δ, you'll have built:
 
 As soon as these exist and pass unit tests, **try self-hosting**:
 
-- [ ] Write a minimal `.yoke.yml` at repo root targeting the remaining features
-- [ ] Run `./yoke start` on the yoke-features.json
-- [ ] If it drives the next feature successfully → graduate to Tier 1 (stop using yoke-v0)
+- [x] Write a minimal `.yoke.yml` at repo root targeting the remaining features
+- [x] Run `./yoke start` on the yoke-features.json
+- [x] If it drives the next feature successfully → graduate to Tier 1 (stop using yoke-v0)
 - [ ] If not → fix the bugs, retry until self-hosting works
 
 🛑 **Self-hosting milestone achieved** when `./yoke start` successfully implements at least one feature without human shepherding beyond starting it.
 
 ### δ.4 — Complete remaining core engine features under v1 self-hosting
 
-- [ ] Continue through yoke-features.json using Yoke v1 itself
-- [ ] Stop hook is now enforcing — trust but verify by spot-checking tests manually on a few features
-- [ ] Every blocked feature: debug, unblock, retry — don't let the backlog grow
+- [x] Continue through yoke-features.json using Yoke v1 itself
+- [x] Stop hook is now enforcing — trust but verify by spot-checking tests manually on a few features
+- [x] Every blocked feature: debug, unblock, retry — don't let the backlog grow
 
-### 🛑 GATE: Phase δ complete
+### 🛑 GATE: Phase δ complete (PASSED 2026-04-14)
 
-- [ ] All core engine features in yoke-features.json are `complete` or justified as `blocked`/`deferred`
-- [ ] `./yoke start` can drive a workflow from config to completion on a fixture project
-- [ ] Unit tests pass: `pnpm typecheck && pnpm lint && pnpm test && pnpm build`
-- [ ] `yoke doctor` reports no dangling processes
-- [ ] SQLite schema migrations run cleanly on an empty DB and on a v0-era DB
-- [ ] ScriptedProcessManager replays a captured fixture through the pipeline to a terminal state
+- [x] All core engine features in yoke-features.json are `complete` or justified as `blocked`/`deferred`
+- [x] `./yoke start` can drive a workflow from config to completion on a fixture project
+- [x] Unit tests pass: `pnpm typecheck && pnpm lint && pnpm test && pnpm build` (1048/1048)
+- [x] `yoke doctor` reports no dangling processes (all 5 checks PASS)
+- [x] SQLite schema migrations run cleanly on an empty DB (`sqlite3 :memory: < sqlite-schema.sql`)
+- [x] ScriptedProcessManager replays a captured fixture through the pipeline to a terminal state
+
+**Post-gate additions (pre-Phase ε):** `feat-workflow-display-name` + `feat-workflow-run-files`
+added to yoke-features.json — small backend features fixing workflow identity before ε self-hosting.
 
 ---
 
@@ -566,8 +602,8 @@ Now Yoke drives its own frontend build. Use `yoke start` for each feature.
 
 ### ε.1 — Plan the dashboard features
 
-- [ ] `/clear` / fresh session
-- [ ] Run this prompt (via `yoke start plan docs/idea/dashboard-spec.md` if you have the planner phase wired up, else manually):
+- [x] `/clear` / fresh session
+- [x] Run this prompt (via `yoke start plan docs/idea/dashboard-spec.md` if you have the planner phase wired up, else manually):
 
 ```
 You are the Yoke frontend engineer, operating in planner mode for this session. Before anything else, read docs/agents/frontend.md in full — role, vocabulary, decision authority, anti-patterns. This session produces a features.json only (no code).
@@ -597,7 +633,7 @@ Produce docs/idea/dashboard-features.json — features.json for the dashboard bu
 Target 12-20 features. Populate depends_on, acceptance_criteria, review_criteria. Topologically sorted. Write to docs/idea/dashboard-features.json. Stop.
 ```
 
-- [ ] 📝 `docs/idea/dashboard-features.json` exists and validates
+- [x] 📝 `docs/idea/dashboard-features.json` exists and validates
 
 ### ε.2 — Drive dashboard implementation
 

@@ -1,0 +1,5 @@
+{"type":"header","version":1}
+{"type":"stdout","line":"{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"test-session-transient\"}"}
+{"type":"stdout","line":"{\"type\":\"assistant\",\"message\":{\"id\":\"msg_transient\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"Attempting task...\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":80,\"output_tokens\":10}}}"}
+{"type":"stderr","chunk":"Error: ECONNRESET - connection reset by peer at TLSSocket.onConnectEnd\n"}
+{"type":"exit","code":1}

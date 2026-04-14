@@ -1,0 +1,37 @@
+{
+  "name": "yoke",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^8.3.1",
+    "@octokit/rest": "^22.0.1",
+    "ajv": "^8.17.1",
+    "better-sqlite3": "^12.9.0",
+    "commander": "^14.0.3",
+    "fastify": "^4.29.1",
+    "jsonpath-plus": "^10.4.0",
+    "yaml": "^2.7.0"
+  },
+  "bin": {
+    "yoke": "bin/yoke"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.17.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yoke.local/schemas/handoff.schema.json",
+  "title": "handoff.json",
+  "description": "Per-item, append-only structured cross-phase channel (plan-draft3 §File Contract, D13). Replaces free-form progress.md as the contract surface between phases. User-injected context from the dashboard lands here as entries.user_injected_context (D43). The harness writes entries; agents read. Item ID matches whatever the stage's items_id expression extracts (Issue 2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["item_id", "entries"],
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Item identifier as extracted by the stage's items_id expression. No pattern enforced by the harness (Issue 2)."
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "attempt", "session_id", "ts"],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "description": "Free-text phase label (not an enum)."
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "session_id": { "type": "string" },
+        "parent_session_id": {
+          "type": ["string", "null"],
+          "description": "Session chain link for -c continuation (plan-draft3 §Protocol: token usage)."
+        },
+        "ts": { "type": "string", "format": "date-time" },
+        "intended_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files the implementer intended to modify. Used by reviewers to detect incidental churn."
+        },
+        "deferred_criteria": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Acceptance criteria the implementer consciously deferred with a reason."
+        },
+        "known_risks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "retry_history": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/retryRecord" }
+        },
+        "reviewer_notes_seen": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Reviewer note identifiers the implementer has explicitly read (seeded from prior review rounds)."
+        },
+        "user_injected_context": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/injection" }
+          ],
+          "description": "Set by the dashboard when the user injects context for the next session of this feature (D43). Consumed on the next session start."
+        },
+        "failure_summary": {
+          "type": ["string", "null"],
+          "description": "Written by the harness when escalating to retry_mode=fresh_with_failure_summary (plan-draft3 §Retry)."
+        }
+      }
+    },
+    "retryRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "mode", "outcome", "ts"],
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 1 },
+        "mode": {
+          "type": "string",
+          "enum": ["continue", "fresh_with_failure_summary", "fresh_with_diff"]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["ok", "fail", "rate_limited", "crash", "awaiting_user"]
+        },
+        "classifier": {
+          "type": "string",
+          "enum": ["transient", "permanent", "policy", "unknown"]
+        },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    },
+    "injection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "queued_at", "queued_by"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "queued_at": { "type": "string", "format": "date-time" },
+        "queued_by": {
+          "type": "string",
+          "description": "Always the single local user (plan-draft3 D57); present for audit only."
+        },
+        "consumed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "consumed_by_session_id": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
