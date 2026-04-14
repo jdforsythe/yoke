@@ -23,6 +23,11 @@ project:
 
 pipeline:
   stages:
+    - id: plan
+      run: once
+      phases:
+        - planner
+
     - id: dashboard-features
       run: per-item
       items_from: docs/idea/dashboard-features.json
@@ -42,6 +47,30 @@ pipeline:
 # ---------------------------------------------------------------------------
 
 phases:
+  planner:
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+    prompt_template: prompts/plan-dashboard.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-dashboard-features
+        run: ["python3", "scripts/check-dashboard-features.py"]
+        timeout_s: 15
+        actions:
+          "0": continue
+          "*":
+            goto: planner
+            max_revisits: 3
+
   implement:
     command: claude
     args:
