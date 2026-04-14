@@ -56,13 +56,15 @@ if absent):
 ```json
 {
   "phase": "review",
-  "attempt": 1,
-  "ts": "<ISO timestamp>",
+  "attempt": <increment from prior entries, starting at 1>,
+  "session_id": "<value of $YOKE_SESSION_ID from your environment>",
+  "ts": "<ISO 8601 timestamp>",
   "verdict": "FAIL",
   "blocking_issues": ["<copy from review-verdict.json>"],
   "non_blocking": ["<optional minor observations>"]
 }
 ```
+If handoff.json does not exist, create it: `{"item_id": "{{stage_id}}", "entries": [<entry>]}`.
 
 If verdict is PASS, no handoff.json entry is needed.
 

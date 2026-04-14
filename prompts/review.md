@@ -39,3 +39,17 @@ Report:
 - Non-blocking observations (minor / nitpick)
 
 Do not re-implement. Only report findings. Stop after the report.
+
+If there are any blocking issues, append a review entry to `handoff.json` before stopping:
+```json
+{
+  "phase": "review",
+  "attempt": <increment from prior entries, starting at 1>,
+  "session_id": "<value of $YOKE_SESSION_ID from your environment>",
+  "ts": "<ISO 8601 timestamp>",
+  "verdict": "FAIL",
+  "blocking_issues": ["<each blocking issue>"],
+  "non_blocking": ["<optional minor observations>"]
+}
+```
+If handoff.json does not exist, create it: `{"item_id": "{{item_id}}", "entries": [<entry>]}`.

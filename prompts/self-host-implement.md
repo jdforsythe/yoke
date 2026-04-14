@@ -35,5 +35,18 @@ Implement this feature per docs/agents/backend.md session protocol:
 When done:
 1. Summarize: what was built, what tests cover it, what is still untested, any deferred items.
 2. Update progress.md with a one-paragraph narrative.
-3. Append to handoff.json: intended files, deferred criteria, known risks.
+3. Append to handoff.json: intended files, deferred criteria, known risks. Entry shape:
+   ```json
+   {
+     "phase": "implement",
+     "attempt": <retry_count + 1>,
+     "session_id": "<value of $YOKE_SESSION_ID from your environment>",
+     "ts": "<ISO 8601 timestamp>",
+     "intended_files": ["<list of files you modified>"],
+     "deferred_criteria": ["<any AC/RC you consciously deferred with reason>"],
+     "known_risks": ["<risks for the reviewer to watch>"]
+   }
+   ```
+   If handoff.json exists, read it first and append to the `entries` array.
+   If it does not exist, create it: `{"item_id": "{{stage_id}}", "entries": [<entry>]}`.
 4. Stop.
