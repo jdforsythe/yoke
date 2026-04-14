@@ -108,6 +108,21 @@ export interface GuardContext {
    * If absent or empty, no prepost_runs rows are written.
    */
   prepostRuns?: PrePostRunRecord[];
+  /**
+   * Files written by the session — path (relative to worktree) + sha256.
+   * Persisted to `artifact_writes` inside the same db.transaction() as the
+   * post-session state transition (feat-hook-contract RC-4).
+   * If absent or empty, no artifact_writes rows are written.
+   */
+  artifactWrites?: ArtifactWriteRecord[];
+}
+
+/** Opaque write record from the hook-contract scanner (feat-hook-contract). */
+export interface ArtifactWriteRecord {
+  /** Relative path within the worktree. */
+  path: string;
+  /** SHA-256 hex digest (streaming hash). */
+  sha256: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,6 +1015,19 @@ export function applyItemTransition(
           stage: params.stage,
           phase: params.phase,
         });
+      }
+    }
+
+    // feat-hook-contract RC-4: persist artifact_writes rows inside the same
+    // transaction as the post-session state transition.  Only written when
+    // a session_id is present (requires an active session).
+    if (ctx.artifactWrites && ctx.artifactWrites.length > 0 && params.sessionId) {
+      const writtenAt = now;
+      for (const write of ctx.artifactWrites) {
+        db.prepare(`
+          INSERT INTO artifact_writes (session_id, artifact_path, written_at, sha256)
+          VALUES (?, ?, ?, ?)
+        `).run(params.sessionId, write.path, writtenAt, write.sha256);
       }
     }
 

@@ -75,6 +75,11 @@ import { FixtureWriter } from '../process/fixture-writer.js';
 import { readRecordMarker, clearRecordMarker } from '../process/record-marker.js';
 import { NoopFaultInjector, FaultInjectionError } from '../fault/injector.js';
 import type { FaultInjector } from '../fault/injector.js';
+import { takeSnapshot, checkDiff } from '../hook-contract/diff-checker.js';
+import type { DiffSnapshot } from '../hook-contract/diff-checker.js';
+import { captureGitHead, scanArtifactWrites } from '../hook-contract/artifact-writes.js';
+import type { ArtifactWriteRecord } from '../pipeline/engine.js';
+import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -736,6 +741,12 @@ export class Scheduler {
 
     const worktreePath = wf.worktree_path ?? this.config.configDir;
 
+    // --- feat-hook-contract: pre-session snapshots (RC-1, RC-2) ---
+    // Both captures happen before insertSession so they strictly precede spawn.
+    const itemsFromPath = stage.items_from;
+    const diffSnapshot: DiffSnapshot = takeSnapshot(worktreePath, itemsFromPath);
+    const preSessionHead: string | null = await captureGitHead(worktreePath);
+
     // RC-2: insertSession via engine helper (not db.writer directly).
     // Inserted BEFORE spawn so SQLite concurrency count is immediately accurate.
     insertSession(this.db, {
@@ -1048,6 +1059,64 @@ export class Scheduler {
         return;
       }
 
+      // --- feat-hook-contract: post-session surfaces ---
+
+      // AC-3 / RC-2: scan worktree diff; sha256 via streaming hash.
+      // Runs after artifact validators (ordering per hook-contract.md §2).
+      const artifactWrites: ArtifactWriteRecord[] =
+        await scanArtifactWrites(worktreePath, preSessionHead);
+
+      // AC-4/AC-5/AC-6: read optional .yoke/last-check.json manifest.
+      const manifestResult = readLastCheckManifest(worktreePath);
+      if (manifestResult.kind === 'malformed') {
+        // AC-5: malformed manifest → warn; MUST NOT affect phase acceptance (RC-3).
+        this.broadcastFn(wf.id, sessionId, 'stream.system_notice', {
+          source: 'hook',
+          severity: 'warn',
+          message: `Malformed .yoke/last-check.json: ${manifestResult.detail}`,
+        });
+      } else if (manifestResult.kind === 'unknown_version') {
+        // AC-6: unknown hook_version → warning badge + raw JSON passthrough.
+        this.broadcastFn(wf.id, sessionId, 'stream.system_notice', {
+          source: 'hook',
+          severity: 'warn',
+          message: `Unknown hook_version "${String(manifestResult.hookVersion)}" in .yoke/last-check.json`,
+          rawJson: manifestResult.rawJson,
+        });
+      }
+
+      // AC-1/AC-2: items_from diff check (RC-1: pre-phase snapshot, not git history).
+      const diffResult = checkDiff(diffSnapshot, worktreePath, itemsFromPath);
+      if (diffResult.kind === 'fail') {
+        // diff_check_fail: fire event and skip post commands.
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: freshItem.id,
+          sessionId,
+          stage: freshItem.stage_id,
+          phase: freshItem.current_phase ?? '',
+          attempt,
+          event: 'diff_check_fail',
+          guardCtx: { prepostRuns: preRuns, artifactWrites },
+        });
+        this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'diff_check_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
+      }
+      // diffResult.kind === 'ok' or 'skip' → continue to post commands.
+
       // --- Post: commands (AC-5) ---
       let postResult: RunCommandsResult = { kind: 'complete', runs: [] };
       if (phaseConfig.post && phaseConfig.post.length > 0) {
@@ -1092,6 +1161,7 @@ export class Scheduler {
             validatorsOk: true,
             diffCheckOk: true,
             prepostRuns: allRuns,
+            artifactWrites,
           },
         });
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
@@ -1109,7 +1179,7 @@ export class Scheduler {
           phase: freshItem.current_phase ?? '',
           attempt,
           event: 'post_command_action',
-          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns },
+          guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns, artifactWrites },
         });
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
 
