@@ -90,6 +90,14 @@ export type GitExecutor = () => string;
 const defaultGitExecutor: GitExecutor = () =>
   execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
 
+/** Injectable executor for the git-repository check. Receives cwd; throws on failure. */
+export type GitRepoExecutor = (cwd: string) => void;
+
+/** Default executor: runs git rev-parse --show-toplevel in cwd. Throws if not a git repo. */
+const defaultGitRepoExecutor: GitRepoExecutor = (cwd: string) => {
+  execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' });
+};
+
 /** 3. git >= 2.20 */
 export function checkGit(executor: GitExecutor = defaultGitExecutor): DoctorCheck {
   let rawVersion: string;
@@ -137,7 +145,33 @@ export function checkGit(executor: GitExecutor = defaultGitExecutor): DoctorChec
   };
 }
 
-/** 4. .yoke.yml valid */
+/** 4. git repository at configDir */
+export function checkGitRepo(
+  configDir: string,
+  executor: GitRepoExecutor = defaultGitRepoExecutor,
+): DoctorCheck {
+  const cmd = 'git rev-parse --show-toplevel';
+  try {
+    executor(configDir);
+    return {
+      name: 'git repository',
+      passed: true,
+      message: `${configDir} is inside a git repository`,
+    };
+  } catch {
+    return {
+      name: 'git repository',
+      passed: false,
+      message: `${configDir}: not a git repository (${cmd} failed)`,
+      remediation:
+        `Yoke requires a git repository at the config directory.\n` +
+        `Run 'git init' in ${configDir} to initialize one, or run 'yoke' ` +
+        `from inside an existing git repository.`,
+    };
+  }
+}
+
+/** 5. .yoke.yml valid */
 export function checkConfig(configPath: string): DoctorCheck {
   try {
     loadConfig(configPath);
@@ -195,7 +229,7 @@ export interface RunChecksOptions {
   cwd?: string;
 }
 
-/** Run all four doctor checks and return results. */
+/** Run all five doctor checks and return results. */
 export async function runChecks(opts: RunChecksOptions = {}): Promise<DoctorCheck[]> {
   const cwd = opts.cwd ?? process.cwd();
   const configPath = opts.configPath ?? path.join(cwd, '.yoke.yml');
@@ -206,6 +240,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<DoctorChec
     checkNode(),
     sqliteCheck,
     checkGit(),
+    checkGitRepo(cwd),
     checkConfig(configPath),
   ];
 }

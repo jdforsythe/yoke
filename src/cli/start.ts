@@ -20,6 +20,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ExecFileException } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import { loadConfig } from '../server/config/loader.js';
@@ -39,6 +40,47 @@ import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Git repository guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by startServer when config.configDir is not inside a git repository.
+ * The commander action catches this and exits non-zero with a clear message.
+ */
+export class GitRepoRequiredError extends Error {
+  readonly configDir: string;
+  readonly gitCommand: string;
+
+  constructor(configDir: string) {
+    const cmd = 'git rev-parse --show-toplevel';
+    super(
+      `${configDir}: not a git repository (${cmd} failed).\n` +
+      `Run 'git init' to initialize a repository, or run 'yoke start' ` +
+      `from inside an existing git repository.`,
+    );
+    this.name = 'GitRepoRequiredError';
+    this.configDir = configDir;
+    this.gitCommand = cmd;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Default git-repo check: runs `git rev-parse --show-toplevel` in `dir`.
+ * Throws GitRepoRequiredError if the directory is not inside a git repository.
+ */
+async function defaultGitRepoCheck(dir: string): Promise<void> {
+  try {
+    await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
+  } catch (err) {
+    // execFileAsync rejects with ExecFileException (ENOENT if git missing,
+    // non-zero exit if not a git repo). Both cases mean we can't proceed.
+    void (err as ExecFileException);
+    throw new GitRepoRequiredError(dir);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,6 +125,12 @@ export interface StartOptions {
   configPath?: string;
   /** Server port. Default: 7777 */
   port?: number;
+  /**
+   * Override the git-repository check (injectable for tests).
+   * Default: runs `git rev-parse --show-toplevel` in config.configDir.
+   * Pass `async () => {}` in tests that need to bypass the check.
+   */
+  _gitCheck?: (dir: string) => Promise<void>;
 }
 
 export interface StartHandle {
@@ -102,9 +150,15 @@ export interface StartHandle {
 export async function startServer(opts: StartOptions = {}): Promise<StartHandle> {
   const configPath = opts.configPath ?? path.join(process.cwd(), '.yoke.yml');
   const port = opts.port ?? 7777;
+  const gitCheck = opts._gitCheck ?? defaultGitRepoCheck;
 
   // Load + validate config — throws ConfigLoadError on failure.
   const config = loadConfig(configPath);
+
+  // Guard: config.configDir must be inside a git repository.
+  // WorktreeManager requires a real git repo and will throw uninformative
+  // errors without this early check (AC-1, RC-1, RC-2).
+  await gitCheck(config.configDir);
 
   // Database lives under .yoke/ in the config directory.
   const yokeDir = path.join(config.configDir, '.yoke');
@@ -242,6 +296,10 @@ export function register(program: Command): void {
       } catch (err) {
         if (err instanceof ConfigLoadError) {
           console.error(`Configuration error: ${err.message}`);
+          process.exit(1);
+        }
+        if (err instanceof GitRepoRequiredError) {
+          console.error(`Git repository required: ${err.message}`);
           process.exit(1);
         }
         throw err;

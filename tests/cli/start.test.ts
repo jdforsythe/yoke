@@ -2,8 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startServer } from '../../src/cli/start.js';
+import { startServer, GitRepoRequiredError } from '../../src/cli/start.js';
 import { ConfigLoadError } from '../../src/server/config/errors.js';
+
+/** No-op git check: bypasses the git-repo guard for tests that run outside a git repo. */
+const noopGitCheck = async (_dir: string): Promise<void> => { /* passthrough */ };
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -54,6 +57,7 @@ describe('yoke start — startServer()', () => {
 
   // AC: Exits non-zero if config validation fails. Here we verify the thrown
   // error is ConfigLoadError (the commander action exits 1 on this error).
+  // Config errors are reported before the git check, so no _gitCheck override needed.
   it('throws ConfigLoadError when .yoke.yml is missing', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     await expect(startServer({ configPath })).rejects.toBeInstanceOf(ConfigLoadError);
@@ -71,13 +75,33 @@ describe('yoke start — startServer()', () => {
     await expect(startServer({ configPath })).rejects.toBeInstanceOf(ConfigLoadError);
   });
 
+  // AC-1: yoke start in a non-git directory exits non-zero with a message
+  // naming the missing requirement (RC-1: check is in startServer; RC-2: message
+  // includes configDir and the git command that failed).
+  it('throws GitRepoRequiredError when configDir is not a git repository', async () => {
+    const configPath = path.join(tmpDir, '.yoke.yml');
+    fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
+    // tmpDir is not a git repo — use the real default git check.
+    const err = await startServer({ configPath }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GitRepoRequiredError);
+    const gitErr = err as GitRepoRequiredError;
+    // RC-2: message must include the configDir path.
+    expect(gitErr.message).toContain(tmpDir);
+    // RC-2: message must include the failing git command.
+    expect(gitErr.message).toContain('git rev-parse --show-toplevel');
+  });
+
+  // AC-3: No change to behaviour inside a valid git repo.
+  // Tests below use _gitCheck: noopGitCheck to avoid dependency on git-repo
+  // state of the CI tmp directory (which is not guaranteed to be a git repo).
+
   // AC: spawns server and logs URL; writes server.json.
   it('starts server, writes server.json, and returns a valid URL', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
     // Port 0 → OS-assigned port to avoid conflicts.
-    const handle = await startServer({ configPath, port: 0 });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
 
     try {
       expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -101,7 +125,7 @@ describe('yoke start — startServer()', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
-    const handle = await startServer({ configPath, port: 0 });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
 
     try {
       const res = await fetch(`${handle.url}/api/workflows`);
@@ -118,7 +142,7 @@ describe('yoke start — startServer()', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
-    const handle = await startServer({ configPath, port: 0 });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
     const serverJsonPath = path.join(tmpDir, '.yoke', 'server.json');
     expect(fs.existsSync(serverJsonPath)).toBe(true);
 

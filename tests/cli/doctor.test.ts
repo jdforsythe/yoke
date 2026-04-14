@@ -6,10 +6,12 @@ import {
   checkNode,
   checkSqlite,
   checkGit,
+  checkGitRepo,
   checkConfig,
   runChecks,
   formatDoctorOutput,
   type GitExecutor,
+  type GitRepoExecutor,
 } from '../../src/cli/doctor.js';
 
 // ---------------------------------------------------------------------------
@@ -160,6 +162,55 @@ describe('checkGit()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkGitRepo()
+// ---------------------------------------------------------------------------
+
+describe('checkGitRepo()', () => {
+  it('passes when the directory is inside a git repository', () => {
+    // Inject a no-op executor to simulate success (no-throw = git repo found).
+    const passExec: GitRepoExecutor = (_cwd: string) => { /* success */ };
+    const result = checkGitRepo('/some/repo', passExec);
+    expect(result.passed).toBe(true);
+    expect(result.name).toBe('git repository');
+    // RC-2: message includes the directory path.
+    expect(result.message).toContain('/some/repo');
+  });
+
+  it('fails when the directory is not a git repository', () => {
+    const failExec: GitRepoExecutor = (_cwd: string) => {
+      throw new Error('fatal: not a git repository');
+    };
+    const result = checkGitRepo('/tmp/not-a-repo', failExec);
+    expect(result.passed).toBe(false);
+    expect(result.name).toBe('git repository');
+    // RC-2: message includes the directory and the failing command.
+    expect(result.message).toContain('/tmp/not-a-repo');
+    expect(result.message).toContain('git rev-parse --show-toplevel');
+    // AC-2: actionable fix hint.
+    expect(result.remediation).toBeTruthy();
+    expect(result.remediation).toContain('git init');
+  });
+
+  it('fails when git is not found', () => {
+    const noGitExec: GitRepoExecutor = (_cwd: string) => {
+      const err = new Error('spawn ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    const result = checkGitRepo('/tmp/dir', noGitExec);
+    expect(result.passed).toBe(false);
+    expect(result.remediation).toContain('git init');
+  });
+
+  it('passes against the real process.cwd() (must be inside a git repo in CI)', () => {
+    // This test uses the real git executor. The test suite itself runs from
+    // inside a git repository, so this should pass.
+    const result = checkGitRepo(process.cwd());
+    expect(result.passed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // checkConfig()
 // ---------------------------------------------------------------------------
 
@@ -229,14 +280,14 @@ describe('runChecks()', () => {
   });
   afterEach(() => removeTmpDir(tmpDir));
 
-  it('returns exactly 4 checks', async () => {
+  it('returns exactly 5 checks', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
     const checks = await runChecks({ configPath });
-    expect(checks).toHaveLength(4);
+    expect(checks).toHaveLength(5);
   });
 
-  it('check names include all four categories', async () => {
+  it('check names include all five categories', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
     const checks = await runChecks({ configPath });
@@ -244,6 +295,7 @@ describe('runChecks()', () => {
     expect(names).toContain('Node.js >= 20');
     expect(names).toContain('SQLite accessible');
     expect(names).toContain('git >= 2.20');
+    expect(names).toContain('git repository');
     expect(names).toContain('.yoke.yml valid');
   });
 
