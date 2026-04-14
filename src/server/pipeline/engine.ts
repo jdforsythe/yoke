@@ -158,6 +158,12 @@ export interface ApplyItemTransitionResult {
   cascadeBlocked: boolean;
   /** True if all items in the stage reached terminal states this transition. */
   stageComplete: boolean;
+  /**
+   * Row ID of the pending_attention row inserted during this transition, or
+   * null if no pending_attention row was inserted.
+   * Callers use this to drive post-commit notification dispatch (feat-notifications).
+   */
+  pendingAttentionRowId: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,11 +247,12 @@ function writePendingAttention(
   kind: string,
   payload: Record<string, unknown>,
   now: string,
-): void {
-  db.prepare(`
+): number {
+  const result = db.prepare(`
     INSERT INTO pending_attention (workflow_id, kind, payload, created_at)
     VALUES (?, ?, ?, ?)
   `).run(workflowId, kind, JSON.stringify(payload), now);
+  return Number(result.lastInsertRowid);
 }
 
 // ---------------------------------------------------------------------------
@@ -768,11 +775,12 @@ function applyPendingSideEffects(
   stage: string,
   phase: string,
   now: string,
-): void {
+): number | null {
   const kind = pendingAttentionKindFromEffects(sideEffects);
   if (kind) {
-    writePendingAttention(db, workflowId, kind, { item_id: itemId, stage, phase }, now);
+    return writePendingAttention(db, workflowId, kind, { item_id: itemId, stage, phase }, now);
   }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +850,7 @@ export function applyItemTransition(
         sideEffects: [],
         cascadeBlocked: false,
         stageComplete: false,
+        pendingAttentionRowId: null,
       };
     }
 
@@ -930,7 +939,7 @@ export function applyItemTransition(
     });
 
     // Apply pure-SQLite side effects (pending_attention rows).
-    applyPendingSideEffects(
+    let pendingAttentionRowId: number | null = applyPendingSideEffects(
       db,
       selection.sideEffects,
       params.workflowId,
@@ -968,7 +977,7 @@ export function applyItemTransition(
     // the stage, insert a pending_attention row and pause the workflow.
     // Both mutations are inside the same db.transaction() (AC-6).
     if (stageComplete && params.needsApproval) {
-      writePendingAttention(
+      pendingAttentionRowId = writePendingAttention(
         db,
         params.workflowId,
         'stage_needs_approval',
@@ -1001,6 +1010,7 @@ export function applyItemTransition(
       retryMode: selection.retryMode,
       cascadeBlocked,
       stageComplete,
+      pendingAttentionRowId,
     };
   });
 }
