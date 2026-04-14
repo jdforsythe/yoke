@@ -80,6 +80,7 @@ import type { DiffSnapshot } from '../hook-contract/diff-checker.js';
 import { captureGitHead, scanArtifactWrites } from '../hook-contract/artifact-writes.js';
 import type { ArtifactWriteRecord } from '../pipeline/engine.js';
 import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
+import { seedPerItemStage } from './per-item-seeder.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -480,6 +481,36 @@ export class Scheduler {
 
           const stage = this._findStage(item.stage_id);
           if (!stage) break;
+
+          // ------------------------------------------------------------------
+          // Per-item seeding: intercept before phase_start.
+          // When a per-item stage's placeholder item is ready, seed real item
+          // rows from the manifest instead of spawning a session.
+          // ------------------------------------------------------------------
+          if (stage.run === 'per-item') {
+            const worktreePath = wf.worktree_path;
+            if (!worktreePath) {
+              // Worktree not yet created — wait for the bootstrap phase of a
+              // preceding stage to populate it.
+              break;
+            }
+            const seedResult = seedPerItemStage({
+              db: this.db,
+              workflowId: wf.id,
+              placeholderItemId: item.id,
+              worktreePath,
+              stage,
+            });
+            if (seedResult.kind === 'error') {
+              console.error(
+                `[scheduler] per-item seeding failed for stage '${stage.id}':`,
+                seedResult.message,
+              );
+            }
+            // On success: placeholder deleted, real items pending — next tick
+            // picks them up.  On error: placeholder still ready — retry next tick.
+            break;
+          }
 
           const phaseIdx = stage.phases.indexOf(item.current_phase ?? '');
           const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
