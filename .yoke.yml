@@ -133,6 +133,8 @@ phases:
       - "-p"
       - "--output-format"
       - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
     prompt_template: prompts/self-host-implement.md
     max_outer_retries: 2
     retry_ladder:
@@ -165,6 +167,8 @@ phases:
       - "-p"
       - "--output-format"
       - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
     prompt_template: prompts/self-host-review.md
     post:
       - name: check-verdict
