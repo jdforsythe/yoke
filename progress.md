@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-ack-attention-wiring — implement attempt 2 (2026-04-13)
+
+Verification pass following PASS review verdict on attempts 0 and 1. The only code change in this session was a pre-existing working-tree modification to `src/server/scheduler/scheduler.ts` that was committed as 91d0f5f — a targeted fix for a closed-DB race introduced by `feat-hook-contract`: `stop()` skips `pending` in-flight entries (no handle yet to cancel), creating a window where `db.close()` races a `_runSession` that has already awaited `captureGitHead` and is about to call `insertSession`. The fix adds a `this.stopped` guard immediately after the `captureGitHead` await, before any DB write. No changes to `ack-attention.ts`, `start.ts`, or `ack-attention.test.ts`. `tsc --noEmit` clean; 1024/1024 tests pass.
+
 ## feat-ack-attention-wiring — implement attempt 1 (2026-04-13)
 
 Verification pass following PASS review verdict on attempt 0. No code changes required. All 1024/1024 tests pass across 43 test files; `tsc --noEmit` clean. The pre-existing unhandled rejection from `crash-recovery.test.ts` teardown race (feat-fault-injector) is unchanged. The deferred items from attempt 0 (WS payload shape, ref-mutation safety note, single-statement atomicity) remain non-blocking and unchanged.

@@ -4,6 +4,19 @@
     "entries": [
       {
         "phase": "implement",
+        "attempt": 2,
+        "ts": "2026-04-13T22:40:00Z",
+        "note": "Verification pass. The only code change was a pre-committed fix (91d0f5f) to scheduler.ts: a this.stopped guard after the captureGitHead await prevents insertSession from racing db.close() when stop() is called while the git subprocess is running. No changes to ack-attention.ts, start.ts, or tests. tsc clean, 1024/1024 tests pass.",
+        "intended_files": [
+          "src/server/scheduler/scheduler.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": []
+      },
+      {
+        "phase": "implement",
         "attempt": 1,
         "ts": "2026-04-13T21:50:00Z",
         "note": "Verification pass only — review-verdict.json was PASS from attempt 0; no code changes made. tsc clean, 1024/1024 tests pass.",
