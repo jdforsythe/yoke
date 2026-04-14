@@ -5,3 +5,5 @@ bin/
 *.db
 *.db-wal
 *.db-shm
+.worktrees/
+.yoke/
