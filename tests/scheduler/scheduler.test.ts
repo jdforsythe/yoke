@@ -8,7 +8,9 @@
  *   AC-1  ingestWorkflow seeds workflow + item rows within the poll window.
  *   AC-2  Crash recovery transitions stale in_progress → awaiting_retry before
  *         any new items are scheduled.
- *   AC-2b Capture mode: fixture file written when .yoke/record.json is present.
+ *   AC-2b Capture mode: fixture file written when .yoke/record.json is present;
+ *         marker cleared on success and non-zero exit; ScriptedProcessManager
+ *         replays the captured fixture with identical event sequence (RC-2).
  *   AC-3  Scheduler drives pending → ready → bootstrapping → in_progress →
  *         complete (or a terminal state) end-to-end for a single-phase workflow.
  *   AC-5  applyWorktreeCreated persists branch_name + worktree_path to workflows.
@@ -842,6 +844,93 @@ describe('AC-2b: capture mode', () => {
     // No .yoke/fixtures directory should have been created.
     const fixturesDir = path.join(tmpDir, '.yoke', 'fixtures');
     expect(fs.existsSync(fixturesDir)).toBe(false);
+  });
+
+  it('captured fixture replays via ScriptedProcessManager with identical event sequence (RC-2)', async () => {
+    // Set up capture mode.
+    const capturePath = path.join(tmpDir, 'fixtures', 'replay-test.jsonl');
+    runRecord({ cwd: tmpDir, capturePath });
+
+    const emittedLines = [
+      '{"type":"text","text":"step-one"}',
+      '{"type":"text","text":"step-two"}',
+    ];
+
+    const processManager = new StubProcessManager([
+      { type: 'stdout', line: emittedLines[0] },
+      { type: 'stdout', line: emittedLines[1] },
+      { type: 'exit', code: 0 },
+    ]);
+
+    const config = makeConfig({ configDir: tmpDir });
+    const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
+    await scheduler.start();
+
+    const workflowId = scheduler.workflowId!;
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    await scheduler.stop();
+
+    // Fixture file must exist.
+    expect(fs.existsSync(capturePath)).toBe(true);
+
+    // Replay via ScriptedProcessManager and collect events.
+    const { ScriptedProcessManager } = await import('../../src/server/process/scripted-manager.js');
+    const mgr = new ScriptedProcessManager({ fixturePath: capturePath });
+    const handle = await mgr.spawn({ command: 'claude', args: [], cwd: '/tmp', promptBuffer: '' });
+
+    const replayedLines: string[] = [];
+    handle.on('stdout_line', (l) => replayedLines.push(l));
+
+    const exitCode = await new Promise<number | null>((r) =>
+      handle.once('exit', (code) => r(code)),
+    );
+
+    // Replayed event sequence must match what was originally emitted.
+    expect(replayedLines).toEqual(emittedLines);
+    expect(exitCode).toBe(0);
+  });
+
+  it('clearRecordMarker is called even when the session exits non-zero (AC-2 error path)', async () => {
+    // Set up capture mode.
+    const capturePath = path.join(tmpDir, 'fixtures', 'fail-capture.jsonl');
+    runRecord({ cwd: tmpDir, capturePath });
+
+    const processManager = new StubProcessManager([
+      { type: 'stdout', line: '{"type":"text","text":"hello"}' },
+      { type: 'exit', code: 1 },
+    ]);
+
+    const config = makeConfig({ configDir: tmpDir });
+    const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
+    await scheduler.start();
+
+    const workflowId = scheduler.workflowId!;
+    // Non-zero exit + empty stderr → classifier=unknown → awaiting_user
+    // (no transient pattern → no retry budget path).
+    await pollUntil(() => {
+      const item = db.reader()
+        .prepare('SELECT status FROM items WHERE workflow_id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return item?.status === 'awaiting_user';
+    }, { timeoutMs: 10_000 });
+
+    await scheduler.stop();
+
+    // Marker must be cleared even after a non-zero session exit.
+    const markerPath = path.join(tmpDir, '.yoke', 'record.json');
+    expect(fs.existsSync(markerPath)).toBe(false);
+
+    // Fixture file must contain the emitted stdout line and an exit record.
+    expect(fs.existsSync(capturePath)).toBe(true);
+    const records = parseFixture(capturePath);
+    expect(records).toContainEqual({ type: 'stdout', line: '{"type":"text","text":"hello"}' });
+    expect(records.find((r) => r.type === 'exit')).toBeDefined();
   });
 });
 
