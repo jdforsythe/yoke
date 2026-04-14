@@ -747,6 +747,14 @@ export class Scheduler {
     const diffSnapshot: DiffSnapshot = takeSnapshot(worktreePath, itemsFromPath);
     const preSessionHead: string | null = await captureGitHead(worktreePath);
 
+    // Guard: if stop() was called while awaiting captureGitHead, bail before any
+    // DB write. stop() skips 'pending' inFlight entries (no handle yet), so without
+    // this check a dangling _runSession could call insertSession on a closed DB.
+    if (this.stopped) {
+      this.inFlight.delete(item.id);
+      return;
+    }
+
     // RC-2: insertSession via engine helper (not db.writer directly).
     // Inserted BEFORE spawn so SQLite concurrency count is immediately accurate.
     insertSession(this.db, {
