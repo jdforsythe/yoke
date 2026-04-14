@@ -1,7 +1,0 @@
-{
-  "command": "claude",
-  "args": ["--print", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"],
-  "features_file": "docs/idea/yoke-features.json",
-  "pre": [],
-  "post": []
-}
