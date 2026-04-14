@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-ack-attention-wiring — implement attempt 1 (2026-04-13)
+
+Verification pass following PASS review verdict on attempt 0. No code changes required. All 1024/1024 tests pass across 43 test files; `tsc --noEmit` clean. The pre-existing unhandled rejection from `crash-recovery.test.ts` teardown race (feat-fault-injector) is unchanged. The deferred items from attempt 0 (WS payload shape, ref-mutation safety note, single-statement atomicity) remain non-blocking and unchanged.
+
 ## feat-ack-attention-wiring — implement attempt 0 (2026-04-13)
 
 Implemented `feat-ack-attention-wiring` in a single commit (3 files). Created `src/server/pipeline/ack-attention.ts` exporting `makeAckAttentionFn(writer, broadcast)`, which reads the `pending_attention` row by `(id, workflow_id)` for cross-workflow isolation, sets `acknowledged_at = datetime('now')` on the writer connection, and calls `broadcast(workflowId)` after the write so connected WS clients receive a `workflow.update` frame. The function is idempotent: a row already acknowledged returns `already_acknowledged` without re-writing or re-broadcasting. Wired the handler into `src/cli/start.ts` using the ref-mutation pattern — a `ServerCallbacks` object is created before `createServer`, and `callbacks.ackAttention` is populated with the real handler after `state.registry` is available (safe because no HTTP request can arrive before `fastify.listen()` completes). Added 6 unit tests in `tests/pipeline/ack-attention.test.ts` covering: successful ack, broadcast side-effect, partial-index disappearance, idempotent re-ack without re-broadcast, `not_found` for unknown id, and cross-workflow isolation — all without a running server per RC-2. `tsc --noEmit` clean; 1024/1024 tests pass (6 new). Pre-existing unhandled rejection from `crash-recovery.test.ts` teardown race (feat-fault-injector) is unchanged.
