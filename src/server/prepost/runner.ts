@@ -291,6 +291,7 @@ async function _runOneCommand(
     const rl = createReadline({ input: child.stdout!, crlfDelay: Infinity });
     rl.on('line', (line) => {
       writeFrame({ type: 'prepost.command.stdout', name: cmd.name, when, text: line });
+      console.log(`[prepost:${cmd.name}] ${line}`);
     });
 
     // stderr: buffered by line for cleaner frames; remainder flushed on close.
@@ -301,11 +302,13 @@ async function _runOneCommand(
       stderrBuf = lines.pop() ?? '';
       for (const line of lines) {
         writeFrame({ type: 'prepost.command.stderr', name: cmd.name, when, text: line });
+        console.error(`[prepost:${cmd.name}] ${line}`);
       }
     });
     child.stderr!.on('close', () => {
       if (stderrBuf) {
         writeFrame({ type: 'prepost.command.stderr', name: cmd.name, when, text: stderrBuf });
+        console.error(`[prepost:${cmd.name}] ${stderrBuf}`);
         stderrBuf = '';
       }
     });

@@ -55,6 +55,8 @@ phases:
       - "stream-json"
       - "--verbose"
       - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-opus-4-6"
     prompt_template: prompts/plan-dashboard.md
     max_outer_retries: 2
     retry_ladder:
@@ -79,6 +81,8 @@ phases:
       - "stream-json"
       - "--verbose"
       - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
     prompt_template: prompts/self-host-implement.md
     max_outer_retries: 2
     retry_ladder:
@@ -119,6 +123,8 @@ phases:
       - "stream-json"
       - "--verbose"
       - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
     prompt_template: prompts/self-host-review.md
     post:
       - name: check-handoff
@@ -150,7 +156,7 @@ worktrees:
   branch_prefix: yoke/
   bootstrap:
     commands:
-      - "ln -sf $(git rev-parse --show-toplevel)/node_modules node_modules"
+      - "ln -sf $(realpath $(git rev-parse --git-common-dir)/..)/node_modules node_modules"
 
 # ---------------------------------------------------------------------------
 # Runtime / operational

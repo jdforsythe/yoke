@@ -49,4 +49,9 @@ If you determine that the spec is ambiguous or that more design input is needed 
 
 ## Output
 
-Write to `docs/idea/dashboard-features.json`. Stop after writing the file.
+Write to `docs/idea/dashboard-features.json`. The root object must include:
+- `"project"` — string, project name (e.g. `"yoke"`)
+- `"created"` — ISO 8601 date-time string (e.g. `"2026-04-14T00:00:00Z"`)
+- `"features"` — the feature array
+
+Stop after writing the file.

@@ -22,7 +22,8 @@ last-logs:
 # tail-session — pretty-print the most recent session log (static snapshot)
 # Use FEATURE=<id> and/or PHASE=implement|review to filter.
 tail-session:
-	@FEATURE=$(FEATURE) PHASE=$(PHASE) node scripts/tail-session.js
+	@log=$$(FEATURE=$(FEATURE) PHASE=$(PHASE) node scripts/get-log.js) && \
+	node scripts/tail-session.js "$$log"
 
 # tail-session-raw — follow live output from the most recent session log
 tail-session-raw:
