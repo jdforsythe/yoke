@@ -1,5 +1,35 @@
 [
   {
+    "feature": "feat-per-item-seeding",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T23:10:00Z",
+        "note": "tsc clean; 1048/1048 tests pass (17 new). Implemented seedPerItemStage() in src/server/scheduler/per-item-seeder.ts using jsonpath-plus. Intercepted ready case in scheduler for per-item stages to call seeder instead of firing phase_start on the placeholder. Placeholder is deleted and downstream depends_on rewritten inside a single SQLite transaction. Added items_complete?: string to Stage type.",
+        "intended_files": [
+          "package.json",
+          "package-lock.json",
+          "src/shared/types/config.ts",
+          "src/server/scheduler/per-item-seeder.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/scheduler/per-item-seeder.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "There is no scheduler integration test that exercises the full per-item seeding end-to-end through the tick loop (placeholder pending → deps_satisfied → ready → seeded → real items pending → real items complete → stage advance). The seeder unit tests cover the DB mutations directly; the scheduler integration tests in scheduler.test.ts do not yet have a per-item stage fixture. A full scheduler integration test would require a config with run:'per-item', a worktree, and a real manifest file on disk.",
+          "items_complete using items_complete: '$.status' where the field contains a truthy string (e.g., 'complete') correctly seeds as complete. However, if items_complete returns an empty array (no JSONPath match at all) rather than null/undefined, isTruthy() returns false (empty array → false). Reviewers should confirm this is acceptable: no match = not done."
+        ],
+        "known_risks": [
+          "If a per-item stage is the FIRST stage in the pipeline (no preceding run:once stage), the worktree path will be null when the placeholder reaches ready. The seeder is skipped (break with no-op), and the tick loop will retry on every subsequent tick — forever, since no worktree creation is ever triggered for this item. This is an edge case not addressed by the spec (which implies per-item stages follow a bootstrap stage) but could cause an infinite spin log. Users configuring a per-item first stage would need to guard against this.",
+          "The seeder deletes the placeholder row. If the placeholder row was referenced in a session row (item_id FK) from a crash where somehow the scheduler managed to create a session for it, the ON DELETE SET NULL constraint would null out item_id in sessions — acceptable but worth noting. In practice the scheduler never creates a session for a placeholder (it intercepts before phase_start) so this is zero-risk today.",
+          "jsonpath-plus 7.x uses an eval()-based path by default for filter predicates in some environments. In Node.js, this is fine (no Content Security Policy). If yoke is ever run in a CSP-restricted environment, jsonpath-plus filter predicates may fail. The spec specifically requires jsonpath-plus for filter support, so this is documented but not mitigated."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-record-capture-wiring",
     "entries": [
       {
