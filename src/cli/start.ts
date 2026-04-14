@@ -35,6 +35,8 @@ import { buildPromptContext, type GitHelper } from '../server/prompt/context.js'
 import { assemblePrompt } from '../server/prompt/assembler.js';
 import { Scheduler, type PromptAssemblerFn } from '../server/scheduler/scheduler.js';
 import { dispatchNotification } from '../server/notifications/dispatcher.js';
+import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
+import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,12 +115,26 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   applyMigrations(db.writer, migrationsDir());
 
   // Start server — use createServer so we can access state.registry.
-  const { fastify, state } = await createServer(db);
+  // callbacks is mutated after createServer returns to wire in the real
+  // ackAttention handler (which needs state.registry, only available
+  // post-construction).  Route handlers read callbacks at request time so
+  // this is safe: no HTTP request can arrive before fastify.listen() completes.
+  const callbacks: ServerCallbacks = {};
+  const { fastify, state } = await createServer(db, callbacks);
   await fastify.listen({ host: '127.0.0.1', port });
 
   const addr = fastify.server.address();
   const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
   const url = `http://127.0.0.1:${actualPort}`;
+
+  // Wire the real ackAttention handler now that state.registry is available.
+  // The handler uses the writer connection for the UPDATE and broadcasts a
+  // workflow.update frame to subscribed WS clients (AC-1, AC-2, AC-3, RC-1).
+  callbacks.ackAttention = makeAckAttentionFn(db.writer, (workflowId) => {
+    state.registry.broadcast(workflowId, null, 'workflow.update', {
+      attentionAcked: true,
+    });
+  });
 
   // Write server discovery file.
   const serverJson = path.join(yokeDir, 'server.json');
