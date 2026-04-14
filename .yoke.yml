@@ -62,7 +62,7 @@ phases:
       - fresh_with_failure_summary
       - awaiting_user
     post:
-      - name: check-dashboard-features
+      - name: check-features
         run: ["node", "scripts/check-features-json.js", "docs/idea/dashboard-features.json"]
         timeout_s: 15
         actions:
