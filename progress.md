@@ -1,5 +1,9 @@
 # Yoke — Build Progress
 
+## feat-hook-contract — implement attempt 2 (2026-04-13)
+
+Verification pass following PASS review verdict on attempts 0 and 1. No code changes required. All 1018 tests pass across 42 test files; `tsc --noEmit` clean. One pre-existing unhandled rejection surfaced during this run originating from the crash-recovery test suite (feat-fault-injector): the async `_runSession` path races `db.close()` in `afterEach` on the AC-4c "rate_limited at restart" test — this is not caused by feat-hook-contract and does not fail any test assertions. The deferred integration-test gap (scanArtifactWrites through scheduler→engine→artifact_writes DB path requiring a git-initialized worktree fixture) remains unchanged and was not blocking the PASS verdict.
+
 ## feat-hook-contract — implement attempt 1 (2026-04-13)
 
 Verification pass following a PASS review verdict on attempt 0. No code changes required. TypeScript compiles clean (`tsc --noEmit` exit 0); all 1018 tests pass across 42 test files. The implementation produced in attempt 0 satisfies all six acceptance criteria and five review criteria as confirmed by re-reading the scheduler wiring, engine transaction boundary, and the three hook-contract modules. The one deferred integration-test gap (scanArtifactWrites through the scheduler→engine→artifact_writes DB path requires a git-initialised worktree fixture) remains filed in handoff.json and is unchanged.
