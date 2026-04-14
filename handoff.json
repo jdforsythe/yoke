@@ -1,5 +1,37 @@
 [
   {
+    "feature": "feat-hook-contract",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 0,
+        "ts": "2026-04-13T20:38:00Z",
+        "intended_files": [
+          "src/server/hook-contract/diff-checker.ts",
+          "src/server/hook-contract/artifact-writes.ts",
+          "src/server/hook-contract/manifest-reader.ts",
+          "src/server/pipeline/engine.ts",
+          "src/server/scheduler/scheduler.ts",
+          "tests/hook-contract/diff-checker.test.ts",
+          "tests/hook-contract/manifest-reader.test.ts",
+          "tests/hook-contract/artifact-writes.test.ts",
+          "tests/pipeline/engine.test.ts",
+          "tests/scheduler/scheduler.test.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "scanArtifactWrites is exercised in git-repo unit tests (artifact-writes.test.ts), but the scheduler integration tests for hook-contract run in a non-git tmp directory and therefore always receive an empty artifactWrites array from scanArtifactWrites. The git-based scanning path (capturing committed and uncommitted changes) is unit-tested but not end-to-end tested through the scheduler → engine → artifact_writes DB path. A full scheduler integration test would require initializing git in the worktree fixture."
+        ],
+        "known_risks": [
+          "FileMutatingProcessManager (used in HC-1 diff_check_fail scheduler integration test) writes to the items_from file inside spawn() — which runs after takeSnapshot but before the handle emits 'exit'. This is a valid simulation of the in-session ordering but relies on synchronous file writes completing before checkDiff reads the file. In production, the agent process modifies the file asynchronously; the test approximation is conservative (change happens synchronously, guaranteed visible to checkDiff).",
+          "captureGitHead is called before insertSession. If the git command takes longer than the session setup overhead, it could add latency to session start. In practice git rev-parse HEAD is sub-millisecond. In the pathological case (git unavailable or slow), it times out and returns null — scanArtifactWrites then falls back to git status only.",
+          "readLastCheckManifest is called after scanArtifactWrites on every exit-0 session, even when no .yoke/ directory exists. The file read fails with ENOENT (caught, returns 'absent') — this is correct behavior but adds one filesystem syscall per session."
+        ]
+      }
+    ]
+  },
+  {
     "feature": "feat-notifications",
     "entries": [
       {

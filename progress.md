@@ -1,5 +1,23 @@
 # Yoke — Build Progress
 
+## feat-hook-contract — implement attempt 0 (2026-04-13)
+
+Implemented the full `feat-hook-contract` feature in two commits: the three core modules plus their wiring into the scheduler and engine, then the complete test suite covering all six acceptance criteria.
+
+**`src/server/hook-contract/diff-checker.ts`**: `takeSnapshot(worktreePath, itemsFromPath)` reads the items_from file from disk before spawn (RC-1: not from git history) and returns its content as a `DiffSnapshot`. `checkDiff(snapshot, worktreePath, itemsFromPath)` runs after session exit, re-reads the file, strips whitespace from both versions, and returns `{ kind: 'ok' }` (AC-2), `{ kind: 'fail', diffSummary }` (AC-1) with a line-delta + char-delta summary, or `{ kind: 'skip' }` when no items_from is configured. Never throws.
+
+**`src/server/hook-contract/artifact-writes.ts`**: `captureGitHead(worktreePath)` returns the current HEAD hash before spawn (or null if git unavailable). `scanArtifactWrites(worktreePath, preSessionHead)` discovers files written during the session via `git diff <preHead>..HEAD --name-only --diff-filter=ACM` (committed changes) plus `git status --porcelain=v1` (staged and untracked), deduplicated. `computeSha256Streaming(absPath)` hashes each file through a Node.js `createReadStream` pipeline — no large-file buffering (RC-2). Deleted files skipped; git errors swallowed; always resolves (AC-3).
+
+**`src/server/hook-contract/manifest-reader.ts`**: `readLastCheckManifest(worktreePath)` reads `.yoke/last-check.json` and returns a discriminated union: `absent` if file missing (AC-4), `malformed` with detail string for any shape violation (AC-5), `unknown_version` with `hookVersion` and `rawJson` passthrough when `hook_version !== "1"` (AC-6), or `ok` with the structured `LastCheckManifest`. Gate-level extra fields pass through verbatim. Never throws (RC-3).
+
+**Scheduler wiring** (`src/server/scheduler/scheduler.ts`): Before `insertSession`, calls `takeSnapshot` and `captureGitHead`. After session exit: `scanArtifactWrites` collects `artifactWrites`; `readLastCheckManifest` inspects the optional manifest — malformed emits `stream.system_notice{source:"hook",severity:"warn"}`, unknown_version emits the same with `rawJson` attached; `checkDiff` runs — `fail` fires `diff_check_fail` event (skips post commands), `ok`/`skip` continues to post commands. All results pass through to `applyItemTransition` via `guardCtx`; none block phase acceptance independently (RC-3). No hook installation, no `.claude/hooks/` verification (RC-5).
+
+**Engine wiring** (`src/server/pipeline/engine.ts`): `GuardContext.artifactWrites?: ArtifactWriteRecord[]` added. Inside `applyItemTransition`'s `db.transaction`, when `artifactWrites` is non-empty and `sessionId` is non-null, one `INSERT INTO artifact_writes` row per record is written atomically with the state transition (RC-4).
+
+**Tests** (1018 total, all passing): 15 unit tests for `diff-checker.ts` (takeSnapshot paths: undefined, absent, readable; checkDiff: skip, ok whitespace-only, fail with creation/deletion/modification summaries). 23 unit tests for `manifest-reader.ts` (absent, 11 malformed shapes, unknown_version passthrough, valid v1 with extra gate fields). 15 unit tests for `artifact-writes.ts` (computeSha256Streaming correctness + 64-char hex shape + ENOENT throw; captureGitHead null for non-git / empty-git / real commit; scanArtifactWrites empty in non-git, picks up uncommitted + committed + skips deleted). 4 engine tests for `artifact_writes` DB insertion (2 rows committed in one transaction, empty → 0 rows, null sessionId → 0 rows, shared `written_at` timestamp). 4 scheduler integration tests (HC-1 diff_check_fail → awaiting_retry; HC-2 diff_check_ok → workflow completes; HC-4 malformed manifest → system_notice + session still completes; HC-5 unknown_version → rawJson in notice + session still completes).
+
+**Untested paths**: `scanArtifactWrites` path exercised in git-repo unit tests but not in the scheduler integration tests (would require a git repo as the worktree fixture). The `diff_check_fail` scheduler integration test uses a custom `FileMutatingProcessManager` that modifies the items_from file during `spawn()` rather than true in-process parallelism — this is correct given the synchronous snapshot/check ordering.
+
 ## feat-notifications — implement attempt 0 (2026-04-13)
 
 Implemented the full `feat-notifications` feature across four focused commits with 957 tests passing and `tsc --noEmit` clean throughout.
