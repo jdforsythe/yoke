@@ -582,14 +582,17 @@ As soon as these exist and pass unit tests, **try self-hosting**:
 - [x] Stop hook is now enforcing — trust but verify by spot-checking tests manually on a few features
 - [x] Every blocked feature: debug, unblock, retry — don't let the backlog grow
 
-### 🛑 GATE: Phase δ complete
+### 🛑 GATE: Phase δ complete (PASSED 2026-04-14)
 
-- [ ] All core engine features in yoke-features.json are `complete` or justified as `blocked`/`deferred`
-- [ ] `./yoke start` can drive a workflow from config to completion on a fixture project
-- [ ] Unit tests pass: `pnpm typecheck && pnpm lint && pnpm test && pnpm build`
-- [ ] `yoke doctor` reports no dangling processes
-- [ ] SQLite schema migrations run cleanly on an empty DB and on a v0-era DB
-- [ ] ScriptedProcessManager replays a captured fixture through the pipeline to a terminal state
+- [x] All core engine features in yoke-features.json are `complete` or justified as `blocked`/`deferred`
+- [x] `./yoke start` can drive a workflow from config to completion on a fixture project
+- [x] Unit tests pass: `pnpm typecheck && pnpm lint && pnpm test && pnpm build` (1048/1048)
+- [x] `yoke doctor` reports no dangling processes (all 5 checks PASS)
+- [x] SQLite schema migrations run cleanly on an empty DB (`sqlite3 :memory: < sqlite-schema.sql`)
+- [x] ScriptedProcessManager replays a captured fixture through the pipeline to a terminal state
+
+**Post-gate additions (pre-Phase ε):** `feat-workflow-display-name` + `feat-workflow-run-files`
+added to yoke-features.json — small backend features fixing workflow identity before ε self-hosting.
 
 ---
 

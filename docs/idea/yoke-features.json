@@ -255,7 +255,8 @@
         "Exit timing matches the recording (not immediate) to keep downstream timers realistic in tests.",
         "Fixture format is documented (version field, schema comment) so contributors can author fixtures manually.",
         "Each failure-mode fixture maps to a named row in the Failure Modes table."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-worktree-mgr",
@@ -354,7 +355,8 @@
         "No schema caching between workflow runs (schemas on disk may change; always re-read at validation time).",
         "Missing required artifact raises validator_fail, not an uncaught ENOENT.",
         "Validator runs after session_ok and before post: commands (per hook-contract.md \u00a72 ordering)."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-hook-contract",
@@ -379,7 +381,8 @@
         "Manifest validation does not block phase acceptance under any condition (display-only by contract).",
         "artifact_writes rows inserted inside the same db.transaction as the post-session state transition.",
         "No Claude hook installation, no checksum verification of .claude/hooks/ files \u2014 explicitly out of scope per hook-contract.md \u00a74."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-pipeline-engine",
@@ -435,7 +438,8 @@
         "Absent '*' key caught at config load time (feat-config-loader), not at action evaluation time.",
         "prepost_runs rows inserted inside the same db.transaction as the corresponding state transition.",
         "Command timeout uses SIGTERM + 10 s grace + SIGKILL (same escalation as process manager)."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-scheduler",
@@ -494,7 +498,8 @@
         "Each checkpoint is a named string enum (not positional) so test authors can target specific failure points.",
         "No sleep() hacks needed to trigger recovery paths; fault injection is synchronous.",
         "FaultInjector is injected via constructor parameter (not a process.env lookup inside the class)."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-fastify-ws",
@@ -543,7 +548,8 @@
         "Both octokit and gh paths tested with scripted fixtures; no live GitHub API calls in unit or integration tests.",
         "Structured error on auth failure includes which paths were attempted.",
         "GithubState columns updated inside a db.transaction together with any related events row."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-notifications",
@@ -566,7 +572,8 @@
         "Browser-push stub does not attempt VAPID key generation or real web push delivery.",
         "node-notifier dependency gracefully skipped on non-macOS or missing binary (no crash).",
         "No notification sent without a pending_attention row \u2014 enforced by reading the row before dispatch."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-cli",
@@ -611,7 +618,8 @@
       "review_criteria": [
         "createServer() receives a non-stub AckAttentionFn in production start.ts.",
         "Unit test covers the ack path without a full server (injects a mock ack fn)."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-worktree-git-check",
@@ -630,7 +638,8 @@
       "review_criteria": [
         "Check is in startServer (not buried inside WorktreeManager where the error surface is already mid-flight).",
         "Error message includes the config.configDir path and the git command that failed."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-record-capture-wiring",
@@ -650,7 +659,8 @@
       "review_criteria": [
         "Capture tee logic is in the scheduler's _runSession path, not inside JigProcessManager itself.",
         "Test uses ScriptedProcessManager to replay the captured fixture and asserts identical event sequence."
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-per-item-seeding",
@@ -674,6 +684,60 @@
         "items_complete is evaluated at seed time only, not on every tick; SQLite status is the runtime source of truth after seeding.",
         "Seeding is idempotent: re-seeding the same stage (e.g. on crash recovery) does not create duplicate item rows.",
         "Unit tests cover: empty manifest, all-complete manifest, partial completion, dependency ordering, filter expression, missing items_complete field."
+      ],
+      "status": "complete"
+    },
+    {
+      "id": "feat-workflow-display-name",
+      "category": "pipeline-engine",
+      "description": "Human-readable generated name per workflow run: migration 0003 adds display_name TEXT column to workflows table, word-list generator (src/server/util/generate-name.ts) produces {adjective}-{gerund}-{noun} names, ingestWorkflow populates display_name on new workflow creation only (not resume), PATCH /api/workflows/:id allows user override (alphanumeric+hyphens, max 64 chars), yoke status CLI shows display_name. WS broadcast on rename.",
+      "priority": 4,
+      "depends_on": [
+        "feat-db-schema",
+        "feat-fastify-ws"
+      ],
+      "acceptance_criteria": [
+        "A new workflow row has a non-null display_name auto-populated from the generator; the name matches {word}-{word}-{word} pattern.",
+        "Resuming an existing workflow does not change display_name.",
+        "PATCH /api/workflows/:id with { displayName: 'my-name' } updates display_name and returns 200 with the updated workflow.",
+        "PATCH with an empty string, >64 chars, or invalid characters (not alphanumeric+hyphens) returns 400 with a descriptive error.",
+        "PATCH with the same displayName that's already set returns 200 (idempotent, no WS broadcast).",
+        "WS broadcast of workflow.update is sent to all subscribers after a successful rename.",
+        "yoke status CLI table shows display_name column (or UUID prefix if null for pre-migration rows)."
+      ],
+      "review_criteria": [
+        "Generator is a standalone pure function with no I/O; word list is embedded in the module (not a file read).",
+        "Migration 0003 uses ALTER TABLE (not DROP/CREATE) so existing workflow rows keep their data.",
+        "PATCH endpoint validates display_name before writing; no raw user input reaches SQLite without validation.",
+        "display_name uniqueness is NOT enforced — collisions are fine (UUIDs are the real key).",
+        "ingestWorkflow resume path reads and returns existing display_name without touching it."
+      ]
+    },
+    {
+      "id": "feat-workflow-run-files",
+      "category": "pipeline-engine",
+      "description": "Workflow identity redesign: each yoke start writes .yoke/runs/<uuid>.json (not git-tracked) as the workflow instance pointer; ingestWorkflow receives explicit { workflowId, isResume } from the caller instead of deriving from (project.name, configDir); yoke start checks for alive PIDs (refuse if alive) and orphaned files (auto-resume); scheduler archives run file on terminal state; yoke status reads .yoke/runs/ for local context.",
+      "priority": 4,
+      "depends_on": [
+        "feat-workflow-display-name",
+        "feat-cli",
+        "feat-scheduler"
+      ],
+      "acceptance_criteria": [
+        "yoke start with no active run file creates .yoke/runs/<uuid>.json containing { workflowId, displayName, configDir, pid, startedAt }.",
+        "yoke start when a run file exists with a live PID exits non-zero with a message naming the active workflow's displayName.",
+        "yoke start when a run file exists with a dead PID auto-resumes that workflow, updates the run file's pid, and logs 'Resuming orphaned workflow: {displayName}'.",
+        "ingestWorkflow called with { workflowId, isResume: false } always INSERTs a new workflows row with the provided UUID.",
+        "ingestWorkflow called with { workflowId, isResume: true } SELECTs the existing row and returns isResume:true; errors if not found or already terminal.",
+        "When the scheduler transitions a workflow to a terminal state, the run file is moved from .yoke/runs/ to .yoke/archive/.",
+        "yoke status shows display_name and status from .yoke/runs/ files for active workflows."
+      ],
+      "review_criteria": [
+        "The (project.name, configDir) SELECT query is completely removed from ingest.ts — no fallback path.",
+        ".yoke/runs/ and .yoke/archive/ are listed in .gitignore (via the existing .yoke/ entry).",
+        "PID liveness check uses kill(pid, 0) — same pattern as buildCrashRecovery.",
+        "ingestWorkflow tests use explicit { workflowId, isResume } — no tests rely on the old (name, configDir) lookup.",
+        "Scheduler archiveRunFile is called inside the terminal-state transition handler, not in a separate cleanup pass."
       ]
     }
   ]

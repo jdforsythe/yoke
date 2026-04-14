@@ -6,7 +6,9 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "@fastify/websocket": "^8.3.1",

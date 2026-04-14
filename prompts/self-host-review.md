@@ -66,4 +66,11 @@ if absent):
 
 If verdict is PASS, no handoff.json entry is needed.
 
-Do not re-implement. Only report findings, then write the two output files. Stop.
+**3. `docs/idea/yoke-features.json`** — when verdict is PASS only.
+
+Find the entry with `"id": "{{stage_id}}"` in `docs/idea/yoke-features.json`.
+Add `"status": "complete"` as a field to that entry, after the `"review_criteria"` array.
+Do not change any other field in the file. If the entry already has `"status": "complete"`,
+no change is needed. Do not modify this file if verdict is FAIL.
+
+Do not re-implement. Only report findings, then write the required output files. Stop.

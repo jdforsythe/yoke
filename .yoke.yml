@@ -179,6 +179,7 @@ phases:
           "1":
             goto: implement
             max_revisits: 3
+          "*": continue
 
 # ---------------------------------------------------------------------------
 # Worktrees
