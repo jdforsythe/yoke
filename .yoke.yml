@@ -63,7 +63,7 @@ phases:
       - awaiting_user
     post:
       - name: check-dashboard-features
-        run: ["python3", "scripts/check-dashboard-features.py"]
+        run: ["node", "scripts/check-features-json.js", "docs/idea/dashboard-features.json"]
         timeout_s: 15
         actions:
           "0": continue
