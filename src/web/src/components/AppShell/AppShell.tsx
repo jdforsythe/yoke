@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Outlet, useNavigate } from 'react-router-dom';
@@ -75,7 +75,10 @@ export function AppShell() {
   // Bell badge count is derived from the pendingAttention array length maintained
   // by WorkflowDetailRoute via attentionStore — satisfies feat-attention-banner RC2.
   const attentionCount = useSyncExternalStore(subscribeAttention, getAttentionCount);
-  const pushPermRef = useRef<string | null>(
+  // Push permission state: initialized from localStorage so the badge is correct
+  // on page load. Using state (not ref) so that denying permission in the current
+  // session immediately renders the push-disabled badge — satisfies AC-7.
+  const [pushPermission, setPushPermission] = useState<string | null>(() =>
     typeof localStorage !== 'undefined' ? localStorage.getItem('yoke:push-permission') : null,
   );
   const navigate = useNavigate();
@@ -123,11 +126,11 @@ export function AppShell() {
   }, [navigate]);
 
   function handleBellClick() {
-    if (pushPermRef.current !== null) return; // already decided
+    if (pushPermission !== null) return; // already decided
     if (!('Notification' in window)) return;
     Notification.requestPermission().then((result) => {
       localStorage.setItem('yoke:push-permission', result);
-      pushPermRef.current = result;
+      setPushPermission(result);
     });
   }
 
@@ -135,7 +138,7 @@ export function AppShell() {
     setToasts((ts) => ts.filter((t) => t.id !== id));
   }
 
-  const pushDenied = pushPermRef.current === 'denied';
+  const pushDenied = pushPermission === 'denied';
 
   return (
     <>
