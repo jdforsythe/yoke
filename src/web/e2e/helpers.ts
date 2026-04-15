@@ -124,6 +124,19 @@ export function indexUpdateFrame(id: string, name: string, status: string): stri
   });
 }
 
+/**
+ * Build a workflow.update frame that patches the current workflow state.
+ * Pass any subset of the workflow fields (including recoveryState: null to
+ * clear recovery state, githubState, or pendingAttention).
+ */
+export function workflowUpdateFrame(patch: Record<string, unknown>): string {
+  return mkFrame('workflow.update', {
+    workflowId: WF_ID,
+    seq: 2,
+    payload: patch,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // WS mock setup
 // ---------------------------------------------------------------------------

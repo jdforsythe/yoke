@@ -14,7 +14,8 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { setupWs, mockWorkflowsApi, snapshotFrame, WF_ID, WF_NAME } from './helpers';
+import type { WebSocketRoute } from '@playwright/test';
+import { setupWs, mockWorkflowsApi, snapshotFrame, workflowUpdateFrame, helloFrame, WF_ID, WF_NAME } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   await mockWorkflowsApi(page, [{ id: WF_ID, name: WF_NAME, status: 'in_progress' }]);
@@ -129,6 +130,109 @@ test('CrashRecoveryBanner Cancel opens confirmation dialog', async ({ page }) =>
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Keep workflow' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Yes, cancel' })).toBeVisible();
+});
+
+test('CrashRecoveryBanner Acknowledge & Resume shows optimistic spinner and sends control frame (AC-3, RC-3)', async ({
+  page,
+}) => {
+  const sentMessages: string[] = [];
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      const raw = msg.toString();
+      sentMessages.push(raw);
+      try {
+        const f = JSON.parse(raw) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(
+            snapshotFrame({
+              workflow: {
+                recoveryState: {
+                  recoveredAt: new Date().toISOString(),
+                  priorStatus: 'in_progress',
+                  resumeMethod: 'continue',
+                  uncommittedChanges: false,
+                  lastKnownSessionId: null,
+                },
+              },
+            }),
+          );
+        }
+      } catch {
+        // malformed — ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByRole('button', { name: 'Acknowledge & Resume' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Acknowledge & Resume' }).click();
+
+  // AC-3: button transitions to spinner text and is disabled
+  await expect(page.getByRole('button', { name: 'Resuming…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Resuming…' })).toBeDisabled();
+
+  // RC-3: resume method is passed through to the control frame (not hardcoded)
+  const controlFrames = sentMessages
+    .map((s) => {
+      try {
+        return JSON.parse(s) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((f): f is Record<string, unknown> => f?.type === 'control');
+  expect(controlFrames.length).toBeGreaterThan(0);
+  const ctrl = controlFrames[0] as { payload: { action: string; extra?: { resumeMethod?: string } } };
+  expect(ctrl.payload.action).toBe('resume');
+  expect(ctrl.payload.extra?.resumeMethod).toBe('continue');
+});
+
+test('CrashRecoveryBanner disappears when workflow.update clears recoveryState (AC-5)', async ({
+  page,
+}) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(
+            snapshotFrame({
+              workflow: {
+                recoveryState: {
+                  recoveredAt: new Date().toISOString(),
+                  priorStatus: 'paused',
+                  resumeMethod: 'fresh',
+                  uncommittedChanges: false,
+                  lastKnownSessionId: null,
+                },
+              },
+            }),
+          );
+        }
+      } catch {
+        // malformed — ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  // Banner visible initially
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByText('Workflow recovered from crash')).toBeVisible();
+
+  // Server clears recovery state via workflow.update
+  capturedWs!.send(workflowUpdateFrame({ recoveryState: null }));
+
+  // AC-5: banner is gone after server clears state (no dismiss button needed)
+  await expect(page.getByRole('alert')).not.toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
