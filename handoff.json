@@ -745,5 +745,31 @@
         ]
       }
     ]
+  },
+  {
+    "feature": "feat-service-worker-push",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "4f13b289-949e-464c-ae88-b3ae22613317",
+        "ts": "2026-04-15T21:00:00Z",
+        "note": "feat-service-worker-push was previously implemented as part of the dashboard-features bundle (attempts 1–10). This session performed a targeted spec-compliance pass against all AC and RC. One gap was found and fixed: AppShell.tsx used a useRef for push permission state, so the push-disabled badge (AC-7) would not render immediately after the user denied permission in the current session — only on the next re-render triggered by something else. Converted pushPermRef to useState so Notification.requestPermission() resolving to 'denied' immediately triggers a re-render and shows the badge. All other AC/RC were verified correct: SW registers on load (main.tsx), permission requested only on explicit bell click, localStorage key yoke:push-permission namespaced, showNotification called from SW context via postMessage (not main thread), toast portal stack in AppShell, notificationclick uses clients.matchAll()+focus() with clients.openWindow() fallback, no asset caching in SW. 34/34 Playwright e2e tests pass; tsc --noEmit clean; pnpm build succeeds.",
+        "intended_files": [
+          "src/web/src/components/AppShell/AppShell.tsx"
+        ],
+        "deferred_criteria": [
+          "AC-2/AC-3: Notification.requestPermission() flow cannot be automated in headless Chromium without a permissions override; bell-click→prompt→grant/deny is verified by code inspection only.",
+          "AC-4: push notification delivery (SW showNotification) requires a browser with Notification API; verified by code inspection, not by automated test.",
+          "AC-5: notificationclick → focus + navigate path is verified by code inspection; requires a real browser with multiple tabs to automate.",
+          "AC-7: push-disabled badge immediate render (just fixed) is verified by code inspection; still not automatable in headless without Notification API mock."
+        ],
+        "known_risks": [
+          "If navigator.serviceWorker.controller is null when a requires_attention notice arrives (e.g., first page load before SW takes control), the notice handler falls through to toast even if permission is 'granted'. This is transient and self-corrects once the SW claims the client via clients.claim() — acceptable for a localhost dev tool.",
+          "sw.ts uses 'any' casts throughout due to ServiceWorkerGlobalScope / DOM lib tsconfig conflict. The SW logic is simple (4 event handlers) so the risk is low.",
+          "The push-disabled badge displays badgeCount = attentionCount + 1 when push is denied and there are zero attention items, showing '1' which could be mistaken for an unread attention item. A distinct visual indicator (e.g., a lock overlay) would be clearer but was not introduced to avoid scope creep."
+        ]
+      }
+    ]
   }
 ]
