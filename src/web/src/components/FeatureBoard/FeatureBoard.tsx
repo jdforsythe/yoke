@@ -72,13 +72,23 @@ const itemDataCache = new Map<string, unknown>();
 const itemDataCacheVersion = new Map<string, number>(); // itemId → stateVersion
 
 /**
- * Invalidate cached item.data for an item.
+ * Invalidate cached item.data for a single item.
  * Called by WorkflowDetailRoute when an item.state frame arrives,
  * ensuring a fresh fetch on next selection.
  */
 export function invalidateItemData(itemId: string): void {
   itemDataCache.delete(itemId);
   itemDataCacheVersion.delete(itemId);
+}
+
+/**
+ * Clear the entire item.data cache.
+ * Called by WorkflowDetailRoute on unmount (workflow navigation) so that
+ * navigating from workflow A → B → A does not show stale item data.
+ */
+export function clearItemDataCache(): void {
+  itemDataCache.clear();
+  itemDataCacheVersion.clear();
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
-import { FeatureBoard, invalidateItemData } from '@/components/FeatureBoard/FeatureBoard';
+import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
 import { ControlMatrix } from '@/components/ControlMatrix/ControlMatrix';
@@ -157,6 +157,10 @@ export function WorkflowDetailRoute() {
     offs.push(client.on('stream.text', dispatchTextDelta));
     offs.push(client.on('stream.thinking', dispatchTextDelta));
 
+    // prepost.command.output chunks are rAF-batched (same 16ms flush as text
+    // deltas) to prevent per-chunk re-renders — satisfies feat-prepost RC-2 / AC-5.
+    offs.push(client.on('prepost.command.output', dispatchTextDelta));
+
     // All other stream frames — immediate dispatch.
     for (const t of [
       'stream.tool_use',
@@ -164,7 +168,6 @@ export function WorkflowDetailRoute() {
       'stream.usage',
       'stream.system_notice',
       'prepost.command.started',
-      'prepost.command.output',
       'prepost.command.ended',
       'stage.started',
       'stage.complete',
@@ -176,6 +179,9 @@ export function WorkflowDetailRoute() {
       client.unsubscribe(workflowId);
       for (const off of offs) off();
       reset();
+      // Clear item.data cache on navigation so stale data never shows if the
+      // user returns to this workflow before any item.state frames arrive.
+      clearItemDataCache();
     };
   }, [workflowId]);
 
