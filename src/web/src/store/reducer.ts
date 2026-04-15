@@ -74,6 +74,7 @@ export function createInitialState(): RenderModelState {
 function emptySession(sessionId: string): SessionRenderState {
   return {
     sessionId,
+    phase: null,
     _ring: new BlockRing(MAX_BLOCKS),
     _blockMap: new Map(),
     _evictedCount: 0,
@@ -177,7 +178,8 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         source: 'session',
         message: `Session started — phase: ${p.phase}, attempt: ${p.attempt}`,
       };
-      const session = pushBlock(emptySession(sid), notice);
+      const base = emptySession(sid);
+      const session = pushBlock({ ...base, phase: p.phase }, notice);
       return setSession(state, session);
     }
 

@@ -15,6 +15,17 @@
 
 import type { GithubState } from '@/ws/types';
 
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diffMs / 1_000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 interface Props {
   githubState: GithubState | null;
 }
@@ -72,7 +83,7 @@ export function GithubButton({ githubState }: Props) {
           rel="noopener noreferrer"
           title={
             githubState.lastCheckedAt
-              ? `Last checked: ${new Date(githubState.lastCheckedAt).toLocaleString()}`
+              ? `Last checked: ${relativeTime(githubState.lastCheckedAt)}`
               : undefined
           }
           className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 border border-gray-700 px-2 py-0.5 rounded transition-colors"

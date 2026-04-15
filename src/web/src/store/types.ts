@@ -82,6 +82,8 @@ export interface SessionUsage {
 
 export interface SessionRenderState {
   readonly sessionId: string;
+  /** Phase label from SessionStartedPayload.phase (e.g. 'implement', 'review'). */
+  readonly phase: string | null;
 
   /**
    * Ring buffer of live blocks.

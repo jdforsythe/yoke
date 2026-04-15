@@ -76,7 +76,13 @@ export function UsageHUD() {
     };
   }, [open]);
 
-  if (!hasData) return null;
+  if (!hasData) {
+    return (
+      <div className="px-2 py-1 text-xs text-gray-500 font-mono" aria-label="No token usage data">
+        — tokens
+      </div>
+    );
+  }
 
   // Per-session breakdown is derived from the full render model (read-only,
   // no extra subscription needed — only accessed when the dropdown is open).
@@ -131,8 +137,15 @@ export function UsageHUD() {
               <div className="space-y-2">
                 {Array.from(model.sessions.entries()).map(([sid, s]) => (
                   <div key={sid}>
-                    <div className="text-gray-500 text-xs font-mono truncate mb-0.5">
-                      {sid.slice(0, 14)}…
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-gray-500 text-xs font-mono truncate">
+                        {sid.slice(0, 14)}…
+                      </span>
+                      {s.phase && (
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400 shrink-0">
+                          {s.phase}
+                        </span>
+                      )}
                     </div>
                     <div className="flex gap-3 text-xs font-mono">
                       <span className="text-blue-400">↑{abbreviate(s.usage.inputTokens)}</span>

@@ -90,6 +90,7 @@ export function WorkflowList() {
   const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '');
   const [debouncedSearch, setDebouncedSearch] = useState(searchInput);
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') ?? 'all');
+  const [showArchived, setShowArchived] = useState(() => searchParams.get('archived') === 'true');
 
   // Tick: forces relative-timestamp text to re-render every 60 s.
   const [tick, setTick] = useState(0);
@@ -121,6 +122,7 @@ export function WorkflowList() {
         const qp = new URLSearchParams({ limit: '20' });
         if (statusFilter !== 'all') qp.set('status', statusFilter);
         if (debouncedSearch) qp.set('q', debouncedSearch);
+        if (showArchived) qp.set('archived', 'true');
         if (beforeCursor) qp.set('before', beforeCursor);
 
         const res = await fetch(`/api/workflows?${qp.toString()}`, {
@@ -136,7 +138,7 @@ export function WorkflowList() {
         setLoading(false);
       }
     },
-    [statusFilter, debouncedSearch],
+    [statusFilter, debouncedSearch, showArchived],
   );
 
   // Re-fetch from scratch when filters change.
@@ -148,8 +150,9 @@ export function WorkflowList() {
     const qp = new URLSearchParams();
     if (statusFilter !== 'all') qp.set('status', statusFilter);
     if (debouncedSearch) qp.set('q', debouncedSearch);
+    if (showArchived) qp.set('archived', 'true');
     setSearchParams(qp, { replace: true });
-  }, [statusFilter, debouncedSearch, fetchPage, setSearchParams]);
+  }, [statusFilter, debouncedSearch, showArchived, fetchPage, setSearchParams]);
 
   // WS: patch rows in-place on workflow.index.update.
   useEffect(() => {
@@ -205,7 +208,7 @@ export function WorkflowList() {
   // ---------------------------------------------------------------------------
 
   const isEmpty = rows.length === 0 && !loading;
-  const isFiltered = debouncedSearch !== '' || statusFilter !== 'all';
+  const isFiltered = debouncedSearch !== '' || statusFilter !== 'all' || showArchived;
 
   return (
     <div className="flex flex-col h-full text-sm">
@@ -231,6 +234,16 @@ export function WorkflowList() {
             </option>
           ))}
         </select>
+        <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+            className="rounded accent-blue-500"
+            aria-label="Show archived workflows"
+          />
+          Show archived
+        </label>
       </div>
 
       {/* Row list */}

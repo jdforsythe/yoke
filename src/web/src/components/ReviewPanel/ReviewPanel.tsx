@@ -22,6 +22,43 @@ import { ToolCallRenderer } from '@/components/LiveStream/ToolCallRenderer';
 import { TextBlockRenderer } from '@/components/LiveStream/TextBlockRenderer';
 import { ThinkingBlockRenderer } from '@/components/LiveStream/ThinkingBlockRenderer';
 import { SystemNoticeRenderer } from '@/components/LiveStream/SystemNoticeRenderer';
+import type { TextBlock } from '@/store/types';
+
+// ---------------------------------------------------------------------------
+// Subagent output renderer — reuses block renderers, not custom markup
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a subagent tool-call output using the existing block renderers.
+ *
+ * If the output is a plain string (typical for a Task result), it is wrapped
+ * in a TextBlock and rendered with TextBlockRenderer. For structured outputs,
+ * the raw JSON is rendered as a frozen text block so the monospace/code
+ * presentation still comes from TextBlockRenderer rather than a custom <pre>.
+ *
+ * Satisfies feat-review-panel RC: "The component reuses ToolCallRenderer and
+ * TextBlockRenderer for nested content, not custom renderers."
+ */
+function SubagentOutput({
+  output,
+  blockId,
+  sessionId,
+}: {
+  output: unknown;
+  blockId: string;
+  sessionId: string;
+}) {
+  const text =
+    typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+  const textBlock: TextBlock = {
+    type: 'text',
+    blockId: `${blockId}-output`,
+    sessionId,
+    text,
+    frozen: true,
+  };
+  return <TextBlockRenderer block={textBlock} />;
+}
 
 // ---------------------------------------------------------------------------
 // Sub-agent row
@@ -65,13 +102,8 @@ const SubagentRow = memo(function SubagentRow({ block, index }: SubagentRowProps
       {expanded && (
         <div className="border-t border-gray-700 bg-gray-800/20">
           {block.output !== undefined ? (
-            <div className="px-3 py-2">
-              <p className="text-xs text-gray-500 mb-1">Output:</p>
-              <pre className="text-xs font-mono text-gray-300 whitespace-pre-wrap break-words">
-                {typeof block.output === 'string'
-                  ? block.output
-                  : JSON.stringify(block.output, null, 2)}
-              </pre>
+            <div className="px-1 py-1">
+              <SubagentOutput output={block.output} blockId={block.blockId} sessionId={block.sessionId} />
             </div>
           ) : (
             <div className="px-3 py-2 text-xs text-gray-500 italic">

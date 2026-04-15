@@ -284,8 +284,8 @@ test('FeatureBoard renders items grouped by stage', async ({ page }) => {
 
   await expect(page.getByText('Alpha Feature')).toBeVisible();
   await expect(page.getByText('Beta Feature')).toBeVisible();
-  // Stage header
-  await expect(page.getByText('stage-1').first()).toBeVisible();
+  // Stage group header (data-testid avoids matching hidden <option> in category dropdown)
+  await expect(page.getByTestId('stage-header').filter({ hasText: 'stage-1' })).toBeVisible();
 });
 
 test('FeatureBoard search filters items', async ({ page }) => {

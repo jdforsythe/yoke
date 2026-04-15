@@ -11,8 +11,8 @@
  *   - ControlMatrix (available manual actions)
  */
 
-import { useEffect, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
 import { setAttentionCount } from '@/store/attentionStore';
@@ -59,6 +59,9 @@ export function WorkflowDetailRoute() {
   });
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  // Track whether the snapshot has arrived so the timeout ref can be cleared.
+  const snapshotArrivedRef = useRef(false);
 
   // sendControl wrapper so ControlMatrix doesn't import the WS module directly.
   const sendControl = useCallback(
@@ -66,6 +69,17 @@ export function WorkflowDetailRoute() {
       getClient().sendControl(action, opts),
     [],
   );
+
+  // If no snapshot arrives within 8 s, treat the workflow ID as invalid.
+  useEffect(() => {
+    if (!workflowId) return;
+    snapshotArrivedRef.current = false;
+    setNotFound(false);
+    const t = setTimeout(() => {
+      if (!snapshotArrivedRef.current) setNotFound(true);
+    }, 8_000);
+    return () => clearTimeout(t);
+  }, [workflowId]);
 
   useEffect(() => {
     if (!workflowId) return;
@@ -78,6 +92,8 @@ export function WorkflowDetailRoute() {
       client.on('workflow.snapshot', (frame: ServerFrame) => {
         const p = frame.payload as WorkflowSnapshotPayload;
         if (p.workflow.id !== workflowId) return;
+        // Cancel the not-found timeout — a valid snapshot arrived.
+        snapshotArrivedRef.current = true;
         const items = new Map<string, ItemProjection>();
         for (const item of p.items) items.set(item.id, item);
         const lastSession =
@@ -200,6 +216,23 @@ export function WorkflowDetailRoute() {
   const { snapshot, items, activeSessionId, activeSessionPhase } = state;
 
   if (!snapshot) {
+    if (notFound) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
+          <div className="text-lg font-semibold text-gray-300">Workflow not found</div>
+          <div className="text-sm text-gray-500">
+            The workflow ID <code className="font-mono text-gray-400">{workflowId}</code> does not
+            exist or has been deleted.
+          </div>
+          <Link
+            to="/"
+            className="text-sm text-blue-400 hover:text-blue-300 underline underline-offset-2"
+          >
+            ← Back to workflow list
+          </Link>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center h-full text-gray-400">
         <div className="text-sm">Connecting to workflow…</div>

@@ -117,6 +117,7 @@ export function FeatureBoard({
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [focusedIdx, setFocusedIdx] = useState<number>(-1);
   const [itemData, setItemData] = useState<Record<string, unknown>>({});
   const [itemDataExpanded, setItemDataExpanded] = useState<Set<string>>(new Set());
@@ -147,10 +148,11 @@ export function FeatureBoard({
   const flatFiltered = useMemo(() => {
     return items.filter((item) => {
       if (statusFilter !== 'all' && item.state.status !== statusFilter) return false;
+      if (categoryFilter !== 'all' && item.stageId !== categoryFilter) return false;
       if (!fuzzyMatch(item, debouncedSearch)) return false;
       return true;
     });
-  }, [items, statusFilter, debouncedSearch]);
+  }, [items, statusFilter, categoryFilter, debouncedSearch]);
 
   // Deep-link scroll: useLayoutEffect fires after DOM mutations but before
   // the browser paints, preventing any visible flash before the card is
@@ -351,18 +353,34 @@ export function FeatureBoard({
           onChange={(e) => setSearchInput(e.target.value)}
           className="w-full bg-gray-700/60 text-gray-100 placeholder-gray-500 rounded px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-blue-500"
         />
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="w-full bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
-        >
-          <option value="all">All statuses</option>
-          <option value="pending">Pending</option>
-          <option value="in_progress">In progress</option>
-          <option value="complete">Complete</option>
-          <option value="failed">Failed</option>
-          <option value="blocked">Blocked</option>
-        </select>
+        <div className="flex gap-1.5">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
+            aria-label="Filter by status"
+          >
+            <option value="all">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="in_progress">In progress</option>
+            <option value="complete">Complete</option>
+            <option value="failed">Failed</option>
+            <option value="blocked">Blocked</option>
+          </select>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
+            aria-label="Filter by category"
+          >
+            <option value="all">All categories</option>
+            {stages.map((stage) => (
+              <option key={stage.id} value={stage.id}>
+                {stage.id}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* Item list with keyboard nav */}
@@ -401,7 +419,10 @@ export function FeatureBoard({
 
           return (
             <div key={stage.id}>
-              <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide bg-gray-800/40 sticky top-0 z-10 border-b border-gray-700/30">
+              <div
+                data-testid="stage-header"
+                className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide bg-gray-800/40 sticky top-0 z-10 border-b border-gray-700/30"
+              >
                 {stage.id}
               </div>
               {sorted.map((item) =>
