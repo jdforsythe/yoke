@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { WorkflowList } from '@/components/WorkflowList/WorkflowList';
 import { UsageHUD } from '@/components/UsageHUD/UsageHUD';
@@ -132,35 +133,42 @@ export function AppShell() {
   const pushDenied = pushPermRef.current === 'denied';
 
   return (
-    <div className="flex flex-col h-full bg-gray-900 text-gray-100">
-      {/* Top bar */}
-      <header className="flex items-center justify-between px-4 h-12 bg-gray-800 border-b border-gray-700 shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="font-semibold text-white tracking-tight">Yoke</span>
-          <ConnectionIndicator state={connState} />
-        </div>
-        <div className="flex items-center gap-2">
-          <UsageHUD />
-          <BellIcon
-            badgeCount={attentionCount + (pushDenied ? 1 : 0)}
-            onClick={handleBellClick}
-          />
-        </div>
-      </header>
+    <>
+      <div className="flex flex-col h-full bg-gray-900 text-gray-100">
+        {/* Top bar */}
+        <header className="flex items-center justify-between px-4 h-12 bg-gray-800 border-b border-gray-700 shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-white tracking-tight">Yoke</span>
+            <ConnectionIndicator state={connState} />
+          </div>
+          <div className="flex items-center gap-2">
+            <UsageHUD />
+            <BellIcon
+              badgeCount={attentionCount + (pushDenied ? 1 : 0)}
+              onClick={handleBellClick}
+            />
+          </div>
+        </header>
 
-      {/* Body: sidebar + main */}
-      <div className="flex flex-1 min-h-0">
-        <aside className="w-[var(--sidebar-width)] shrink-0 border-r border-gray-700 overflow-hidden flex flex-col">
-          <WorkflowList />
-        </aside>
-        <main className="flex-1 overflow-hidden flex flex-col">
-          <Outlet />
-        </main>
+        {/* Body: sidebar + main */}
+        <div className="flex flex-1 min-h-0">
+          <aside className="w-[var(--sidebar-width)] shrink-0 border-r border-gray-700 overflow-hidden flex flex-col">
+            <WorkflowList />
+          </aside>
+          <main className="flex-1 overflow-hidden flex flex-col">
+            <Outlet />
+          </main>
+        </div>
       </div>
 
-      {/* Toast stack (push-denied fallback) */}
-      {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
+      {/* Toast stack — portal to document.body so it escapes the AppShell
+          stacking context (satisfies feat-service-worker-push RC4) */}
+      {toasts.length > 0 && createPortal(
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 right-4 flex flex-col gap-2 z-[9999]"
+        >
           {toasts.map((t) => (
             <div
               key={t.id}
@@ -175,8 +183,9 @@ export function AppShell() {
               </button>
             </div>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }

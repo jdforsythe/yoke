@@ -15,7 +15,7 @@
 import { useRef, useEffect, useState, useCallback, memo } from 'react';
 import { useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { subscribe, getSnapshot, getSessionBlocks, dispatch as dispatchFrame } from '@/store/renderStore';
+import { subscribe, getSessionBlocksSnapshot, dispatch as dispatchFrame } from '@/store/renderStore';
 import type { RenderBlock } from '@/store/types';
 import type { ServerFrame } from '@/ws/types';
 import { TextBlockRenderer } from './TextBlockRenderer';
@@ -75,9 +75,10 @@ interface Props {
 }
 
 export function LiveStreamPane({ sessionId, workflowId }: Props) {
-  // Subscribe to the store; read only this session's blocks.
-  const model = useSyncExternalStore(subscribe, getSnapshot);
-  const blocks = getSessionBlocks(model, sessionId);
+  // Subscribe with a session-specific stable snapshot: useSyncExternalStore
+  // will only re-render when THIS session's blocks change (ring reference
+  // changes on push/update), not on every frame for unrelated sessions.
+  const blocks = useSyncExternalStore(subscribe, () => getSessionBlocksSnapshot(sessionId));
 
   const parentRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);

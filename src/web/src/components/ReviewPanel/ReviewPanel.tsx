@@ -16,7 +16,7 @@
 
 import { memo, useState } from 'react';
 import { useSyncExternalStore } from 'react';
-import { subscribe, getSnapshot, getSessionBlocks } from '@/store/renderStore';
+import { subscribe, getSessionBlocksSnapshot } from '@/store/renderStore';
 import type { RenderBlock, ToolCallBlock } from '@/store/types';
 import { ToolCallRenderer } from '@/components/LiveStream/ToolCallRenderer';
 import { TextBlockRenderer } from '@/components/LiveStream/TextBlockRenderer';
@@ -105,8 +105,9 @@ interface Props {
 }
 
 export function ReviewPanel({ sessionId, phase: _phase }: Props) {
-  const model = useSyncExternalStore(subscribe, getSnapshot);
-  const blocks = getSessionBlocks(model, sessionId);
+  // Session-specific stable snapshot — only re-renders when THIS session's
+  // blocks change, not on frames for unrelated sessions or usage updates.
+  const blocks = useSyncExternalStore(subscribe, () => getSessionBlocksSnapshot(sessionId));
 
   // Partition Task tool_use blocks from the rest.
   const taskBlocks: ToolCallBlock[] = [];

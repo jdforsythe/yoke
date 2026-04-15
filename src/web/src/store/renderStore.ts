@@ -29,8 +29,9 @@ import {
   getSessionBlocks,
   getSessionUsage,
 } from './reducer';
-import type { RenderModelState, SessionUsage } from './types';
+import type { RenderModelState, SessionUsage, RenderBlock } from './types';
 import type { ServerFrame } from '@/ws/types';
+import type { BlockRing } from './blockRing';
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -52,6 +53,19 @@ let _usageSnapshot: SessionUsage = {
   cacheCreationInputTokens: 0,
   cacheReadInputTokens: 0,
 };
+
+// Stable empty array returned when a session has no blocks.
+const EMPTY_BLOCKS: readonly RenderBlock[] = Object.freeze([]);
+
+// Per-session blocks cache: keyed by sessionId, stores the last ring reference
+// and the corresponding materialised blocks array. When the ring reference is
+// unchanged (no push/update since last call), the SAME blocks array reference
+// is returned so useSyncExternalStore skips re-renders for that session.
+interface SessionBlocksEntry {
+  ring: BlockRing;
+  blocks: readonly RenderBlock[];
+}
+const _sessionBlocksCache = new Map<string, SessionBlocksEntry>();
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -139,6 +153,7 @@ export function reset(): void {
   _textQueue.length = 0;
   _state = createInitialState();
   _usageSnapshot = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+  _sessionBlocksCache.clear();
   _notify();
 }
 
@@ -151,6 +166,31 @@ export function subscribe(listener: () => void): () => void {
   return () => {
     _listeners.delete(listener);
   };
+}
+
+/**
+ * Stable blocks snapshot for a specific session.
+ *
+ * Returns the SAME array reference when the session's ring hasn't changed
+ * since the last call (ring identity check — every push/update creates a new
+ * ring via clone()), so useSyncExternalStore will NOT re-render components
+ * that subscribe with this as their getSnapshot when unrelated sessions change.
+ *
+ * Usage:
+ *   const blocks = useSyncExternalStore(subscribe, () => getSessionBlocksSnapshot(sessionId));
+ */
+export function getSessionBlocksSnapshot(sessionId: string): readonly RenderBlock[] {
+  const session = _state.sessions.get(sessionId);
+  if (!session) return EMPTY_BLOCKS;
+
+  const cached = _sessionBlocksCache.get(sessionId);
+  // Ring reference is stable unless a push/update occurred for this session.
+  // Return the cached array when ring hasn't changed (Object.is equality).
+  if (cached && cached.ring === session._ring) return cached.blocks;
+
+  const blocks = getSessionBlocks(_state, sessionId);
+  _sessionBlocksCache.set(sessionId, { ring: session._ring, blocks });
+  return blocks;
 }
 
 // Re-export pure accessors so consumers don't need to import from reducer.
