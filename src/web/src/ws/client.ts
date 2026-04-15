@@ -295,6 +295,7 @@ export class YokeWsClient {
             break;
           default:
             console.warn('[yoke-ws] unknown error:', err.code, err.message);
+            this.ws?.close(); // triggers reconnect via close handler
         }
         break;
       }

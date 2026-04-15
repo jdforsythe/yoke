@@ -91,6 +91,10 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
     estimateSize: () => 72,
     measureElement: (el) => el.getBoundingClientRect().height,
     overscan: 8,
+    // Stable keys by blockId: prepending blocks (loadEarlier) does not cause
+    // existing visible blocks to remount, satisfying the RC requirement for
+    // "stable keys derived from blockId".
+    getItemKey: (index) => blocks[index]?.blockId ?? index,
   });
 
   // Follow-tail: auto-scroll when new blocks arrive and user is at bottom.
