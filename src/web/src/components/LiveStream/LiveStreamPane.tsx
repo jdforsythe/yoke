@@ -15,8 +15,9 @@
 import { useRef, useEffect, useState, useCallback, memo } from 'react';
 import { useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { subscribe, getSnapshot, getSessionBlocks } from '@/store/renderStore';
+import { subscribe, getSnapshot, getSessionBlocks, dispatch as dispatchFrame } from '@/store/renderStore';
 import type { RenderBlock } from '@/store/types';
+import type { ServerFrame } from '@/ws/types';
 import { TextBlockRenderer } from './TextBlockRenderer';
 import { ToolCallRenderer } from './ToolCallRenderer';
 import { ThinkingBlockRenderer } from './ThinkingBlockRenderer';
@@ -148,10 +149,9 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
       // (Server response shape: { entries: string[] })
       const data = (await res.json()) as { entries?: string[] };
       if (!data.entries) return;
-      const { dispatch: dispatchFrame } = await import('@/store/renderStore');
       for (const raw of data.entries) {
         try {
-          const frame = JSON.parse(raw) as import('@/ws/types').ServerFrame;
+          const frame = JSON.parse(raw) as ServerFrame;
           dispatchFrame(frame);
         } catch {
           // Skip malformed entry.
