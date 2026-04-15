@@ -589,6 +589,32 @@
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 7,
+        "session_id": "",
+        "ts": "2026-04-15T14:00:00Z",
+        "note": "Fixed two RC violations identified by reviewing all review criteria against the codebase. (1) feat-ws-client RC-7: the default case in the error-code routing switch logged the unknown error but did not call ws.close(), so unknown server error codes would not trigger reconnect — added ws?.close() to satisfy 'default → log + reconnect'. (2) feat-stream-pane RC-4: the useVirtualizer call in LiveStreamPane did not provide a getItemKey function, so virtual rows were keyed by index rather than by blockId. Added getItemKey: (index) => blocks[index]?.blockId ?? index so that prepending blocks via 'Load earlier messages' does not cause existing visible rows to remount. tsc --noEmit clean; 32/32 Playwright e2e tests pass in ~5.3s.",
+        "intended_files": [
+          "src/web/src/ws/client.ts",
+          "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume in a real browser session.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (payload shape not fully specified by protocol)."
+        ],
+        "known_risks": [
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call. Clone cost is bounded; O(1) eviction (head-pointer advance) is satisfied per spec.",
+          "getSessionBlocksSnapshot cache correctness depends on ring.clone() being called on every pushBlock/updateBlock — load-bearing invariant.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset() and clearItemDataCache().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
+        ]
       }
     ]
   }
