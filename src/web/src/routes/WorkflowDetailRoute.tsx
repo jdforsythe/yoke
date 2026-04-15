@@ -18,7 +18,7 @@ import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
-import { FeatureBoard } from '@/components/FeatureBoard/FeatureBoard';
+import { FeatureBoard, invalidateItemData } from '@/components/FeatureBoard/FeatureBoard';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
 import { ControlMatrix } from '@/components/ControlMatrix/ControlMatrix';
@@ -120,6 +120,8 @@ export function WorkflowDetailRoute() {
     offs.push(
       client.on('item.state', (frame: ServerFrame) => {
         const p = frame.payload as ItemStatePayload;
+        // Invalidate item.data cache so re-selecting the item fetches fresh data.
+        invalidateItemData(p.itemId);
         setState((prev) => {
           const existing = prev.items.get(p.itemId);
           if (!existing) return prev;

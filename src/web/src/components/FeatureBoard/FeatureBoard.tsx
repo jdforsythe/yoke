@@ -70,6 +70,16 @@ function fuzzyMatch(item: ItemProjection, query: string): boolean {
 const itemDataCache = new Map<string, unknown>();
 const itemDataCacheVersion = new Map<string, number>(); // itemId → stateVersion
 
+/**
+ * Invalidate cached item.data for an item.
+ * Called by WorkflowDetailRoute when an item.state frame arrives,
+ * ensuring a fresh fetch on next selection.
+ */
+export function invalidateItemData(itemId: string): void {
+  itemDataCache.delete(itemId);
+  itemDataCacheVersion.delete(itemId);
+}
+
 // ---------------------------------------------------------------------------
 // FeatureBoard
 // ---------------------------------------------------------------------------
@@ -131,17 +141,19 @@ export function FeatureBoard({
     });
   }, [items, statusFilter, debouncedSearch]);
 
-  // Deep-link scroll on mount.
+  // Deep-link scroll: re-runs when items changes so it works even when the
+  // snapshot (and thus item DOM elements) arrives after the initial mount.
   useEffect(() => {
     if (!deepLinkedItemId) return;
     const el = itemRefs.current.get(deepLinkedItemId);
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      el.setAttribute('data-highlight', 'true');
-      setTimeout(() => el.removeAttribute('data-highlight'), 2000);
-    }
+    if (!el) return; // items not rendered yet; re-runs on next items change
+    el.scrollIntoView({ block: 'center' });
+    el.setAttribute('data-highlight', 'true');
+    const t = setTimeout(() => el.removeAttribute('data-highlight'), 2000);
     onSelectItem(deepLinkedItemId);
-  }, [deepLinkedItemId, onSelectItem]);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkedItemId, items, onSelectItem]); // items triggers re-check after snapshot loads
 
   // Keyboard navigation.
   const handleKeyDown = useCallback(
