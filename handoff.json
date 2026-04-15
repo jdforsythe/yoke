@@ -474,6 +474,33 @@
           "WorkflowDetailRoute sends 'session.started' frames to the render store via the regular dispatch() path (not dispatchTextDelta). If many sessions start in rapid succession, each causes a synchronous state update and re-render. This is acceptable (session.started is infrequent) but should be monitored.",
           "The sw.ts service worker uses 'any' casts throughout because ServiceWorkerGlobalScope types conflict with the DOM lib in the shared tsconfig. The SW logic is simple and the risk is low, but strict typing was sacrificed."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 3,
+        "session_id": "bed3c78c-38da-4e75-a03a-5e33942e7412",
+        "ts": "2026-04-14T19:00:00Z",
+        "note": "Two spec-compliance fixes. (1) ReviewPanel now accepts a `phase: string` prop; WorkflowDetailRoute passes `activeSessionPhase!` when rendering it — phase detection is explicitly type-system–documented and still originates from SessionStartedPayload.phase per spec. (2) FeatureBoard deep-link scroll effect upgraded from useEffect to useLayoutEffect, satisfying the spec's 'layout-effect guard' requirement. tsc --noEmit clean; pnpm build succeeds with zero warnings; 32/32 Playwright e2e tests pass in ~3.7s.",
+        "intended_files": [
+          "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+          "src/web/src/components/ReviewPanel/ReviewPanel.tsx",
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: push notifications are wired (sw.ts + AppShell bell click + SHOW_NOTIFICATION postMessage), but browser Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume in a real browser session.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; item.data detail view silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape is assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (payload shape not fully specified by protocol).",
+          "FeatureBoard item.data module-level cache is cleared per-item on item.state frames but not on workflow navigation; stale data may appear if user navigates away and back without a new item.state frame."
+        ],
+        "known_risks": [
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts (e.g., during HMR) would conflict; second unmount calls reset() and clears first.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow; YokeWsClient command cache (5-min idempotency window) mitigates most cases.",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig."
+        ]
       }
     ]
   }
