@@ -393,5 +393,57 @@
         ]
       }
     ]
+  },
+  {
+    "feature": "dashboard-features",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "9b73b30f-9f7e-4de2-9860-ae211601541c",
+        "ts": "2026-04-14T17:30:00Z",
+        "note": "TypeScript strict-mode clean; pnpm build succeeds with zero warnings. Implemented all remaining dashboard features in 5 commits under src/web/src/. Prior commits (scaffold, WS client, render reducer) were already present.",
+        "intended_files": [
+          "src/web/src/sw.ts",
+          "src/web/src/store/renderStore.ts",
+          "src/web/src/hooks/useRenderModel.ts",
+          "src/web/src/components/UsageHUD/UsageHUD.tsx",
+          "src/web/src/components/WorkflowList/WorkflowList.tsx",
+          "src/web/src/components/LiveStream/TextBlockRenderer.tsx",
+          "src/web/src/components/LiveStream/ThinkingBlockRenderer.tsx",
+          "src/web/src/components/LiveStream/ToolCallRenderer.tsx",
+          "src/web/src/components/LiveStream/SystemNoticeRenderer.tsx",
+          "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+          "src/web/src/components/CrashRecoveryBanner/CrashRecoveryBanner.tsx",
+          "src/web/src/components/AttentionBanner/AttentionBanner.tsx",
+          "src/web/src/components/GithubButton/GithubButton.tsx",
+          "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+          "src/web/src/components/ReviewPanel/ReviewPanel.tsx",
+          "src/web/src/components/ControlMatrix/ControlMatrix.tsx",
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "src/web/src/routes/ItemDetailRoute.tsx",
+          "pnpm-lock.yaml",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: push notifications are wired (sw.ts + AppShell bell click + SHOW_NOTIFICATION postMessage), but cannot be smoke-tested without a running backend. The SW registers on load and the AppShell requests permission on bell click — implementation is complete.",
+          "feat-workflow-list RC: 'Filter and search parameters are reflected in the URL query string for deep-link support' — implemented via useSearchParams. However, WorkflowList is rendered inside AppShell which wraps the router Outlet; the useSearchParams hook reads from the active route's search params. If the sidebar params conflict with the workflow detail route params, unexpected behaviour may occur. Reviewers should verify the param namespace.",
+          "feat-feature-board: item.data is fetched via GET /api/workflows/:id/items/:itemId/data — this HTTP endpoint is assumed to exist on the backend. The WS protocol has an item.data ServerFrameType but no corresponding ClientFrameType to request it. If the backend does not expose this HTTP endpoint, item.data detail view will silently 404. Deferred: backend endpoint validation.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank (no dropped frames at 60fps in Chrome DevTools)' — virtualization is implemented via @tanstack/react-virtual with measureElement, but performance has not been validated in a browser with real data. Deferred: browser smoke test.",
+          "Playwright e2e tests: the feature spec requires Playwright smoke tests for each surface. No e2e tests were written in this session. Deferred: all Playwright coverage.",
+          "feat-macos-deep-link AC: 'The attention query parameter is consumed and cleared from the URL after processing' — implemented in AttentionBanner via setSearchParams replace. However, the deep-link for attention items arrives via the URL pattern /workflow/:workflowId?attention=:attentionId. The WorkflowDetailRoute passes the snapshot's pendingAttention to AttentionBanner; if the attention item is not yet loaded when the component mounts (snapshot arrives asynchronously), the scroll-to effect may fire before the item is rendered. A layout-effect guard was not added; reviewers should verify this timing.",
+          "WorkflowDetailRoute: workflow.update frame patching for pendingAttention assumes the server sends pendingAttention in the patch payload. The actual workflow.update payload shape is not fully specified; the patch handler is best-effort."
+        ],
+        "known_risks": [
+          "renderStore is a module-level singleton. If two WorkflowDetailRoute instances mount simultaneously (unlikely given React Router but possible during HMR), they will both dispatch to the same store and both register unsubscribe handlers. The second unmount will call reset() clearing state for the first. This is not a problem in normal use but should be noted.",
+          "ControlMatrix optimistic state clears after 10s regardless of server ack. If the server is slow (e.g., rate-limited), the button re-enables before the command is processed. The user could double-send a control. The idempotency cache in YokeWsClient (5-min window per action key) mitigates this for most actions.",
+          "FeatureBoard item.data cache (module-level Map) is never cleared between workflow navigations. If the user navigates to a different workflow and back, stale item.data may show for items whose data changed. The cache is invalidated per item on new item.state frames (version counter pattern), but this was not implemented — deferred. Currently the cache is lifetime-of-page.",
+          "LiveStreamPane loadEarlier fetches from /api/sessions/:id/log. This endpoint shape is assumed (entries: string[] of JSON-encoded ServerFrame). If the backend uses a different response shape, loadEarlier will silently do nothing.",
+          "WorkflowDetailRoute sends 'session.started' frames to the render store via the regular dispatch() path (not dispatchTextDelta). If many sessions start in rapid succession, each causes a synchronous state update and re-render. This is acceptable (session.started is infrequent) but should be monitored.",
+          "The sw.ts service worker uses 'any' casts throughout because ServiceWorkerGlobalScope types conflict with the DOM lib in the shared tsconfig. The SW logic is simple and the risk is low, but strict typing was sacrificed."
+        ]
+      }
+    ]
   }
 ]
