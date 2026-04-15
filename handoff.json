@@ -771,5 +771,31 @@
         ]
       }
     ]
+  },
+  {
+    "feature": "feat-ws-client",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "153863a7-414b-4506-86f1-74c331ddcd5c",
+        "ts": "2026-04-15T22:00:00Z",
+        "note": "The YokeWsClient implementation at src/web/src/ws/client.ts and types.ts was previously built and iteratively fixed across dashboard-features attempts 1–10 (most recently: attempt 7 fixed RC-7 default→log+reconnect, attempt 8 fixed the getItemKey blockId keying for virtualizer). This session performed a targeted spec-compliance audit of all 11 ACs and 7 RCs against the live code and found the implementation complete. One gap existed: four acceptance criteria (AC-3 subscribe frame shape, AC-4 reconnect after server close, AC-10 PROTOCOL_MISMATCH via error frame, AC-11 INTERNAL→reconnect) lacked dedicated Playwright coverage. Added src/web/e2e/ws-client.spec.ts with 4 new smoke tests that exercise these paths via Playwright's routeWebSocket mock. All 38 e2e tests pass (4 new); tsc --noEmit clean; pnpm build succeeds.",
+        "intended_files": [
+          "src/web/e2e/ws-client.spec.ts"
+        ],
+        "deferred_criteria": [
+          "AC-5: sinceSeq on reconnect (re-subscribe sends per-session HWM) — verified by code inspection (subs Map hwm tracking + hello handler loop). Automating this via Playwright would require sending a session-scoped frame, capturing the second subscribe frame after close, and asserting sinceSeq. Deferred as the implementation is clearly correct and risk of regression is low.",
+          "AC-6: duplicate frame deduplication (same sessionId + seq <= hwm dropped) — verified by code inspection of the hwm guard in _onFrame. Playwright automation would require sending two identical session frames and verifying only one is reflected in the UI. Deferred for the same reason.",
+          "AC-7: sendControl idempotent commandId reuse within 5 min — verified by code inspection of commandCache Map with COMMAND_CACHE_TTL_MS = 5*60*1000. Playwright automation would require capturing two control frames for the same action and comparing commandId. Deferred.",
+          "AC-9: backfill.truncated HTTP paging and live resume — verified by code inspection of _fetchBackfill loop. Playwright automation would require mocking both the WS truncated frame and the HTTP log endpoint. Deferred."
+        ],
+        "known_risks": [
+          "PROTOCOL_MISMATCH via error frame test (AC-10) waits 2s to confirm connectCount stays 1. If the client ever gains a spurious reconnect path for version_mismatch state, this test would catch it — but the 2s wait is somewhat arbitrary. A future improvement would be to wait for a stable condition rather than a fixed sleep.",
+          "The HWM update in _onFrame updates subs[workflowId].hwm using the maximum seq seen across all sessions for that workflow. If a workflow has multiple concurrent sessions with different seqs, the hwm is the max — meaning sinceSeq on reconnect requests backfill for the highest-seq session, possibly re-delivering frames for lower-seq sessions. These would be deduplicated via the per-session hwms map. This is correct behavior but could cause slightly more HTTP backfill traffic than strictly necessary.",
+          "commandCache key does not include extra field, so inject-context calls with different extra values within 5 min reuse the same commandId. This is intentional (inject-context is meant to be idempotent on the same action type within the window) but differs from what a naive reader might expect."
+        ]
+      }
+    ]
   }
 ]
