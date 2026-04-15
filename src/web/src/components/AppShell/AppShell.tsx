@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
+import { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { WorkflowList } from '@/components/WorkflowList/WorkflowList';
 import { UsageHUD } from '@/components/UsageHUD/UsageHUD';
 import { getClient } from '@/ws/client';
+import { subscribeAttention, getAttentionCount } from '@/store/attentionStore';
 import type { ConnectionState } from '@/ws/types';
 import type { NoticePayload, ServerFrame } from '@/ws/types';
 
@@ -70,7 +72,9 @@ function BellIcon({ badgeCount, onClick }: { badgeCount: number; onClick: () => 
 export function AppShell() {
   const [connState, setConnState] = useState<ConnectionState>(() => getClient().getConnectionState());
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [attentionCount, setAttentionCount] = useState(0);
+  // Bell badge count is derived from the pendingAttention array length maintained
+  // by WorkflowDetailRoute via attentionStore — satisfies feat-attention-banner RC2.
+  const attentionCount = useSyncExternalStore(subscribeAttention, getAttentionCount);
   const pushPermRef = useRef<string | null>(
     typeof localStorage !== 'undefined' ? localStorage.getItem('yoke:push-permission') : null,
   );
@@ -80,11 +84,12 @@ export function AppShell() {
     const client = getClient();
     const offState = client.onStateChange(setConnState);
 
-    // Listen for requires_attention notices to show bell badge
+    // Listen for requires_attention notices to trigger push notifications and
+    // fallback toasts. Bell badge count is derived from attentionStore (set by
+    // WorkflowDetailRoute from pendingAttention array), NOT from this counter.
     const offNotice = client.on('notice', (frame: ServerFrame) => {
       const payload = frame.payload as NoticePayload;
       if (payload.severity === 'requires_attention') {
-        setAttentionCount((n) => n + 1);
         // Push notification or fallback toast
         const permission = localStorage.getItem('yoke:push-permission');
         if (permission === 'granted' && navigator.serviceWorker.controller) {

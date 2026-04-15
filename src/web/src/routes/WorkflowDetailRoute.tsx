@@ -15,6 +15,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
+import { setAttentionCount } from '@/store/attentionStore';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
@@ -83,6 +84,8 @@ export function WorkflowDetailRoute() {
           p.activeSessions.length > 0
             ? p.activeSessions[p.activeSessions.length - 1]!
             : null;
+        // Sync attention count from snapshot so bell badge reflects array length.
+        setAttentionCount(p.pendingAttention.length);
         setState({
           snapshot: p,
           items,
@@ -100,6 +103,10 @@ export function WorkflowDetailRoute() {
           githubState?: WorkflowSnapshotPayload['workflow']['githubState'];
           pendingAttention?: WorkflowSnapshotPayload['pendingAttention'];
         };
+        // Sync attention count when the server clears or adds attention items.
+        if (patch.pendingAttention !== undefined) {
+          setAttentionCount(patch.pendingAttention.length);
+        }
         setState((prev) => {
           if (!prev.snapshot) return prev;
           return {
@@ -182,6 +189,8 @@ export function WorkflowDetailRoute() {
       // Clear item.data cache on navigation so stale data never shows if the
       // user returns to this workflow before any item.state frames arrive.
       clearItemDataCache();
+      // Reset attention count so the bell badge returns to 0 after navigation.
+      setAttentionCount(0);
     };
   }, [workflowId]);
 

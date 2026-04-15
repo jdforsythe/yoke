@@ -31,15 +31,16 @@ const scrollPositionCache = new Map<string, number>();
 
 // ---------------------------------------------------------------------------
 // Block router (memoized)
+//
+// truncated_sentinel is handled inline by LiveStreamPane (not here) so that
+// BlockRouter never receives an unstable `onLoadEarlier` function prop.
+// Passing a fresh function ref each render would defeat React.memo — the
+// renderer would re-render on every parent re-render even when block content
+// is unchanged.  Keeping BlockRouter free of the sentinel case means its
+// props are stable whenever its block hasn't changed.
 // ---------------------------------------------------------------------------
 
-const BlockRouter = memo(function BlockRouter({
-  block,
-  onLoadEarlier,
-}: {
-  block: RenderBlock;
-  onLoadEarlier?: () => void;
-}) {
+const BlockRouter = memo(function BlockRouter({ block }: { block: RenderBlock }) {
   switch (block.type) {
     case 'text':
       return <TextBlockRenderer block={block} />;
@@ -49,18 +50,8 @@ const BlockRouter = memo(function BlockRouter({
       return <ThinkingBlockRenderer block={block} />;
     case 'system_notice':
       return <SystemNoticeRenderer block={block} />;
-    case 'truncated_sentinel':
-      return (
-        <div className="px-4 py-3 flex justify-center">
-          <button
-            onClick={onLoadEarlier}
-            className="text-xs text-blue-400 hover:text-blue-300 underline"
-          >
-            Load earlier messages…
-          </button>
-        </div>
-      );
     default:
+      // truncated_sentinel is rendered inline by the parent virtualizer loop.
       return null;
   }
 });
@@ -200,7 +191,20 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
                   transform: `translateY(${vItem.start}px)`,
                 }}
               >
-                <BlockRouter block={block} onLoadEarlier={loadEarlier} />
+                {block.type === 'truncated_sentinel' ? (
+                  // Sentinel rendered inline so BlockRouter never receives an
+                  // unstable onLoadEarlier prop (which would defeat React.memo).
+                  <div className="px-4 py-3 flex justify-center">
+                    <button
+                      onClick={loadEarlier}
+                      className="text-xs text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Load earlier messages…
+                    </button>
+                  </div>
+                ) : (
+                  <BlockRouter block={block} />
+                )}
               </div>
             );
           })}

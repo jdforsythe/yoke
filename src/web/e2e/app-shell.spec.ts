@@ -5,10 +5,11 @@
  *  - Brand name, sidebar, bell icon render
  *  - Connection indicator transitions from Connecting → Connected on hello
  *  - Version mismatch surfaces when protocolVersion !== 1
+ *  - Bell badge count is derived from pendingAttention array length (RC2)
  */
 
 import { test, expect } from '@playwright/test';
-import { setupWs, mockWorkflowsApi, helloFrame } from './helpers';
+import { setupWs, mockWorkflowsApi, snapshotFrame, helloFrame, WF_ID } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   // Stub the REST API so WorkflowList doesn't show fetch errors.
@@ -56,4 +57,42 @@ test('WorkflowListRoute renders empty-state placeholder in main area', async ({ 
   await page.goto('/');
 
   await expect(page.getByText('Select a workflow to get started')).toBeVisible();
+});
+
+test('bell badge shows count derived from pendingAttention array length in snapshot', async ({ page }) => {
+  // feat-attention-banner RC2: badge must be derived from array length, not a separate counter.
+  await mockWorkflowsApi(page, [{ id: WF_ID, name: 'Test Workflow', status: 'in_progress' }]);
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({
+      pendingAttention: [
+        { id: 1, kind: 'approval', payload: null, createdAt: new Date().toISOString() },
+        { id: 2, kind: 'review', payload: null, createdAt: new Date().toISOString() },
+      ],
+    }));
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  // Badge on the bell button must show "2" (the pendingAttention array length).
+  const bell = page.getByRole('button', { name: 'Notifications' });
+  await expect(bell.locator('span').filter({ hasText: '2' })).toBeVisible();
+});
+
+test('bell badge clears when navigating away from workflow', async ({ page }) => {
+  await mockWorkflowsApi(page, [{ id: WF_ID, name: 'Test Workflow', status: 'in_progress' }]);
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({
+      pendingAttention: [
+        { id: 1, kind: 'approval', payload: null, createdAt: new Date().toISOString() },
+      ],
+    }));
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  // Badge shows while on the workflow page.
+  const bell = page.getByRole('button', { name: 'Notifications' });
+  await expect(bell.locator('span').filter({ hasText: '1' })).toBeVisible();
+
+  // Navigate back to the list — WorkflowDetailRoute unmounts and resets count to 0.
+  await page.getByRole('button', { name: /Back to workflow list/ }).click();
+  await expect(bell.locator('span')).not.toBeVisible();
 });
