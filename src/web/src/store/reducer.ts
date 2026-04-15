@@ -6,16 +6,21 @@
  *
  * Block types produced: TextBlock, ToolCallBlock, ThinkingBlock,
  * SystemNoticeBlock (session events, prepost, stream.system_notice),
- * TruncatedSentinel (eviction marker).
+ * TruncatedSentinel (eviction marker prepended by getSessionBlocks when
+ * _evictedCount > 0).
  *
  * Invariants:
- * - 10,000 block cap per session: oldest evicted, sentinel inserted at head.
- * - Eviction is O(1): single array shift + conditional unshift.
+ * - 10,000 block cap per session. Eviction is O(1) — BlockRing advances a
+ *   head pointer; NO Array.shift() or physical element moves.
+ * - _blockMap maps blockId → physical ring index for O(1) lookup (TextBlock
+ *   delta accumulation, ToolCall result matching keyed on toolUseId since
+ *   ToolCallBlock.blockId === toolUseId).
+ * - Stale _blockMap entries (evicted slots) are detected via ring.isLive().
  * - session.ended freezes the session; no further block mutations.
  * - Orphan tool_result or prepost.command.ended sets needsSnapshot.
- * - ToolCall lookup uses toolUseId, not array index (O(n) scan but bounded by cap).
  */
 
+import { BlockRing } from './blockRing';
 import type {
   RenderModelState,
   SessionRenderState,
@@ -43,60 +48,113 @@ import type {
   PrepostCommandEnded,
 } from '../ws/types';
 
-const MAX_BLOCKS = 10_000;
+export const MAX_BLOCKS = 10_000;
 
-let _sentinelSeq = 0;
-function newSentinelId(sessionId: string): string {
-  return `sentinel-${sessionId}-${_sentinelSeq++}`;
+// ---------------------------------------------------------------------------
+// Sentinel factory (stable blockId per session)
+// ---------------------------------------------------------------------------
+
+export function createSentinel(sessionId: string): TruncatedSentinel {
+  return {
+    type: 'truncated_sentinel',
+    blockId: `sentinel-${sessionId}`,
+    sessionId,
+    oldestEvictedSeq: 0,
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Session factory / helpers
+// ---------------------------------------------------------------------------
 
 export function createInitialState(): RenderModelState {
   return { sessions: new Map() };
 }
 
-// ---------------------------------------------------------------------------
-// Helpers for immutable session mutation
-// ---------------------------------------------------------------------------
-
-function getSession(state: RenderModelState, sessionId: string): SessionRenderState | undefined {
-  return state.sessions.get(sessionId);
-}
-
 function emptySession(sessionId: string): SessionRenderState {
   return {
     sessionId,
-    blocks: [],
+    _ring: new BlockRing(MAX_BLOCKS),
+    _blockMap: new Map(),
+    _evictedCount: 0,
     frozen: false,
     needsSnapshot: false,
     usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
   };
 }
 
-function withBlocks(session: SessionRenderState, blocks: RenderBlock[]): SessionRenderState {
-  return { ...session, blocks };
-}
-
-/** Push block onto mutable blocks array, enforcing MAX_BLOCKS cap. */
-function pushBlock(blocks: RenderBlock[], block: RenderBlock, sessionId: string): void {
-  blocks.push(block);
-  if (blocks.length > MAX_BLOCKS) {
-    blocks.shift();
-    if (blocks[0]?.type !== 'truncated_sentinel') {
-      const sentinel: TruncatedSentinel = {
-        type: 'truncated_sentinel',
-        blockId: newSentinelId(sessionId),
-        sessionId,
-        oldestEvictedSeq: 0,
-      };
-      blocks.unshift(sentinel);
-    }
-  }
+function getSession(state: RenderModelState, sessionId: string): SessionRenderState | undefined {
+  return state.sessions.get(sessionId);
 }
 
 function setSession(state: RenderModelState, session: SessionRenderState): RenderModelState {
   const sessions = new Map(state.sessions);
   sessions.set(session.sessionId, session);
   return { sessions };
+}
+
+/**
+ * Push a block onto the session's ring.
+ *
+ * Clones the ring (O(MAX_BLOCKS)) and the blockMap, pushes the new block
+ * (O(1) ring operation), and registers it in the blockMap. Returns the
+ * updated session.
+ *
+ * Eviction is O(1) — the ring advances its head pointer; no physical array
+ * element is moved. _evictedCount is incremented whenever a block is lost.
+ */
+function pushBlock(session: SessionRenderState, block: RenderBlock): SessionRenderState {
+  const ring = session._ring.clone();
+  const { physIdx, evicted } = ring.push(block);
+
+  const blockMap = new Map(session._blockMap);
+  // Register the new block's physical index for O(1) future lookups.
+  blockMap.set(block.blockId, physIdx);
+
+  // If a block was evicted, its blockMap entry is now stale — remove it.
+  if (evicted !== null) {
+    blockMap.delete(evicted.blockId);
+  }
+
+  return {
+    ...session,
+    _ring: ring,
+    _blockMap: blockMap,
+    _evictedCount: evicted !== null ? session._evictedCount + 1 : session._evictedCount,
+  };
+}
+
+/**
+ * Look up a block by blockId. Returns the physical index and current block,
+ * or null if the block has been evicted or never existed.
+ *
+ * O(1) — uses the _blockMap, not a linear scan.
+ */
+function findBlock(
+  session: SessionRenderState,
+  blockId: string,
+): { physIdx: number; block: RenderBlock } | null {
+  const physIdx = session._blockMap.get(blockId);
+  if (physIdx === undefined) return null;
+  if (!session._ring.isLive(physIdx)) return null;
+  const block = session._ring.getPhys(physIdx);
+  if (block === null) return null;
+  // Validate that the slot hasn't been recycled for a different block.
+  if (block.blockId !== blockId) return null;
+  return { physIdx, block };
+}
+
+/**
+ * Update a block in-place (by physical index) after cloning the ring.
+ */
+function updateBlock(
+  session: SessionRenderState,
+  physIdx: number,
+  updated: RenderBlock,
+): SessionRenderState {
+  const ring = session._ring.clone();
+  ring.setPhys(physIdx, updated);
+  return { ...session, _ring: ring };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +169,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
     case 'session.started': {
       const p = frame.payload as SessionStartedPayload;
       const sid = p.sessionId;
-      const blocks: RenderBlock[] = [];
       const notice: SystemNoticeBlock = {
         type: 'system_notice',
         blockId: `session-started-${sid}`,
@@ -120,14 +177,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         source: 'session',
         message: `Session started — phase: ${p.phase}, attempt: ${p.attempt}`,
       };
-      blocks.push(notice);
-      const session: SessionRenderState = {
-        sessionId: sid,
-        blocks,
-        frozen: false,
-        needsSnapshot: false,
-        usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-      };
+      const session = pushBlock(emptySession(sid), notice);
       return setSession(state, session);
     }
 
@@ -136,7 +186,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const p = frame.payload as SessionEndedPayload;
       const existing = getSession(state, p.sessionId);
       if (!existing) return state;
-      const blocks = [...existing.blocks];
       const notice: SystemNoticeBlock = {
         type: 'system_notice',
         blockId: `session-ended-${p.sessionId}`,
@@ -145,8 +194,8 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         source: 'session',
         message: `Session ended — reason: ${p.reason}, exit: ${p.exitCode ?? 'null'}`,
       };
-      blocks.push(notice);
-      return setSession(state, { ...existing, blocks, frozen: true });
+      const updated = pushBlock(existing, notice);
+      return setSession(state, { ...updated, frozen: true });
     }
 
     // -----------------------------------------------------------------------
@@ -156,12 +205,16 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId) ?? emptySession(sessionId);
       if (session.frozen) return state;
 
-      const blocks = [...session.blocks];
-      const idx = blocks.findIndex((b) => b.type === 'text' && b.blockId === p.blockId);
-      if (idx >= 0) {
-        const existing = blocks[idx] as TextBlock;
+      const found = findBlock(session, p.blockId);
+      if (found) {
+        const existing = found.block as TextBlock;
         if (existing.frozen) return state; // drop delta after final
-        blocks[idx] = { ...existing, text: existing.text + p.textDelta, frozen: p.final ?? false };
+        const updated: TextBlock = {
+          ...existing,
+          text: existing.text + p.textDelta,
+          frozen: p.final ?? false,
+        };
+        return setSession(state, updateBlock(session, found.physIdx, updated));
       } else {
         const block: TextBlock = {
           type: 'text',
@@ -170,9 +223,8 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
           text: p.textDelta,
           frozen: p.final ?? false,
         };
-        pushBlock(blocks, block, sessionId);
+        return setSession(state, pushBlock(session, block));
       }
-      return setSession(state, withBlocks(session, blocks));
     }
 
     // -----------------------------------------------------------------------
@@ -182,12 +234,16 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId) ?? emptySession(sessionId);
       if (session.frozen) return state;
 
-      const blocks = [...session.blocks];
-      const idx = blocks.findIndex((b) => b.type === 'thinking' && b.blockId === p.blockId);
-      if (idx >= 0) {
-        const existing = blocks[idx] as ThinkingBlock;
+      const found = findBlock(session, p.blockId);
+      if (found) {
+        const existing = found.block as ThinkingBlock;
         if (existing.frozen) return state;
-        blocks[idx] = { ...existing, text: existing.text + p.textDelta, frozen: p.final ?? false };
+        const updated: ThinkingBlock = {
+          ...existing,
+          text: existing.text + p.textDelta,
+          frozen: p.final ?? false,
+        };
+        return setSession(state, updateBlock(session, found.physIdx, updated));
       } else {
         const block: ThinkingBlock = {
           type: 'thinking',
@@ -197,9 +253,8 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
           frozen: p.final ?? false,
           collapsed: true,
         };
-        pushBlock(blocks, block, sessionId);
+        return setSession(state, pushBlock(session, block));
       }
-      return setSession(state, withBlocks(session, blocks));
     }
 
     // -----------------------------------------------------------------------
@@ -209,9 +264,9 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId) ?? emptySession(sessionId);
       if (session.frozen) return state;
 
-      const blocks = [...session.blocks];
       const block: ToolCallBlock = {
         type: 'tool_call',
+        // blockId === toolUseId — required for O(1) Map lookup in tool_result.
         blockId: p.toolUseId,
         sessionId,
         toolUseId: p.toolUseId,
@@ -219,8 +274,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         input: p.input,
         status: p.status,
       };
-      pushBlock(blocks, block, sessionId);
-      return setSession(state, withBlocks(session, blocks));
+      return setSession(state, pushBlock(session, block));
     }
 
     // -----------------------------------------------------------------------
@@ -230,16 +284,14 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId);
       if (!session || session.frozen) return state;
 
-      const blocks = [...session.blocks];
-      const idx = blocks.findIndex(
-        (b) => b.type === 'tool_call' && (b as ToolCallBlock).toolUseId === p.toolUseId,
-      );
-      if (idx >= 0) {
-        const existing = blocks[idx] as ToolCallBlock;
-        blocks[idx] = { ...existing, status: p.status, output: p.output };
-        return setSession(state, withBlocks(session, blocks));
+      // O(1) lookup via _blockMap (toolUseId === blockId for ToolCallBlock).
+      const found = findBlock(session, p.toolUseId);
+      if (found) {
+        const existing = found.block as ToolCallBlock;
+        const updated: ToolCallBlock = { ...existing, status: p.status, output: p.output };
+        return setSession(state, updateBlock(session, found.physIdx, updated));
       } else {
-        // Orphan tool_result — set needsSnapshot
+        // Orphan tool_result — set needsSnapshot.
         return setSession(state, { ...session, needsSnapshot: true });
       }
     }
@@ -268,7 +320,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sid) ?? emptySession(sid);
       if (session.frozen) return state;
 
-      const blocks = [...session.blocks];
       const block: SystemNoticeBlock = {
         type: 'system_notice',
         blockId: `notice-${sid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -278,20 +329,17 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         message: p.message,
         extra: p.extra,
       };
-      pushBlock(blocks, block, sid);
-      return setSession(state, withBlocks(session, blocks));
+      return setSession(state, pushBlock(session, block));
     }
 
     // -----------------------------------------------------------------------
     case 'stage.started': {
-      // stage.started has no sessionId — we synthesize a global notice.
-      // Since there's no target session, we record it on all active sessions.
+      // stage.started has no sessionId — broadcast to all active sessions.
       const p = frame.payload as StageStartedPayload;
       const msg = `Stage started: ${p.stageId} (${p.run}${p.itemCount !== undefined ? `, ${p.itemCount} items` : ''})`;
       let next = state;
       for (const [sid, session] of state.sessions) {
         if (session.frozen) continue;
-        const blocks = [...session.blocks];
         const block: SystemNoticeBlock = {
           type: 'system_notice',
           blockId: `stage-started-${p.stageId}-${sid}`,
@@ -300,8 +348,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
           source: 'harness',
           message: msg,
         };
-        pushBlock(blocks, block, sid);
-        next = setSession(next, withBlocks(session, blocks));
+        next = setSession(next, pushBlock(session, block));
       }
       return next;
     }
@@ -316,7 +363,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       let next = state;
       for (const [sid, session] of state.sessions) {
         if (session.frozen) continue;
-        const blocks = [...session.blocks];
         const block: SystemNoticeBlock = {
           type: 'system_notice',
           blockId: `stage-complete-${p.stageId}-${sid}`,
@@ -325,8 +371,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
           source: 'harness',
           message: msg,
         };
-        pushBlock(blocks, block, sid);
-        next = setSession(next, withBlocks(session, blocks));
+        next = setSession(next, pushBlock(session, block));
       }
       return next;
     }
@@ -338,7 +383,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId) ?? emptySession(sessionId);
       if (session.frozen) return state;
 
-      const blocks = [...session.blocks];
       const block: SystemNoticeBlock = {
         type: 'system_notice',
         blockId: `prepost-${p.runId}`,
@@ -350,8 +394,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         outputChunks: [],
         prepostFinalized: false,
       };
-      pushBlock(blocks, block, sessionId);
-      return setSession(state, withBlocks(session, blocks));
+      return setSession(state, pushBlock(session, block));
     }
 
     // -----------------------------------------------------------------------
@@ -361,18 +404,15 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId);
       if (!session || session.frozen) return state;
 
-      const blocks = [...session.blocks];
-      const idx = blocks.findIndex(
-        (b) => b.type === 'system_notice' && (b as SystemNoticeBlock).runId === p.runId,
-      );
-      if (idx < 0) return state; // orphan output — drop silently
+      const found = findBlock(session, `prepost-${p.runId}`);
+      if (!found) return state; // orphan output — drop silently
 
-      const existing = blocks[idx] as SystemNoticeBlock;
-      blocks[idx] = {
+      const existing = found.block as SystemNoticeBlock;
+      const updated: SystemNoticeBlock = {
         ...existing,
         outputChunks: [...(existing.outputChunks ?? []), { stream: p.stream, chunk: p.chunk }],
       };
-      return setSession(state, withBlocks(session, blocks));
+      return setSession(state, updateBlock(session, found.physIdx, updated));
     }
 
     // -----------------------------------------------------------------------
@@ -382,16 +422,13 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       const session = getSession(state, sessionId);
       if (!session || session.frozen) return state;
 
-      const blocks = [...session.blocks];
-      const idx = blocks.findIndex(
-        (b) => b.type === 'system_notice' && (b as SystemNoticeBlock).runId === p.runId,
-      );
-      if (idx < 0) {
-        // Orphan ended — set needsSnapshot
+      const found = findBlock(session, `prepost-${p.runId}`);
+      if (!found) {
+        // Orphan ended — set needsSnapshot.
         return setSession(state, { ...session, needsSnapshot: true });
       }
-      const existing = blocks[idx] as SystemNoticeBlock;
-      blocks[idx] = {
+      const existing = found.block as SystemNoticeBlock;
+      const updated: SystemNoticeBlock = {
         ...existing,
         exitCode: p.exitCode,
         action: p.action,
@@ -399,7 +436,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         severity: p.exitCode === 0 ? 'info' : 'warn',
         message: existing.message + ` — exit ${p.exitCode}`,
       };
-      return setSession(state, withBlocks(session, blocks));
+      return setSession(state, updateBlock(session, found.physIdx, updated));
     }
 
     default:
@@ -411,8 +448,22 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
 // Accessors
 // ---------------------------------------------------------------------------
 
+/**
+ * Materialise the live blocks for a session.
+ *
+ * If blocks have been evicted (_evictedCount > 0), a TruncatedSentinel is
+ * prepended to signal that older content is available via the HTTP log API.
+ *
+ * O(n) — only call at render time.
+ */
 export function getSessionBlocks(state: RenderModelState, sessionId: string): readonly RenderBlock[] {
-  return state.sessions.get(sessionId)?.blocks ?? [];
+  const session = state.sessions.get(sessionId);
+  if (!session) return [];
+  const blocks = session._ring.toArray();
+  if (session._evictedCount > 0 && blocks[0]?.type !== 'truncated_sentinel') {
+    return [createSentinel(session.sessionId), ...blocks];
+  }
+  return blocks;
 }
 
 export function getSessionUsage(state: RenderModelState, sessionId: string) {

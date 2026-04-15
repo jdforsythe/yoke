@@ -5,6 +5,8 @@
  * They are NOT the wire protocol types — those live in ws/types.ts.
  */
 
+import type { BlockRing } from './blockRing';
+
 export interface TextBlock {
   readonly type: 'text';
   readonly blockId: string;
@@ -80,7 +82,31 @@ export interface SessionUsage {
 
 export interface SessionRenderState {
   readonly sessionId: string;
-  readonly blocks: readonly RenderBlock[];
+
+  /**
+   * Ring buffer of live blocks.
+   * O(1) amortized push/eviction (no Array.shift).
+   * Materialise for rendering via getSessionBlocks().
+   */
+  readonly _ring: BlockRing;
+
+  /**
+   * Maps blockId (and toolUseId, since ToolCallBlock.blockId === toolUseId)
+   * → physical index in _ring's backing array.
+   * Provides O(1) lookup for TextBlock delta accumulation and ToolCall result
+   * matching without linear scans.
+   *
+   * Entries for evicted blocks become stale. Callers must validate with
+   * _ring.isLive(physIdx) before trusting an entry.
+   */
+  readonly _blockMap: ReadonlyMap<string, number>;
+
+  /**
+   * Total number of blocks evicted so far (for sentinel detection).
+   * When > 0, getSessionBlocks() prepends a TruncatedSentinel.
+   */
+  readonly _evictedCount: number;
+
   readonly frozen: boolean;
   /** True when an orphan tool_result or prepost.ended arrived without a prior start */
   readonly needsSnapshot: boolean;

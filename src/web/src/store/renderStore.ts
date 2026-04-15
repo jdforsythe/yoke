@@ -10,6 +10,13 @@
  *   in a single requestAnimationFrame callback (~16 ms intervals) to prevent
  *   per-character re-renders. All other frames dispatch immediately.
  *
+ * Usage snapshot:
+ *   A separate _usageSnapshot object is maintained that only changes its
+ *   reference when token counts actually change. Components that only care
+ *   about usage (e.g. UsageHUD) can subscribe with getUsageSnapshot as the
+ *   selector so they do NOT re-render on non-usage frames (text deltas, tool
+ *   calls, etc.).
+ *
  * Reset semantics:
  *   Navigating away from a workflow calls reset(), which clears all session
  *   state and cancels any pending rAF flush.
@@ -22,7 +29,7 @@ import {
   getSessionBlocks,
   getSessionUsage,
 } from './reducer';
-import type { RenderModelState } from './types';
+import type { RenderModelState, SessionUsage } from './types';
 import type { ServerFrame } from '@/ws/types';
 
 // ---------------------------------------------------------------------------
@@ -36,12 +43,35 @@ const _listeners = new Set<() => void>();
 const _textQueue: ServerFrame[] = [];
 let _rafHandle: number | null = null;
 
+// Stable usage snapshot — reference only changes when totals change.
+// useSyncExternalStore deduplicates via Object.is, so components that
+// subscribe with getUsageSnapshot will NOT re-render on non-usage frames.
+let _usageSnapshot: SessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+};
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 function _notify(): void {
   for (const l of _listeners) l();
+}
+
+/** Update _usageSnapshot only when totals have actually changed. */
+function _updateUsageSnapshot(): void {
+  const u = getTotalUsage(_state);
+  if (
+    u.inputTokens !== _usageSnapshot.inputTokens ||
+    u.outputTokens !== _usageSnapshot.outputTokens ||
+    u.cacheCreationInputTokens !== _usageSnapshot.cacheCreationInputTokens ||
+    u.cacheReadInputTokens !== _usageSnapshot.cacheReadInputTokens
+  ) {
+    _usageSnapshot = u;
+  }
 }
 
 function _flushTextQueue(): void {
@@ -51,6 +81,7 @@ function _flushTextQueue(): void {
     _state = applyFrame(_state, f);
   }
   _textQueue.length = 0;
+  _updateUsageSnapshot();
   _notify();
 }
 
@@ -64,11 +95,24 @@ export function getSnapshot(): RenderModelState {
 }
 
 /**
+ * Stable usage total snapshot.
+ *
+ * Returns the SAME object reference between frames unless token counts
+ * change. Components that call useSyncExternalStore(subscribe, getUsageSnapshot)
+ * will only re-render when usage actually changes — not on every text delta,
+ * tool call, or other non-usage frame.
+ */
+export function getUsageSnapshot(): SessionUsage {
+  return _usageSnapshot;
+}
+
+/**
  * Dispatch a non-text frame immediately.
  * Use this for session.started, session.ended, stream.tool_use, etc.
  */
 export function dispatch(frame: ServerFrame): void {
   _state = applyFrame(_state, frame);
+  _updateUsageSnapshot();
   _notify();
 }
 
@@ -94,6 +138,7 @@ export function reset(): void {
   }
   _textQueue.length = 0;
   _state = createInitialState();
+  _usageSnapshot = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   _notify();
 }
 

@@ -136,10 +136,8 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
   async function loadEarlier() {
     // Fetch from HTTP session log store and prepend blocks.
     // The store will handle prepend; the virtualizer will re-measure.
-    const session = model.sessions.get(sessionId);
-    if (!session) return;
-    const sentinel = session.blocks[0];
-    if (!sentinel || sentinel.type !== 'truncated_sentinel') return;
+    if (!blocks[0] || blocks[0].type !== 'truncated_sentinel') return;
+    const sentinel = blocks[0];
     try {
       const res = await fetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/log?workflowId=${encodeURIComponent(workflowId)}&before=${sentinel.oldestEvictedSeq}&limit=100`,

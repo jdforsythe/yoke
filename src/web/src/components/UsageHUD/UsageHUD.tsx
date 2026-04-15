@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { useRenderModel } from '@/hooks/useRenderModel';
-import { getTotalUsage } from '@/store/renderStore';
+import { createPortal } from 'react-dom';
+import { useSyncExternalStore } from 'react';
+import { subscribe, getUsageSnapshot, getSnapshot } from '@/store/renderStore';
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -32,17 +33,29 @@ function TokenRow({ label, value }: { label: string; value: number }) {
 /**
  * Compact token-usage display in the AppShell top bar.
  *
- * Hidden when no usage data is available (no active workflow).
- * Clicking expands a dropdown with per-session breakdown.
- * Positioned with a portal anchor to avoid overflow clipping from the top bar.
+ * Subscribes with getUsageSnapshot so it ONLY re-renders when token counts
+ * change — not on every text delta, tool call, or other non-usage frame.
+ *
+ * The dropdown is rendered via a React portal (document.body) to avoid
+ * overflow clipping from the top bar's layout context.
  */
 export function UsageHUD() {
-  const model = useRenderModel();
-  const total = getTotalUsage(model);
+  // getUsageSnapshot returns a stable reference unless totals change,
+  // so useSyncExternalStore will only trigger a re-render on usage frames.
+  const total = useSyncExternalStore(subscribe, getUsageSnapshot);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number } | null>(null);
 
   const hasData = total.inputTokens + total.outputTokens > 0;
+
+  function handleOpen() {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+    }
+    setOpen((o) => !o);
+  }
 
   // Close dropdown on outside click or Escape.
   useEffect(() => {
@@ -65,10 +78,14 @@ export function UsageHUD() {
 
   if (!hasData) return null;
 
+  // Per-session breakdown is derived from the full render model (read-only,
+  // no extra subscription needed — only accessed when the dropdown is open).
+  const model = getSnapshot();
+
   return (
     <div className="relative" ref={containerRef}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={handleOpen}
         className="flex items-center gap-2 px-2 py-1 rounded text-xs text-gray-300 hover:bg-gray-700 font-mono"
         aria-label="Token usage — click to expand"
         aria-expanded={open}
@@ -86,8 +103,15 @@ export function UsageHUD() {
         )}
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-1 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 p-3">
+      {open && dropdownPos !== null && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: dropdownPos.top,
+            right: dropdownPos.right,
+          }}
+          className="w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-[9999] p-3"
+        >
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
             Workflow Tokens
           </h3>
@@ -119,7 +143,8 @@ export function UsageHUD() {
               </div>
             </>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
