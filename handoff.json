@@ -501,6 +501,37 @@
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow; YokeWsClient command cache (5-min idempotency window) mitigates most cases.",
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 4,
+        "session_id": "9706b5d0-d21e-4ef7-9b66-4d18ee522f7b",
+        "ts": "2026-04-14T20:00:00Z",
+        "note": "Fixed four review-criteria violations: (1) BlockRing class (store/blockRing.ts) replaces Array.shift()/unshift() with O(1) head-pointer eviction; (2) _blockMap: Map<blockId,physIdx> in SessionRenderState provides O(1) ToolCall+TextBlock lookup keyed on toolUseId/blockId, no findIndex; (3) getUsageSnapshot() in renderStore returns stable reference unless usage totals change, so UsageHUD only re-renders on stream.usage frames; (4) UsageHUD dropdown rendered via createPortal(document.body) with fixed positioning to avoid overflow clipping. tsc --noEmit clean; pnpm build succeeds with zero warnings; 32/32 Playwright e2e tests pass in ~3.6s.",
+        "intended_files": [
+          "src/web/src/store/blockRing.ts",
+          "src/web/src/store/types.ts",
+          "src/web/src/store/reducer.ts",
+          "src/web/src/store/renderStore.ts",
+          "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+          "src/web/src/components/UsageHUD/UsageHUD.tsx",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort.",
+          "FeatureBoard item.data cache not cleared on workflow navigation (only per-item on item.state frames)."
+        ],
+        "known_risks": [
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call — same asymptotic cost as the prior [...session.blocks] spread but now with no additional O(n) shift/unshift on top. For sessions with few blocks (< 10k), this is slightly slower than the prior approach (which was O(liveCount)). In practice the ring is pre-allocated at 10k slots regardless; first 10k pushes pay the O(n) clone each time.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
+        ]
       }
     ]
   }
