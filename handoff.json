@@ -615,6 +615,36 @@
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 8,
+        "session_id": "",
+        "ts": "2026-04-15T16:00:00Z",
+        "note": "Fixed two RC violations found by systematic review of all criteria. (1) feat-attention-banner RC2: the bell badge was driven by an independent increment counter in AppShell (setAttentionCount((n)=>n+1)) that never decremented when attention items were acknowledged, violating 'the bell badge count is derived from the attention items array length, not a separate counter.' Added attentionStore.ts (module-level pub/sub), wired WorkflowDetailRoute to call setAttentionCount(pendingAttention.length) on workflow.snapshot and workflow.update frames, and to setAttentionCount(0) on unmount; AppShell now subscribes via useSyncExternalStore. Two new e2e tests verify the badge reflects the array length and clears on navigation. (2) feat-stream-pane RC3: BlockRouter (React.memo) received a fresh loadEarlier function reference on every LiveStreamPane render via the onLoadEarlier prop, defeating memo for all virtual rows. Moved truncated_sentinel rendering inline in the virtualizer loop; BlockRouter now has no function prop and re-renders only when its block content changes. tsc -p tsconfig.json --noEmit clean; pnpm build succeeds with zero warnings; 34/34 Playwright e2e tests pass in ~3.8s.",
+        "intended_files": [
+          "src/web/src/store/attentionStore.ts",
+          "src/web/src/components/AppShell/AppShell.tsx",
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+          "src/web/e2e/app-shell.spec.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume in a real browser session.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (payload shape not fully specified by protocol)."
+        ],
+        "known_risks": [
+          "attentionStore is a module-level singleton like renderStore. If WorkflowDetailRoute mounts/unmounts in rapid succession (e.g., HMR), the setAttentionCount(0) on unmount may race with the setAttentionCount(n) on the new mount's snapshot handler. In practice this is momentary and self-corrects when the snapshot arrives.",
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call. Clone cost is bounded; O(1) eviction (head-pointer advance) is satisfied per spec.",
+          "getSessionBlocksSnapshot cache correctness depends on ring.clone() being called on every pushBlock/updateBlock — load-bearing invariant.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset() and clearItemDataCache().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
+        ]
       }
     ]
   }
