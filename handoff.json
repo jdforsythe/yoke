@@ -532,6 +532,36 @@
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 5,
+        "session_id": "72b70f09-6d1a-495d-8ce7-1d8ab798877f",
+        "ts": "2026-04-15T00:00:00Z",
+        "note": "Fixed three review-criteria violations. (1) renderStore: added getSessionBlocksSnapshot(sessionId) with a per-session ring-reference cache; returns the same array reference when the session's BlockRing hasn't changed, so useSyncExternalStore skips re-renders on unrelated frames (satisfies feat-stream-pane RC6 and feat-review-panel RC6). (2) LiveStreamPane + ReviewPanel: replaced useSyncExternalStore(subscribe, getSnapshot) with useSyncExternalStore(subscribe, () => getSessionBlocksSnapshot(sessionId)) so both components only re-render when the active session's blocks change. (3) AppShell: moved toast stack from inline JSX to createPortal(…, document.body) inside a React Fragment, satisfying feat-service-worker-push RC4 ('Toast fallback renders via a portal-based stack'). tsc --noEmit clean; pnpm build succeeds with zero warnings; 32/32 Playwright e2e tests pass in ~3.7s.",
+        "intended_files": [
+          "src/web/src/store/renderStore.ts",
+          "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+          "src/web/src/components/ReviewPanel/ReviewPanel.tsx",
+          "src/web/src/components/AppShell/AppShell.tsx",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort.",
+          "FeatureBoard item.data cache not cleared on workflow navigation (only per-item on item.state frames)."
+        ],
+        "known_risks": [
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call. The review criterion requires O(1) eviction (head-pointer advance), not O(1) clone. Clone cost is bounded at 10k regardless of live block count; no further optimization is needed per spec.",
+          "getSessionBlocksSnapshot cache uses ring-reference identity (cached.ring === session._ring). This is correct because every pushBlock/updateBlock calls ring.clone(), creating a new reference. If a future refactor reuses ring references across mutations without cloning, the cache would return stale blocks. The BlockRing.clone() call in pushBlock/updateBlock is load-bearing for cache correctness.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset(); _sessionBlocksCache is also cleared on reset().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
+        ]
       }
     ]
   }
