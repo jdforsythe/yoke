@@ -699,6 +699,50 @@
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
         ]
+      },
+      {
+        "phase": "review",
+        "attempt": 2,
+        "session_id": "26d4528a-212b-48f5-8a1d-bfbaf5592f71",
+        "ts": "2026-04-15T19:00:00Z",
+        "verdict": "FAIL",
+        "blocking_issues": [
+          "AC (feat-attention-banner AC-2 + RC-4): 'New notice frames with severity requires_attention and persistedAttentionId add items to the banner' — NOT implemented. WorkflowDetailRoute registers no client.on('notice') handler to append incoming PendingAttention items to snapshot.pendingAttention. The banner only updates when a workflow.update frame contains a pendingAttention patch. AppShell's notice handler only dispatches push notifications and toasts; it never updates the attention item list. RC-4 is also violated: 'The component does not poll; it reacts to WebSocket frames for additions and workflow.update for removals' — the WebSocket notice-frame addition path is entirely absent. Fix: add a client.on('notice') handler in WorkflowDetailRoute that, when payload.severity === 'requires_attention' and payload.persistedAttentionId is set, appends a PendingAttention item to snapshot.pendingAttention (de-duplicating by id) and calls setAttentionCount."
+        ],
+        "non_blocking": [
+          "feat-macos-deep-link RC-2 (minor): AttentionBanner deep-link highlight uses el.classList.add('animate-pulse') + setTimeout for removal. Strictly the RC says 'CSS animation/transition, not JavaScript timers manipulating DOM styles.' FeatureBoard items use the cleaner Tailwind data-attribute pattern. Consider aligning AttentionBanner to match.",
+          "feat-control-matrix (nitpick): isPending = pendingActions.size > 0 disables all action buttons when any single action is pending. A per-action check would be more precise, though functionally harmless given sequential usage patterns."
+        ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 10,
+        "session_id": "",
+        "ts": "2026-04-15T20:00:00Z",
+        "note": "Fixed one blocking issue and two non-blocking issues from attempt-9 review. (1) feat-attention-banner AC-2 + RC-4 (blocking): added client.on('notice') handler in WorkflowDetailRoute that, when payload.severity === 'requires_attention' and payload.persistedAttentionId is set, appends a PendingAttention item to snapshot.pendingAttention (deduplicating by id). The handler is a pure setState call; attention count sync was consolidated into a single useEffect on pendingAttentionArr, replacing three scattered setAttentionCount() calls so all update paths (snapshot, workflow.update, notice) are covered by one sync point. (2) feat-macos-deep-link RC-2 (non-blocking): AttentionBanner deep-link highlight migrated from classList.add/remove('animate-pulse') + setTimeout to setAttribute/removeAttribute('data-highlight') + data-[highlight=true]:animate-pulse Tailwind class — matching the FeatureBoard pattern and avoiding direct class-list manipulation. (3) feat-control-matrix nitpick (non-blocking): pendingActions Set now stores ControlPayload['action'] values (action names) instead of commandId strings; isPending = pendingActions.has(action) so each button independently shows its spinner. tsc --noEmit clean; 34/34 Playwright e2e tests pass in ~4.1s.",
+        "intended_files": [
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "src/web/src/components/AttentionBanner/AttentionBanner.tsx",
+          "src/web/src/components/ControlMatrix/ControlMatrix.tsx",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume in a real browser session.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (payload shape not fully specified by protocol).",
+          "feat-macos-deep-link AC4: The 8-second not-found timeout is heuristic — a valid but slow server could trigger a false not-found before the snapshot arrives."
+        ],
+        "known_risks": [
+          "notice handler deduplication reads prev.snapshot.pendingAttention inside setState updater. In React strict mode the updater may run twice; the deduplication check (some((a) => a.id === newItem.id)) is idempotent so double-invocation is safe.",
+          "pendingAttentionArr useEffect dependency uses array reference identity. Every time pendingAttention changes (new array from spread or patch), the effect fires correctly. If a future refactor reuses array references without creating new ones, the effect would miss updates — currently load-bearing on [...prev.snapshot.pendingAttention, newItem].",
+          "attentionStore is a module-level singleton. If WorkflowDetailRoute mounts/unmounts in rapid succession (e.g., HMR), the setAttentionCount(0) on unmount may race with the setAttentionCount from the new mount's useEffect.",
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call. Clone cost is bounded; O(1) eviction satisfied per spec.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset() and clearItemDataCache().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow; per-action keying means only the same action (not all actions) is re-enabled early."
+        ]
       }
     ]
   }
