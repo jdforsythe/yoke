@@ -104,7 +104,7 @@ export function ControlMatrix({
   activeSessionId,
   sendControl,
 }: Props) {
-  const [pendingActions, setPendingActions] = useState<Set<string>>(new Set());
+  const [pendingActions, setPendingActions] = useState<Set<ControlPayload['action']>>(new Set());
   const [confirmAction, setConfirmAction] = useState<ControlPayload['action'] | null>(null);
   const [injectModalOpen, setInjectModalOpen] = useState(false);
   const [injectText, setInjectText] = useState('');
@@ -137,14 +137,16 @@ export function ControlMatrix({
       if (meta.requiresStageId && activeStage) opts.stageId = activeStage.id;
       if (extraText) opts.extra = extraText;
 
-      const commandId = sendControl(action, opts);
-      setPendingActions((prev) => new Set([...prev, commandId]));
+      sendControl(action, opts);
+      // Track pending state by action name so each button independently shows
+      // its spinner (not all buttons disabled when any action is in-flight).
+      setPendingActions((prev) => new Set([...prev, action]));
 
       // Clear optimistic state after 10s regardless (server may not always ack).
       setTimeout(() => {
         setPendingActions((prev) => {
           const next = new Set(prev);
-          next.delete(commandId);
+          next.delete(action);
           return next;
         });
       }, 10_000);
@@ -160,7 +162,7 @@ export function ControlMatrix({
     <div className="flex items-center gap-1.5 flex-wrap">
       {visibleActions.map((action) => {
         const meta = ACTION_META[action];
-        const isPending = pendingActions.size > 0 && action !== 'inject-context';
+        const isPending = pendingActions.has(action);
 
         if (action === 'inject-context') {
           return (

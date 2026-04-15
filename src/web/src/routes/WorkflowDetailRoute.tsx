@@ -28,6 +28,8 @@ import type {
   ItemStatePayload,
   ItemProjection,
   SessionStartedPayload,
+  NoticePayload,
+  PendingAttention,
   ServerFrame,
   ControlPayload,
 } from '@/ws/types';
@@ -62,6 +64,14 @@ export function WorkflowDetailRoute() {
   const [notFound, setNotFound] = useState(false);
   // Track whether the snapshot has arrived so the timeout ref can be cleared.
   const snapshotArrivedRef = useRef(false);
+
+  // Sync attention count whenever pendingAttention changes — covers snapshot,
+  // workflow.update patches, and real-time notice frame additions.
+  // This is the single call site for setAttentionCount (except cleanup on unmount).
+  const pendingAttentionArr = state.snapshot?.pendingAttention;
+  useEffect(() => {
+    setAttentionCount(pendingAttentionArr?.length ?? 0);
+  }, [pendingAttentionArr]);
 
   // sendControl wrapper so ControlMatrix doesn't import the WS module directly.
   const sendControl = useCallback(
@@ -100,8 +110,6 @@ export function WorkflowDetailRoute() {
           p.activeSessions.length > 0
             ? p.activeSessions[p.activeSessions.length - 1]!
             : null;
-        // Sync attention count from snapshot so bell badge reflects array length.
-        setAttentionCount(p.pendingAttention.length);
         setState({
           snapshot: p,
           items,
@@ -119,10 +127,6 @@ export function WorkflowDetailRoute() {
           githubState?: WorkflowSnapshotPayload['workflow']['githubState'];
           pendingAttention?: WorkflowSnapshotPayload['pendingAttention'];
         };
-        // Sync attention count when the server clears or adds attention items.
-        if (patch.pendingAttention !== undefined) {
-          setAttentionCount(patch.pendingAttention.length);
-        }
         setState((prev) => {
           if (!prev.snapshot) return prev;
           return {
@@ -134,6 +138,35 @@ export function WorkflowDetailRoute() {
                 patch.pendingAttention !== undefined
                   ? patch.pendingAttention
                   : prev.snapshot.pendingAttention,
+            },
+          };
+        });
+      }),
+    );
+
+    // notice frames with severity requires_attention and a persistedAttentionId
+    // add items to the pending attention list in real-time (RC-4: no polling).
+    // Deduplication: if the item is already in pendingAttention, it is a no-op.
+    offs.push(
+      client.on('notice', (frame: ServerFrame) => {
+        const p = frame.payload as NoticePayload;
+        if (p.severity !== 'requires_attention' || !p.persistedAttentionId) return;
+        const newItem: PendingAttention = {
+          id: p.persistedAttentionId,
+          kind: p.kind,
+          payload: p.message,
+          createdAt: frame.ts,
+        };
+        setState((prev) => {
+          if (!prev.snapshot) return prev;
+          // Deduplicate by id — identical item from a workflow.snapshot or prior
+          // notice frame must not appear twice.
+          if (prev.snapshot.pendingAttention.some((a) => a.id === newItem.id)) return prev;
+          return {
+            ...prev,
+            snapshot: {
+              ...prev.snapshot,
+              pendingAttention: [...prev.snapshot.pendingAttention, newItem],
             },
           };
         });

@@ -29,19 +29,21 @@ export function AttentionBanner({ workflowId, items }: Props) {
   // Deep-link: ?attention=<id> highlights the specific item.
   const deepLinkedId = searchParams.get('attention');
 
-  // Consume the attention query param after processing (use history.replaceState).
+  // Consume the attention query param after processing.
+  // Uses data-attribute pattern (data-[highlight=true]:animate-pulse) consistent
+  // with FeatureBoard — avoids direct class-list mutation (RC-2).
   useEffect(() => {
     if (!deepLinkedId) return;
-    const el = document.getElementById(`attention-item-${deepLinkedId}`);
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      el.classList.add('animate-pulse');
-      setTimeout(() => el.classList.remove('animate-pulse'), 2000);
-    }
-    // Clear the param from the URL without navigation.
+    // Clear the param from the URL without navigation (always, even if el not yet rendered).
     const next = new URLSearchParams(searchParams);
     next.delete('attention');
     setSearchParams(next, { replace: true });
+    const el = document.getElementById(`attention-item-${deepLinkedId}`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.setAttribute('data-highlight', 'true');
+    const t = setTimeout(() => el.removeAttribute('data-highlight'), 2000);
+    return () => clearTimeout(t);
   }, [deepLinkedId, searchParams, setSearchParams]);
 
   const visible = items
@@ -86,7 +88,8 @@ export function AttentionBanner({ workflowId, items }: Props) {
         <div
           key={item.id}
           id={`attention-item-${item.id}`}
-          className="flex items-start gap-3 px-4 py-2.5 bg-amber-950/40 border-b border-amber-900/30 last:border-b-0"
+          data-highlight="false"
+          className="flex items-start gap-3 px-4 py-2.5 bg-amber-950/40 border-b border-amber-900/30 last:border-b-0 data-[highlight=true]:animate-pulse"
         >
           <span className="text-amber-400 shrink-0" aria-hidden>
             🔔
