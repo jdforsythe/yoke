@@ -267,7 +267,7 @@ export function WorkflowDetailRoute() {
               {/* Stream output */}
               <div className="flex-1 min-h-0">
                 {isReviewPhase ? (
-                  <ReviewPanel sessionId={activeSessionId} />
+                  <ReviewPanel sessionId={activeSessionId} phase={activeSessionPhase!} />
                 ) : (
                   <LiveStreamPane sessionId={activeSessionId} workflowId={workflowId!} />
                 )}

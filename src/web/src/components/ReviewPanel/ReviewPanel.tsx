@@ -1,16 +1,17 @@
 /**
  * ReviewPanel — specialized stream rendering for review-phase sessions.
  *
- * Activated when the active session's phase is 'review'.
+ * Activated when the active session's phase is 'review' or 'pre_review'.
+ * Receives the phase string from the parent (WorkflowDetailRoute), which
+ * derives it from SessionStartedPayload.phase — no heuristics on stream
+ * content are used for phase detection.
+ *
  * Detects Task tool_use calls (name === 'Task' exactly) and renders each
  * as a collapsible subagent row. Non-Task tool calls render with the standard
  * ToolCallRenderer.
  *
  * Summary header: total, passed (ok), failed (error), pending counts.
  * Expanding a subagent row shows its nested stream output inline.
- *
- * Phase detection: uses the sessionId from props; the parent reads phase
- * from SessionStartedPayload.phase and passes it down.
  */
 
 import { memo, useState } from 'react';
@@ -99,9 +100,11 @@ function extractTaskDescription(input: unknown): string {
 
 interface Props {
   sessionId: string;
+  /** Phase string from SessionStartedPayload.phase — passed by the parent. */
+  phase: string;
 }
 
-export function ReviewPanel({ sessionId }: Props) {
+export function ReviewPanel({ sessionId, phase: _phase }: Props) {
   const model = useSyncExternalStore(subscribe, getSnapshot);
   const blocks = getSessionBlocks(model, sessionId);
 

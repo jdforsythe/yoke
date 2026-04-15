@@ -25,6 +25,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -141,9 +142,11 @@ export function FeatureBoard({
     });
   }, [items, statusFilter, debouncedSearch]);
 
-  // Deep-link scroll: re-runs when items changes so it works even when the
-  // snapshot (and thus item DOM elements) arrives after the initial mount.
-  useEffect(() => {
+  // Deep-link scroll: useLayoutEffect fires after DOM mutations but before
+  // the browser paints, preventing any visible flash before the card is
+  // centred. Re-runs when items changes so it works even when the snapshot
+  // (and thus item DOM elements) arrives after the initial mount.
+  useLayoutEffect(() => {
     if (!deepLinkedItemId) return;
     const el = itemRefs.current.get(deepLinkedItemId);
     if (!el) return; // items not rendered yet; re-runs on next items change
