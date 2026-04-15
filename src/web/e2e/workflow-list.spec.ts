@@ -7,6 +7,12 @@
  *  - Status dropdown and search input are present
  *  - Clicking a row navigates to /workflow/:id
  *  - Real-time index.update patch via mocked WS frame
+ *  - AC-3: Status filter restricts list and resets pagination
+ *  - AC-4: Text search sends debounced q param
+ *  - AC-5: Archived toggle sends archived=true param
+ *  - AC-8: Filtered empty state shows correct message
+ *  - RC-3: Filter params reflected in URL for deep-link
+ *  - AC-7: Infinite scroll loads next page via keyset cursor
  */
 
 import { test, expect } from '@playwright/test';
@@ -126,4 +132,156 @@ test('real-time index.update frame patches existing row', async ({ page }) => {
   await expect(
     page.getByRole('listitem').filter({ hasText: WF_NAME }).getByText('paused'),
   ).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// AC-3: Status filter restricts the list; changing filter resets pagination
+// ---------------------------------------------------------------------------
+
+test('status filter sends status param and shows filtered empty state', async ({ page }) => {
+  await setupWs(page);
+  await page.route('**/api/workflows**', (route) => {
+    const url = route.request().url();
+    const isFiltered = url.includes('status=complete');
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        workflows: isFiltered
+          ? []
+          : [{ id: WF_ID, name: WF_NAME, status: 'in_progress', updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(), unreadEvents: 0 }],
+        hasMore: false,
+      }),
+    });
+  });
+  await page.goto('/');
+
+  // Initial load shows the workflow
+  await expect(page.getByText(WF_NAME)).toBeVisible();
+
+  // Change filter to 'complete' — expect the filtered-empty message
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('complete');
+  await expect(page.getByText('No workflows match the current filters.')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// AC-4: Text search sends debounced q param; RC-3: reflected in URL
+// ---------------------------------------------------------------------------
+
+test('text search sends q param after debounce and reflects in URL', async ({ page }) => {
+  await setupWs(page);
+  // Route all API calls; we capture the last URL to verify params.
+  let lastApiUrl = '';
+  await page.route('**/api/workflows**', (route) => {
+    lastApiUrl = route.request().url();
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ workflows: [], hasMore: false }),
+    });
+  });
+  await page.goto('/');
+
+  const searchReq = page.waitForRequest((req) => req.url().includes('q=mysearch'));
+  await page.getByPlaceholder('Search workflows…').fill('mysearch');
+  await searchReq; // waits up to test timeout for debounced request
+
+  expect(lastApiUrl).toContain('q=mysearch');
+  await expect(page).toHaveURL(/q=mysearch/);
+});
+
+// ---------------------------------------------------------------------------
+// AC-5: Archived toggle sends archived=true; RC-3: URL update
+// ---------------------------------------------------------------------------
+
+test('archived toggle sends archived=true param and reflects in URL', async ({ page }) => {
+  await setupWs(page);
+  let lastApiUrl = '';
+  await page.route('**/api/workflows**', (route) => {
+    lastApiUrl = route.request().url();
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ workflows: [], hasMore: false }),
+    });
+  });
+  await page.goto('/');
+
+  const archivedReq = page.waitForRequest((req) => req.url().includes('archived=true'));
+  await page.getByLabel('Show archived workflows').click();
+  await archivedReq;
+
+  expect(lastApiUrl).toContain('archived=true');
+  await expect(page).toHaveURL(/archived=true/);
+});
+
+// ---------------------------------------------------------------------------
+// AC-8: Empty state message differentiates unfiltered vs filtered
+// ---------------------------------------------------------------------------
+
+test('empty state shows correct message based on whether filters are active', async ({ page }) => {
+  await setupWs(page);
+  await mockWorkflowsApi(page, []);
+  await page.goto('/');
+
+  // No filters active → "No workflows yet."
+  await expect(page.getByText('No workflows yet.')).toBeVisible();
+
+  // Activate a filter → "No workflows match the current filters."
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('failed');
+  await expect(page.getByText('No workflows match the current filters.')).toBeVisible();
+
+  // Reset filter → "No workflows yet." again
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('all');
+  await expect(page.getByText('No workflows yet.')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// RC-3: Status filter param visible in URL for deep-link support
+// ---------------------------------------------------------------------------
+
+test('status filter param is reflected in URL query string', async ({ page }) => {
+  await setupWs(page);
+  await mockWorkflowsApi(page);
+  await page.goto('/');
+
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('paused');
+
+  await expect(page).toHaveURL(/status=paused/);
+});
+
+// ---------------------------------------------------------------------------
+// AC-7: Infinite scroll — next page loaded via keyset before cursor
+// ---------------------------------------------------------------------------
+
+test('infinite scroll loads next page using keyset before cursor', async ({ page }) => {
+  await setupWs(page);
+
+  const now = Date.now();
+  const wf1 = { id: 'wf-p1', name: 'Page One Workflow', status: 'in_progress', updatedAt: new Date(now).toISOString(), createdAt: new Date(now - 1_000).toISOString(), unreadEvents: 0 };
+  const wf2 = { id: 'wf-p2', name: 'Page Two Workflow', status: 'complete', updatedAt: new Date(now).toISOString(), createdAt: new Date(now - 2_000).toISOString(), unreadEvents: 0 };
+
+  await page.route('**/api/workflows**', (route) => {
+    const url = route.request().url();
+    const hasBefore = url.includes('before=');
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        workflows: hasBefore ? [wf2] : [wf1],
+        hasMore: !hasBefore,
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('Page One Workflow')).toBeVisible();
+
+  // Scroll the list to make the sentinel visible and trigger IntersectionObserver
+  await page.evaluate(() => {
+    const list = document.querySelector('[role="list"]');
+    if (list) list.scrollTop = list.scrollHeight;
+  });
+
+  await expect(page.getByText('Page Two Workflow')).toBeVisible({ timeout: 5_000 });
 });

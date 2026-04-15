@@ -260,7 +260,10 @@ export function WorkflowList() {
           <button
             key={row.id}
             role="listitem"
-            onClick={() => navigate(`/workflow/${row.id}`)}
+            onClick={() => {
+              getClient().subscribe(row.id);
+              navigate(`/workflow/${row.id}`);
+            }}
             className={[
               'w-full text-left px-3 py-2.5 border-b border-gray-700/40',
               'hover:bg-gray-700/40 transition-colors',
