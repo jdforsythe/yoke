@@ -399,6 +399,37 @@
     "entries": [
       {
         "phase": "implement",
+        "attempt": 2,
+        "session_id": "5ef9a40e-06b3-4080-9efc-9b40904b0812",
+        "ts": "2026-04-14T18:30:00Z",
+        "note": "32/32 Playwright e2e smoke tests pass (pnpm test:e2e). Fixed two deferred bugs from attempt 1. tsc --noEmit clean; pnpm build succeeds.",
+        "intended_files": [
+          "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "src/web/playwright.config.ts",
+          "src/web/e2e/helpers.ts",
+          "src/web/e2e/app-shell.spec.ts",
+          "src/web/e2e/workflow-list.spec.ts",
+          "src/web/e2e/workflow-detail.spec.ts",
+          "progress.md",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: push notifications are wired (sw.ts + AppShell bell click + SHOW_NOTIFICATION postMessage), but browser Notification.requestPermission() cannot be smoke-tested in headless Chromium without a permission override. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank (no dropped frames at 60fps in Chrome DevTools)' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated in a browser with real data at volume.",
+          "feat-feature-board item.data HTTP endpoint: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend. If the endpoint is absent the data section silently 404s.",
+          "LiveStreamPane loadEarlier endpoint: GET /api/sessions/:id/log shape is assumed (entries: string[]). If backend differs, loadEarlier does nothing.",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (server payload shape not fully specified)."
+        ],
+        "known_risks": [
+          "FeatureBoard item.data cache lifetime is page-lifetime; invalidateItemData() clears per-itemId on item.state frames but does NOT clear when the user navigates to a different workflow and back. If stale data concerns arise, reset() in WorkflowDetailRoute unmount should also clear the full cache.",
+          "renderStore module-level singleton means two simultaneous WorkflowDetailRoute mounts would conflict (unlikely under React Router SPA navigation but possible during HMR).",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if server is slow; YokeWsClient command cache (5-min idempotency window) mitigates most cases.",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig."
+        ]
+      },
+      {
+        "phase": "implement",
         "attempt": 1,
         "session_id": "9b73b30f-9f7e-4de2-9860-ae211601541c",
         "ts": "2026-04-14T17:30:00Z",
