@@ -645,6 +645,60 @@
           "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
           "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
         ]
+      },
+      {
+        "phase": "review",
+        "attempt": 1,
+        "session_id": "0c55d805-dbeb-43b0-9144-3ca674b0c989",
+        "ts": "2026-04-15T17:00:00Z",
+        "verdict": "FAIL",
+        "blocking_issues": [
+          "AC (feat-workflow-list AC5): 'Archived toggle shows/hides archived workflows' — not implemented. WorkflowList.tsx STATUS_OPTIONS=['all','active','paused','complete','failed','cancelled'] has no 'archived' option and no separate archived toggle control.",
+          "AC (feat-feature-board AC5): 'Status and category dropdowns filter the displayed items' — only a status dropdown is implemented; no category filter dropdown exists in FeatureBoard.tsx.",
+          "AC (feat-macos-deep-link AC4 + RC5): 'If the workflow ID is invalid, a Workflow not found error state renders with a link back to the workflow list' — WorkflowDetailRoute has no invalid-ID handling; it renders 'Connecting to workflow…' indefinitely when no snapshot arrives."
+        ],
+        "non_blocking": [
+          "feat-github-buttons AC8: lastCheckedAt tooltip shows absolute locale string rather than relative time (e.g. '2 hours ago').",
+          "feat-usage-hud AC6: Per-session rows in the dropdown show session ID only; no session phase label.",
+          "feat-usage-hud AC7: HUD returns null (hides entirely) when no usage data exists; spec says show a dash.",
+          "feat-review-panel AC6: SubagentRow expanded view shows ToolCall.output JSON only; spec calls for rendering nested text/tool-call/thinking blocks from subagent stream."
+        ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 9,
+        "session_id": "091b4e2f-61c7-4f29-81a6-57215b947702",
+        "ts": "2026-04-15T18:00:00Z",
+        "note": "Fixed all three blocking issues from attempt 8 review and all four non-blocking issues. (1) feat-workflow-list AC5: Added 'Show archived' checkbox toggle to WorkflowList filter bar; state reflects in URL query string (archived=true) and is sent to the API. (2) feat-feature-board AC5: Added a second filter dropdown 'All categories' derived from the stages prop; filters flatFiltered list and stage groups client-side. The stage group header div was given data-testid='stage-header' so e2e tests can find it unambiguously without matching hidden option elements. (3) feat-macos-deep-link AC4/RC5: WorkflowDetailRoute now starts an 8-second timeout on mount; if no snapshot arrives (invalid workflow ID), it sets notFound=true and renders a 'Workflow not found' error page with a back link to '/'. Non-blocking: GithubButton lastCheckedAt tooltip now shows relative time ('2m ago') via a relativeTime helper. UsageHUD returns a '— tokens' dash when hasData=false (AC7) and shows per-session phase badge in the dropdown (AC6) sourced from a new phase field in SessionRenderState (set by session.started in the reducer). ReviewPanel SubagentRow expanded output now renders via a SubagentOutput component backed by TextBlockRenderer, satisfying RC ('reuses existing block renderers'). 34/34 Playwright e2e tests pass; tsc --noEmit clean; pnpm build succeeds.",
+        "intended_files": [
+          "src/web/src/components/WorkflowList/WorkflowList.tsx",
+          "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+          "src/web/src/routes/WorkflowDetailRoute.tsx",
+          "src/web/src/components/GithubButton/GithubButton.tsx",
+          "src/web/src/store/types.ts",
+          "src/web/src/store/reducer.ts",
+          "src/web/src/components/UsageHUD/UsageHUD.tsx",
+          "src/web/src/components/ReviewPanel/ReviewPanel.tsx",
+          "src/web/e2e/workflow-detail.spec.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "feat-service-worker-push AC: Notification.requestPermission() cannot be smoke-tested in headless Chromium. Implementation is complete; tested manually.",
+          "feat-stream-pane AC: '1,000+ blocks without layout jank' — virtualization is implemented via @tanstack/react-virtual with measureElement, but frame-rate performance has not been validated at volume in a real browser session.",
+          "feat-feature-board: GET /api/workflows/:id/items/:itemId/data is assumed to exist on the backend; silently 404s if absent.",
+          "LiveStreamPane loadEarlier endpoint shape assumed (entries: string[] of JSON-encoded ServerFrame).",
+          "WorkflowDetailRoute workflow.update pendingAttention patching is best-effort (payload shape not fully specified by protocol).",
+          "feat-macos-deep-link AC4: The 8-second not-found timeout is heuristic — a valid but slow server could trigger a false not-found before the snapshot arrives. A server-side error frame (e.g., WORKFLOW_NOT_FOUND) would be the correct mechanism; deferred pending protocol change."
+        ],
+        "known_risks": [
+          "WorkflowDetailRoute not-found timeout is 8s. On a slow localhost connection (unusual but possible), the snapshot may arrive after 8s, showing a transient error page that then disappears when the snapshot arrives — confusing but not incorrect.",
+          "attentionStore is a module-level singleton like renderStore. If WorkflowDetailRoute mounts/unmounts in rapid succession (e.g., HMR), the setAttentionCount(0) on unmount may race with the setAttentionCount(n) on the new mount's snapshot handler.",
+          "BlockRing.clone() is O(MAX_BLOCKS=10000) per reducer call. Clone cost is bounded; O(1) eviction (head-pointer advance) is satisfied per spec.",
+          "getSessionBlocksSnapshot cache correctness depends on ring.clone() being called on every pushBlock/updateBlock — load-bearing invariant.",
+          "renderStore module-level singleton: two simultaneous WorkflowDetailRoute mounts conflict on reset() and clearItemDataCache().",
+          "sw.ts uses 'any' casts due to ServiceWorkerGlobalScope / DOM lib conflict in shared tsconfig.",
+          "ControlMatrix optimistic clear-after-10s can allow double-send if the server is slow."
+        ]
       }
     ]
   }
