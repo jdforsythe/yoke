@@ -773,6 +773,85 @@ test('FeatureBoard search filters items', async ({ page }) => {
   await expect(page.getByText('Beta Feature')).not.toBeVisible();
 });
 
+test('FeatureBoard search filters by displaySubtitle (AC-4)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Feature One',
+            displaySubtitle: 'oauth token refresh',
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-2',
+            stageId: 'stage-1',
+            displayTitle: 'Feature Two',
+            displaySubtitle: 'rate limiting middleware',
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('Feature One')).toBeVisible();
+  await expect(page.getByText('Feature Two')).toBeVisible();
+
+  // Search by subtitle text — should match item-1 only
+  await page.getByPlaceholder('Search items…').fill('oauth');
+
+  await expect(page.getByText('Feature One')).toBeVisible();
+  await expect(page.getByText('Feature Two')).not.toBeVisible();
+});
+
+test('FeatureBoard renders displaySubtitle when present (AC-2)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'My Feature',
+            displaySubtitle: 'Add user login flow',
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('My Feature')).toBeVisible();
+  await expect(page.getByTestId('item-subtitle').filter({ hasText: 'Add user login flow' })).toBeVisible();
+});
+
+test('FeatureBoard renders currentPhase label when non-null (AC-2)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Active Feature',
+            displaySubtitle: null,
+            state: { status: 'in_progress', currentPhase: 'implement', retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('Active Feature')).toBeVisible();
+  await expect(page.getByTestId('item-phase').filter({ hasText: 'implement' })).toBeVisible();
+});
+
 test('FeatureBoard shows retryCount badge when > 0', async ({ page }) => {
   await setupWs(page, (ws) => {
     ws.send(

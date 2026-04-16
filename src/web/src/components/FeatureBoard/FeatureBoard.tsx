@@ -13,7 +13,9 @@
  * item (calls onSelectItem). Escape clears selection.
  *
  * Deep-link: /workflow/:id/item/:itemId scrolls to and highlights the target
- * card on mount (reads :itemId from URL via useParams).
+ * card on mount (reads :itemId from URL via useParams). Highlight is managed
+ * via React state (Set<string>) so re-renders triggered by WS frames do not
+ * clobber the attribute before the 2 s pulse expires.
  *
  * Streaming item: the item whose session is active is pinned to the top of
  * its stage group with a pulsing indicator.
@@ -122,6 +124,10 @@ export function FeatureBoard({
   const [itemData, setItemData] = useState<Record<string, unknown>>({});
   const [itemDataExpanded, setItemDataExpanded] = useState<Set<string>>(new Set());
   const [fetchingData, setFetchingData] = useState<Set<string>>(new Set());
+  // Highlight set tracks which itemIds are pulsing from a deep-link. React state
+  // prevents the data-highlight attribute being overwritten by re-renders during
+  // the 2 s animation window (the prior DOM-mutation approach was fragile).
+  const [highlightedItems, setHighlightedItems] = useState<Set<string>>(new Set());
 
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -163,12 +169,18 @@ export function FeatureBoard({
     const el = itemRefs.current.get(deepLinkedItemId);
     if (!el) return; // items not rendered yet; re-runs on next items change
     el.scrollIntoView({ block: 'center' });
-    el.setAttribute('data-highlight', 'true');
-    const t = setTimeout(() => el.removeAttribute('data-highlight'), 2000);
+    setHighlightedItems((prev) => new Set([...prev, deepLinkedItemId]));
     onSelectItem(deepLinkedItemId);
+    const t = setTimeout(() => {
+      setHighlightedItems((prev) => {
+        const next = new Set(prev);
+        next.delete(deepLinkedItemId);
+        return next;
+      });
+    }, 2000);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepLinkedItemId, items, onSelectItem]); // items triggers re-check after snapshot loads
+  }, [deepLinkedItemId, items]); // items triggers re-check after snapshot loads; onSelectItem intentionally omitted (stable ref)
 
   // Keyboard navigation.
   const handleKeyDown = useCallback(
@@ -235,6 +247,7 @@ export function FeatureBoard({
   function renderItemCard(item: ItemProjection, isStreaming: boolean) {
     const isFocused = flatFiltered[focusedIdx]?.id === item.id;
     const isSelected = selectedItemId === item.id;
+    const isHighlighted = highlightedItems.has(item.id);
     const data = itemData[item.id];
     const isExpanded = itemDataExpanded.has(item.id);
 
@@ -248,7 +261,7 @@ export function FeatureBoard({
         }}
         role="option"
         aria-selected={isSelected}
-        data-highlight="false"
+        data-highlight={isHighlighted ? 'true' : 'false'}
         onClick={() => {
           onSelectItem(item.id);
           setFocusedIdx(flatFiltered.findIndex((i) => i.id === item.id));
@@ -287,14 +300,18 @@ export function FeatureBoard({
               )}
             </div>
             {item.displaySubtitle && (
-              <p className="text-[10px] text-gray-500 truncate mt-0.5">{item.displaySubtitle}</p>
+              <p className="text-[10px] text-gray-500 truncate mt-0.5" data-testid="item-subtitle">
+                {item.displaySubtitle}
+              </p>
             )}
             <div className="flex items-center gap-1.5 mt-1">
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${itemStatusClass(item.state.status)}`}>
                 {item.state.status}
               </span>
               {item.state.currentPhase && (
-                <span className="text-[10px] text-gray-500">{item.state.currentPhase}</span>
+                <span className="text-[10px] text-gray-500" data-testid="item-phase">
+                  {item.state.currentPhase}
+                </span>
               )}
             </div>
           </div>
@@ -358,7 +375,7 @@ export function FeatureBoard({
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
-            aria-label="Filter items by status"
+            aria-label="Filter by status"
           >
             <option value="all">All statuses</option>
             <option value="pending">Pending</option>

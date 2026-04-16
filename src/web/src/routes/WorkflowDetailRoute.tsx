@@ -58,6 +58,18 @@ export function WorkflowDetailRoute() {
   // replaces all URL params with its own filter state, dropping ?attention).
   const initialAttentionIdRef = useRef(searchParams.get('attention'));
 
+  // RC-3: explicitly remove the consumed ?attention param from the URL so it
+  // does not persist in the address bar or browser history.
+  useEffect(() => {
+    if (initialAttentionIdRef.current) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('attention');
+      history.replaceState(null, '', url.toString());
+    }
+    // Run once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [state, setState] = useState<WorkflowDetailState>({
     snapshot: null,
     items: new Map(),
