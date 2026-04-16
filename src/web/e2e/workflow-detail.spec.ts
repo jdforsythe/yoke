@@ -15,7 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 import type { WebSocketRoute } from '@playwright/test';
-import { setupWs, mockWorkflowsApi, snapshotFrame, workflowUpdateFrame, helloFrame, WF_ID, WF_NAME } from './helpers';
+import { setupWs, mockWorkflowsApi, snapshotFrame, workflowUpdateFrame, noticeFrame, helloFrame, WF_ID, WF_NAME } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   await mockWorkflowsApi(page, [{ id: WF_ID, name: WF_NAME, status: 'in_progress' }]);
@@ -326,6 +326,7 @@ test('GithubButton shows PR link with open badge when status is created', async 
   await expect(link).toBeVisible();
   await expect(link).toHaveAttribute('href', 'https://github.com/test/repo/pull/42');
   await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(link.getByText('open')).toBeVisible();
 });
 
@@ -355,6 +356,132 @@ test('GithubButton shows error text when status is failed', async ({ page }) => 
   await page.goto(`/workflow/${WF_ID}`);
 
   await expect(page.getByText(/Push guard: unpushed commits/)).toBeVisible();
+});
+
+test('GithubButton shows idle ready indicator when status is idle', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        workflow: { githubState: { status: 'idle' } },
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('GitHub')).toBeVisible();
+  await expect(page.getByRole('link', { name: /PR #/ })).not.toBeVisible();
+});
+
+test('GithubButton shows PR link with merged badge when prState is merged (AC-5)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        workflow: {
+          githubState: {
+            status: 'created',
+            prNumber: 7,
+            prUrl: 'https://github.com/test/repo/pull/7',
+            prState: 'merged',
+          },
+        },
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const link = page.getByRole('link', { name: /PR #7/ });
+  await expect(link).toBeVisible();
+  await expect(link.getByText('merged')).toBeVisible();
+});
+
+test('GithubButton shows PR link with closed badge when prState is closed (AC-5)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        workflow: {
+          githubState: {
+            status: 'created',
+            prNumber: 9,
+            prUrl: 'https://github.com/test/repo/pull/9',
+            prState: 'closed',
+          },
+        },
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const link = page.getByRole('link', { name: /PR #9/ });
+  await expect(link).toBeVisible();
+  await expect(link.getByText('closed')).toBeVisible();
+});
+
+test('GithubButton updates in real-time when workflow.update patches githubState (AC-7)', async ({
+  page,
+}) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ workflow: { githubState: { status: 'idle' } } }));
+        }
+      } catch {
+        // malformed — ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('GitHub')).toBeVisible();
+  await expect(page.getByRole('link', { name: /PR #/ })).not.toBeVisible();
+
+  // Server sends a workflow.update that transitions githubState to created
+  capturedWs!.send(
+    workflowUpdateFrame({
+      githubState: {
+        status: 'created',
+        prNumber: 55,
+        prUrl: 'https://github.com/test/repo/pull/55',
+        prState: 'open',
+      },
+    }),
+  );
+
+  await expect(page.getByRole('link', { name: /PR #55/ })).toBeVisible();
+  await expect(page.getByText('open')).toBeVisible();
+});
+
+test('GithubButton lastCheckedAt renders as a relative timestamp title attribute (AC-8)', async ({
+  page,
+}) => {
+  const checkedAt = new Date(Date.now() - 5 * 60 * 1_000).toISOString(); // 5 min ago
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        workflow: {
+          githubState: {
+            status: 'created',
+            prNumber: 3,
+            prUrl: 'https://github.com/test/repo/pull/3',
+            prState: 'open',
+            lastCheckedAt: checkedAt,
+          },
+        },
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const link = page.getByRole('link', { name: /PR #3/ });
+  await expect(link).toBeVisible();
+  // title attribute is the tooltip; contains "Last checked:" prefix.
+  await expect(link).toHaveAttribute('title', /Last checked:/);
 });
 
 // ---------------------------------------------------------------------------
