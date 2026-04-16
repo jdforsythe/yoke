@@ -166,6 +166,38 @@ export function itemStateFrame(opts: {
   });
 }
 
+export function sessionStartedFrame(sessionId: string, phase = 'implement'): string {
+  return mkFrame('session.started', {
+    workflowId: WF_ID,
+    sessionId,
+    seq: 6,
+    payload: {
+      sessionId,
+      phase,
+      attempt: 1,
+      startedAt: new Date().toISOString(),
+      parentSessionId: null,
+    },
+  });
+}
+
+export function usageFrame(
+  sessionId: string,
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  },
+): string {
+  return mkFrame('stream.usage', {
+    workflowId: WF_ID,
+    sessionId,
+    seq: 10,
+    payload: { sessionId, ...usage, rawUsage: null },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // WS mock setup
 // ---------------------------------------------------------------------------
@@ -198,6 +230,139 @@ export async function setupWs(page: Page, onSubscribe?: WsSubscribeHandler): Pro
         }
       });
     }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Session lifecycle frame builders
+// ---------------------------------------------------------------------------
+
+export function sessionStartedFrame(
+  sessionId: string,
+  phase: string,
+  attempt = 1,
+  seq = 2,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'session.started',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, phase, attempt, startedAt: new Date().toISOString(), parentSessionId: null },
+  });
+}
+
+export function sessionEndedFrame(
+  sessionId: string,
+  reason: 'ok' | 'fail' | 'cancelled' = 'ok',
+  exitCode = 0,
+  seq = 99,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'session.ended',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, endedAt: new Date().toISOString(), exitCode, statusFlags: {}, reason },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Stream frame builders (all carry sessionId in envelope for deduplication)
+// ---------------------------------------------------------------------------
+
+export function streamTextFrame(
+  sessionId: string,
+  blockId: string,
+  textDelta: string,
+  seq: number,
+  final?: boolean,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.text',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, blockId, textDelta, ...(final ? { final } : {}) },
+  });
+}
+
+export function streamThinkingFrame(
+  sessionId: string,
+  blockId: string,
+  textDelta: string,
+  seq: number,
+  final?: boolean,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.thinking',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, blockId, textDelta, ...(final ? { final } : {}) },
+  });
+}
+
+export function streamToolUseFrame(
+  sessionId: string,
+  toolUseId: string,
+  name: string,
+  input: unknown,
+  seq: number,
+  status: 'pending' | 'running' = 'running',
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.tool_use',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, toolUseId, name, input, status },
+  });
+}
+
+export function streamToolResultFrame(
+  sessionId: string,
+  toolUseId: string,
+  status: 'ok' | 'error',
+  output: unknown,
+  seq: number,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.tool_result',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, toolUseId, status, output },
+  });
+}
+
+export function streamSystemNoticeFrame(
+  sessionId: string,
+  severity: 'info' | 'warn' | 'error',
+  source: string,
+  message: string,
+  seq: number,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.system_notice',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, severity, source, message },
   });
 }
 

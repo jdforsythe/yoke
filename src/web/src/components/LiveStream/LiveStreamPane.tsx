@@ -168,6 +168,7 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
         ref={parentRef}
         className="flex-1 overflow-y-auto"
         onScroll={handleScroll}
+        data-testid="stream-scroll-container"
       >
         <div
           style={{
