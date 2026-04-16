@@ -15,7 +15,7 @@
 import { useRef, useEffect, useState, useCallback, memo } from 'react';
 import { useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { subscribe, getSessionBlocksSnapshot, dispatch as dispatchFrame } from '@/store/renderStore';
+import { subscribe, getSessionBlocksSnapshot, loadEarlierFrames } from '@/store/renderStore';
 import type { RenderBlock } from '@/store/types';
 import type { ServerFrame } from '@/ws/types';
 import { TextBlockRenderer } from './TextBlockRenderer';
@@ -130,8 +130,7 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
   }
 
   async function loadEarlier() {
-    // Fetch from HTTP session log store and prepend blocks.
-    // The store will handle prepend; the virtualizer will re-measure.
+    // Fetch from HTTP session log store and prepend blocks above current content.
     if (!blocks[0] || blocks[0].type !== 'truncated_sentinel') return;
     const sentinel = blocks[0];
     try {
@@ -139,18 +138,19 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
         `/api/sessions/${encodeURIComponent(sessionId)}/log?workflowId=${encodeURIComponent(workflowId)}&before=${sentinel.oldestEvictedSeq}&limit=100`,
       );
       if (!res.ok) return;
-      // The server sends frames in the response; dispatch them.
-      // (Server response shape: { entries: string[] })
       const data = (await res.json()) as { entries?: string[] };
       if (!data.entries) return;
+      const frames: ServerFrame[] = [];
       for (const raw of data.entries) {
         try {
-          const frame = JSON.parse(raw) as ServerFrame;
-          dispatchFrame(frame);
+          frames.push(JSON.parse(raw) as ServerFrame);
         } catch {
           // Skip malformed entry.
         }
       }
+      // Prepend converted blocks so they appear between the sentinel and the
+      // live ring content — no scroll jump needed.
+      loadEarlierFrames(sessionId, frames);
     } catch {
       // Network error — silently ignore.
     }
