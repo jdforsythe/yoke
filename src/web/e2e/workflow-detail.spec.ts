@@ -952,7 +952,8 @@ test('FeatureBoard status filter hides non-matching items (AC-5)', async ({ page
   await expect(page.getByText('Alpha Feature')).toBeVisible();
   await expect(page.getByText('Beta Feature')).toBeVisible();
 
-  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('pending');
+  // Narrow to the FeatureBoard's filter (WorkflowList sidebar has an identical label)
+  await page.getByRole('main').getByRole('combobox', { name: 'Filter by status' }).selectOption('pending');
 
   await expect(page.getByText('Alpha Feature')).toBeVisible();
   await expect(page.getByText('Beta Feature')).not.toBeVisible();
