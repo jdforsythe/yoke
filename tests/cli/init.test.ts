@@ -128,7 +128,7 @@ describe('yoke init', () => {
     );
     expect(content).toContain('{{item}}');
     expect(content).toContain('{{architecture}}');
-    expect(content).toContain('{{progress}}');
+    expect(content).toContain('{{handoff}}');
   });
 
   // Idempotence: running a second time after success always fails.

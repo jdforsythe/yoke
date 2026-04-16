@@ -217,7 +217,6 @@ describe('assemblePrompt — AC-5 dry-run preview', () => {
       item,
       item_state: itemState,
       architecture_md: '# Architecture',
-      progress_md: '# Progress',
       handoff: '[]',
       git_log_recent: 'abc123 initial\n',
       recent_diff: '',
@@ -378,7 +377,6 @@ describe('assemblePrompt — end-to-end full prompt example', () => {
       workflow_name: 'add-auth',
       stage_id: 'implementation',
       architecture_md: '# Architecture\n\n...',
-      progress_md: '# Progress\n\n- scaffolded routes...',
       handoff: '[\n  {\n    "phase": "implement"\n  }\n]',
       git_log_recent: 'abcd123 scaffold\n1234567 schema\n',
       recent_diff: 'diff --git a/src/auth/login.ts ...',
@@ -399,9 +397,6 @@ Phase: {{item_state.current_phase}}, attempt: {{item_state.retry_count}}
 ## Architecture
 {{architecture_md}}
 
-## Progress so far
-{{progress_md}}
-
 ## Handoff entries for this item
 {{handoff}}
 
@@ -421,7 +416,6 @@ Phase: {{item_state.current_phase}}, attempt: {{item_state.retry_count}}
     expect(result).toContain(JSON.stringify(item.acceptance_criteria, null, 2));
     expect(result).toContain('Phase: implement, attempt: 0');
     expect(result).toContain('# Architecture');
-    expect(result).toContain('# Progress');
     expect(result).toContain('"phase": "implement"');
     expect(result).toContain('abcd123 scaffold');
     expect(result).toContain('diff --git');

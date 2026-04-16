@@ -106,6 +106,9 @@ export type AckAttentionResult =
  */
 export type AckAttentionFn = (workflowId: string, attentionId: number) => AckAttentionResult;
 
+// Re-export RetryItemsResult so the CLI can import it from a single place.
+export type { RetryItemsResult, RetryItemsFn } from '../pipeline/retry-items.js';
+
 /**
  * Optional callbacks injected into the server at creation time.
  * These allow the API layer to delegate writes to the pipeline engine layer
@@ -118,6 +121,12 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   ackAttention?: AckAttentionFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/retry.
+   * Transitions all awaiting_user items in the workflow to in_progress.
+   * If omitted, the endpoint returns 501 Not Implemented.
+   */
+  retryItems?: import('../pipeline/retry-items.js').RetryItemsFn;
 }
 
 /**
@@ -434,6 +443,28 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const result = callbacks.ackAttention(id, attId);
       if (result.status === 'not_found') return notFound(reply, 'attention item not found');
       return reply.send(result);
+    },
+  );
+
+  // POST /api/workflows/:id/retry
+  // Transition all awaiting_user items in the workflow back to in_progress.
+  // The write is delegated to callbacks.retryItems (RC-3 — no writes in API layer).
+  fastify.post(
+    '/api/workflows/:id/retry',
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+
+      if (!callbacks.retryItems) {
+        return reply.status(501).send({ error: 'retry not configured' });
+      }
+
+      const result = callbacks.retryItems(id);
+
+      if (result.status === 'workflow_not_found') return notFound(reply, 'workflow not found');
+      if (result.status === 'none_awaiting') {
+        return reply.status(200).send({ status: 'none_awaiting', items: [] });
+      }
+      return reply.status(200).send(result);
     },
   );
 

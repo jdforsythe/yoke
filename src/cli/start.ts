@@ -37,6 +37,7 @@ import { assemblePrompt } from '../server/prompt/assembler.js';
 import { Scheduler, type PromptAssemblerFn } from '../server/scheduler/scheduler.js';
 import { dispatchNotification } from '../server/notifications/dispatcher.js';
 import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
+import { makeRetryItemsFn } from '../server/pipeline/retry-items.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
@@ -188,6 +189,12 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     state.registry.broadcast(workflowId, null, 'workflow.update', {
       attentionAcked: true,
     });
+  });
+
+  // Wire the retryItems handler so POST /api/workflows/:id/retry can fire
+  // user_retry transitions via the pipeline engine (RC-3 — no writes in API layer).
+  callbacks.retryItems = makeRetryItemsFn(db, (workflowId) => {
+    state.registry.broadcast(workflowId, null, 'workflow.update', { retried: true });
   });
 
   // Write server discovery file.

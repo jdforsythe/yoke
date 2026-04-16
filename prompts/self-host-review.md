@@ -2,11 +2,11 @@ You are the Yoke frontend engineer. Read docs/agents/frontend.md in full before 
 
 State in one sentence what you are about to review, then proceed.
 
-You are reviewing the implementation of feature **{{stage_id}}** for project **{{workflow_name}}**.
+You are reviewing the implementation of feature **{{item.id}}** for project **{{workflow_name}}**.
 
 ## Feature spec
 
-Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{stage_id}}"`.
+Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{item.id}}"`.
 That entry's `description`, `acceptance_criteria`, and `review_criteria` fields are the
 review contract. Do not proceed until you have read the full spec.
 
@@ -35,13 +35,14 @@ Report:
 
 If all acceptance criteria and review criteria pass with no blocking issues:
 ```json
-{"verdict": "PASS"}
+{"verdict": "PASS", "feature_id": "{{item.id}}"}
 ```
 
 If there are any blocking issues:
 ```json
 {
   "verdict": "FAIL",
+  "feature_id": "{{item.id}}",
   "blocking_issues": [
     "AC-1: <exact description of what failed and what evidence you found>",
     "RC-2: <exact description>"
@@ -64,15 +65,12 @@ if absent):
   "non_blocking": ["<optional minor observations>"]
 }
 ```
-If handoff.json does not exist, create it: `{"item_id": "{{stage_id}}", "entries": [<entry>]}`.
+If handoff.json does not exist, create it: `{"item_id": "{{item.id}}", "entries": [<entry>]}`.
 
 If verdict is PASS, no handoff.json entry is needed.
 
-**3. `docs/idea/dashboard-features.json`** — when verdict is PASS only.
-
-Find the entry with `"id": "{{stage_id}}"` in `docs/idea/dashboard-features.json`.
-Add `"status": "complete"` as a field to that entry, after the `"review_criteria"` array.
-Do not change any other field in the file. If the entry already has `"status": "complete"`,
-no change is needed. Do not modify this file if verdict is FAIL.
+**Do NOT modify `docs/idea/dashboard-features.json`.** The pipeline marks features
+complete automatically via a post-review script. Agents that write to this file will
+trip the diff checker and be sent to awaiting_user.
 
 Do not re-implement. Only report findings, then write the required output files. Stop.

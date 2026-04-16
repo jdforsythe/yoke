@@ -13,9 +13,6 @@ Phase: {{item_state.current_phase}} | Attempt: {{item_state.retry_count}}
 ## Architecture reference
 {{architecture_md}}
 
-## Progress notes
-{{progress_md}}
-
 ## Handoff entries for this feature
 {{handoff_entries}}
 
@@ -48,6 +45,7 @@ If there are any blocking issues, append a review entry to `handoff.json` before
   "session_id": "<value of $YOKE_SESSION_ID from your environment>",
   "ts": "<ISO 8601 timestamp>",
   "verdict": "FAIL",
+  "note": "<brief summary of what failed and why>",
   "blocking_issues": ["<each blocking issue>"],
   "non_blocking": ["<optional minor observations>"]
 }

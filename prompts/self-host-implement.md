@@ -2,11 +2,11 @@ You are the Yoke frontend engineer. Read docs/agents/frontend.md in full before 
 
 State in one sentence what you are about to build, then proceed.
 
-You are implementing feature **{{stage_id}}** for project **{{workflow_name}}**.
+You are implementing feature **{{item.id}}** for project **{{workflow_name}}**.
 
 ## Feature spec
 
-Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{stage_id}}"`.
+Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{item.id}}"`.
 That entry's `description`, `acceptance_criteria`, `review_criteria`, and `depends_on`
 fields are your implementation contract. Do not proceed until you have read the full spec.
 
@@ -34,19 +34,19 @@ Implement this feature per docs/agents/backend.md session protocol:
 
 When done:
 1. Summarize: what was built, what tests cover it, what is still untested, any deferred items.
-2. Update progress.md with a one-paragraph narrative.
-3. Append to handoff.json: intended files, deferred criteria, known risks. Entry shape:
+2. Append to handoff.json: intended files, deferred criteria, known risks, and a prose note. Entry shape:
    ```json
    {
      "phase": "implement",
      "attempt": <retry_count + 1>,
      "session_id": "<value of $YOKE_SESSION_ID from your environment>",
      "ts": "<ISO 8601 timestamp>",
+     "note": "<one-paragraph narrative: what was built, what tests cover it, what is deferred>",
      "intended_files": ["<list of files you modified>"],
      "deferred_criteria": ["<any AC/RC you consciously deferred with reason>"],
      "known_risks": ["<risks for the reviewer to watch>"]
    }
    ```
    If handoff.json exists, read it first and append to the `entries` array.
-   If it does not exist, create it: `{"item_id": "{{stage_id}}", "entries": [<entry>]}`.
-4. Stop.
+   If it does not exist, create it: `{"item_id": "{{item.id}}", "entries": [<entry>]}`.
+3. Stop.

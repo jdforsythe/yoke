@@ -19,6 +19,7 @@ import { register as registerInit } from './init.js';
 import { register as registerStart } from './start.js';
 import { register as registerStatus } from './status.js';
 import { register as registerCancel } from './cancel.js';
+import { register as registerAck } from './ack.js';
 import { register as registerDoctor } from './doctor.js';
 import { register as registerRecord } from './record.js';
 
@@ -33,6 +34,7 @@ export function buildProgram(): Command {
   registerStart(program);
   registerStatus(program);
   registerCancel(program);
+  registerAck(program);
   registerDoctor(program);
   registerRecord(program);
 

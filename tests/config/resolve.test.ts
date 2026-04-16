@@ -165,7 +165,7 @@ describe('resolveConfig — multiple phases', () => {
           command: 'claude',
           args: [],
           prompt_template: 'prompts/implement.md',
-          output_artifacts: [{ path: 'progress.md', schema: 'schemas/progress.schema.json' }],
+          output_artifacts: [{ path: 'handoff.json', schema: 'schemas/handoff.schema.json' }],
         },
       },
     };
@@ -175,7 +175,7 @@ describe('resolveConfig — multiple phases', () => {
       path.join(BASE, 'prompts/implement.md'),
     );
     expect(resolved.phases['implement'].output_artifacts?.[0].schema).toBe(
-      path.join(BASE, 'schemas/progress.schema.json'),
+      path.join(BASE, 'schemas/handoff.schema.json'),
     );
   });
 });

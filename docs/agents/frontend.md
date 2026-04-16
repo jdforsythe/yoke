@@ -95,6 +95,5 @@ Avoid: "fast", "smooth", "clean UI" — name the specific affordance or metric.
 
 **End:**
 - Summarize: UI surfaces touched, new routes, test coverage, anything deferred.
-- Update `progress.md` with a one-paragraph narrative.
-- Append to `handoff.json`: intended files, deferred criteria, known risks.
+- Append to `handoff.json`: a prose `note`, intended files, deferred criteria, known risks.
 - Stop.
