@@ -358,6 +358,51 @@ test('AttentionBanner: Acknowledge shows spinner then hides item after POST (AC-
   await expect(banner).not.toBeVisible();
 });
 
+test('AttentionBanner: item reappears if ack POST fails (RC-5)', async ({ page }) => {
+  let resolveAck: () => void = () => {};
+  const ackLatch = new Promise<void>((r) => {
+    resolveAck = r;
+  });
+
+  // POST returns 500 after the latch releases — lets us observe the spinner state first.
+  await page.route(`**/workflows/${WF_ID}/attention/1/ack`, async (route) => {
+    await ackLatch;
+    await route.fulfill({ status: 500, body: '' });
+  });
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        pendingAttention: [
+          {
+            id: 1,
+            kind: 'awaiting_user_retry',
+            payload: null,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+
+  await banner.getByRole('button', { name: 'Acknowledge' }).click();
+
+  // Spinner visible while POST is in-flight.
+  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeVisible();
+
+  // Release the deferred 500 response.
+  resolveAck();
+
+  // After failure: item reappears with the original Acknowledge button (RC-5).
+  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await expect(banner.getByText('awaiting_user_retry')).toBeVisible();
+});
+
 test('AttentionBanner: item removed when workflow.update clears pendingAttention (AC-4)', async ({
   page,
 }) => {
@@ -429,6 +474,45 @@ test('AppShell bell badge count reflects pending attention items (AC-5/AC-6)', a
   // Bell badge should show count = 2
   const bell = page.getByRole('button', { name: 'Notifications' });
   await expect(bell.locator('span').filter({ hasText: '2' })).toBeVisible();
+});
+
+test('Bell badge increments in real-time when notice frame arrives (AC-6)', async ({ page }) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ pendingAttention: [] }));
+        }
+      } catch {
+        // ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByRole('heading', { level: 1, name: WF_NAME })).toBeVisible();
+
+  // No badge initially.
+  const bell = page.getByRole('button', { name: 'Notifications' });
+  await expect(bell.locator('span')).not.toBeVisible();
+
+  // Notice frame arrives with requires_attention.
+  capturedWs!.send(
+    noticeFrame({
+      severity: 'requires_attention',
+      kind: 'validator_fail',
+      message: 'Validation failed',
+      persistedAttentionId: 7,
+    }),
+  );
+
+  // Badge now shows 1 (real-time update).
+  await expect(bell.locator('span').filter({ hasText: '1' })).toBeVisible();
 });
 
 test('AttentionBanner: ?attention=<id> deep-link clears URL param and highlights item', async ({
