@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yoke.local/schemas/handoff.schema.json",
   "title": "handoff.json",
-  "description": "Per-item, append-only structured cross-phase channel (plan-draft3 §File Contract, D13). Replaces free-form progress.md as the contract surface between phases. User-injected context from the dashboard lands here as entries.user_injected_context (D43). The harness writes entries; agents read. Item ID matches whatever the stage's items_id expression extracts (Issue 2).",
+  "description": "Per-item, append-only structured cross-phase channel (plan-draft3 §File Contract, D13). The canonical contract surface between phases — each entry carries a prose note plus structured metadata. User-injected context from the dashboard lands here as entries.user_injected_context (D43). The harness writes entries; agents read. Item ID matches whatever the stage's items_id expression extracts (Issue 2).",
   "type": "object",
   "additionalProperties": false,
   "required": ["item_id", "entries"],
@@ -37,6 +37,10 @@
           "description": "Session chain link for -c continuation (plan-draft3 §Protocol: token usage)."
         },
         "ts": { "type": "string", "format": "date-time" },
+        "note": {
+          "type": "string",
+          "description": "One-paragraph narrative: what was built, what tests cover it, what is deferred. Written by the agent; replaces progress.md."
+        },
         "intended_files": {
           "type": "array",
           "items": { "type": "string" },

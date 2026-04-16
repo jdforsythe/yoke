@@ -7,3 +7,4 @@ bin/
 *.db-shm
 .worktrees/
 .yoke/
+handoff.json

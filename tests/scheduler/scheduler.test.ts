@@ -963,6 +963,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       endedAt: new Date().toISOString(),
       exitCode: 0,
       actionTaken: 'continue' as const,
+      output: '',
     };
 
     const sched = new Scheduler({
@@ -1035,6 +1036,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       endedAt: new Date().toISOString(),
       exitCode: 1,
       actionTaken: 'stop-and-ask' as const,
+      output: '',
     };
 
     let spawnCount = 0;
@@ -1128,6 +1130,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       endedAt: new Date().toISOString(),
       exitCode: 0,
       actionTaken: 'continue' as const,
+      output: '',
     };
 
     const sched = new Scheduler({
@@ -1678,4 +1681,117 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
 
     await sched.stop();
   }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// feat-pipeline-hardening: restart with awaiting_retry items
+// ---------------------------------------------------------------------------
+
+describe('feat-pipeline-hardening: restart with awaiting_retry items', () => {
+  it('backoff_elapsed fires for awaiting_retry items after scheduler restart', async () => {
+    const config = makeConfig();
+
+    // Ingest workflow and manually set the item to awaiting_retry.
+    const { workflowId } = ingestWorkflow(db, config);
+    const items = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+    const itemId = items.find(i => {
+      const row = db.reader().prepare('SELECT stage_id FROM items WHERE id = ?').get(i.id) as { stage_id: string };
+      return row.stage_id !== 'plan' || items.length === 1;
+    })!.id;
+
+    // Set item to awaiting_retry with retry_count=1 and a worktree path.
+    db.writer.prepare(`UPDATE items SET status = 'awaiting_retry', retry_count = 1, updated_at = ? WHERE id = ?`)
+      .run(new Date().toISOString(), itemId);
+    db.writer.prepare(`UPDATE workflows SET worktree_path = ?, updated_at = ? WHERE id = ?`)
+      .run(path.join(tmpDir, 'wt'), new Date().toISOString(), workflowId);
+    // Ensure worktree dir exists for the session.
+    fs.mkdirSync(path.join(tmpDir, 'wt'), { recursive: true });
+
+    // Start a fresh scheduler (simulating restart — retryAfterAt map is empty).
+    const { scheduler } = buildScheduler({ config, pollIntervalMs: 50 });
+    await scheduler.start();
+
+    // The scheduler should see awaiting_retry, arm retryAfterAt, then fire
+    // backoff_elapsed after the backoff elapses (15s for retry_count=1, but
+    // in tests the session spawn completes immediately so we watch for the
+    // item to leave awaiting_retry).
+    await pollUntil(() => {
+      const status = db.reader()
+        .prepare('SELECT status FROM items WHERE id = ?')
+        .get(itemId) as { status: string };
+      return status.status !== 'awaiting_retry';
+    }, { timeoutMs: 25_000 });
+
+    const finalStatus = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(itemId) as { status: string };
+    // After backoff_elapsed the item should have advanced (in_progress or complete).
+    expect(['in_progress', 'complete', 'awaiting_user']).toContain(finalStatus.status);
+
+    await scheduler.stop();
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// feat-pipeline-hardening: two-phase workflow
+// ---------------------------------------------------------------------------
+
+describe('feat-pipeline-hardening: two-phase workflow', () => {
+  it('advances current_phase from phase-a to phase-b and completes', async () => {
+    const config = makeConfig({
+      pipeline: {
+        stages: [
+          { id: 'stage-alpha', run: 'once' as const, phases: ['phase-a', 'phase-b'] },
+        ],
+      },
+      phases: {
+        'phase-a': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do phase A.',
+        },
+        'phase-b': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do phase B.',
+        },
+      },
+    });
+
+    const { workflowId } = ingestWorkflow(db, config);
+    const { scheduler, broadcasts } = buildScheduler({ config, pollIntervalMs: 50 });
+    await scheduler.start();
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string };
+      return wf.status === 'completed';
+    }, { timeoutMs: 15_000 });
+
+    // Verify the workflow completed.
+    const wf = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wf.status).toBe('completed');
+
+    // Verify the item went through both phases: there should be session records
+    // for both phase-a and phase-b.
+    const sessions = db.reader()
+      .prepare(`SELECT phase FROM sessions WHERE workflow_id = ? ORDER BY started_at`)
+      .all(workflowId) as { phase: string }[];
+    const phases = sessions.map(s => s.phase);
+    expect(phases).toContain('phase-a');
+    expect(phases).toContain('phase-b');
+
+    // Verify item.state broadcasts show phase advancement.
+    const itemStates = broadcasts.filter(b => b.frameType === 'item.state');
+    const phaseValues = itemStates.map(b => (b.payload as Record<string, unknown>).state)
+      .map(s => (s as Record<string, unknown>).currentPhase);
+    expect(phaseValues).toContain('phase-b');
+
+    await scheduler.stop();
+  }, 20_000);
 });

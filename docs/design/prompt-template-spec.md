@@ -52,7 +52,7 @@ PromptTemplateError: unknown variable "foo"
   offset:   line 42 column 7
   context:  ...to implement {{foo}} for this item...
   known:    item, item_id, item_state, workflow_name, stage_id,
-            architecture_md, progress_md, handoff_entries,
+            architecture_md, handoff_entries,
             git_log_recent, recent_diff, user_injected_context
 ```
 
@@ -93,8 +93,7 @@ variables replaced with opaque `item` and `item_state`.
 | `item` | Opaque user data object from the item manifest (Issue 2). Templates access fields via dot traversal: `{{item.description}}`, `{{item.acceptance_criteria}}`, `{{item.my_custom_field}}`. The harness does not interpret any field names. |
 | `item_id` | The stable item identifier extracted by `items_id` |
 | `item_state` | Harness-tracked state object (Issue 3). Available fields: `item_state.status`, `item_state.current_phase`, `item_state.retry_count`, `item_state.blocked_reason` |
-| `handoff_entries` | JSON array of handoff entries for this item (pretty-printed) |
-| `progress_md` | Contents of `progress.md` for this item if present, else empty string |
+| `handoff_entries` | JSON array of handoff entries for this item (pretty-printed). Each entry includes a `note` field with the agent's narrative summary. |
 | `recent_diff` | HEAD vs last completed-phase commit, or empty |
 
 ### 3.3 Variables available in once-stage phases
@@ -152,8 +151,7 @@ export async function buildPromptContext(
 
 The builder:
 
-1. Reads `architecture_md` and `progress_md` from the worktree (or
-   returns `""` if absent).
+1. Reads `architecture_md` from the worktree (or returns `""` if absent).
 2. For per-item stages: populates `item` from `items.data` (opaque
    JSON blob, Issue 2) and `item_state` from harness-state columns
    (Issue 3).
@@ -274,9 +272,6 @@ Phase: {{item_state.current_phase}}, attempt: {{item_state.retry_count}}
 ## Architecture
 {{architecture_md}}
 
-## Progress so far
-{{progress_md}}
-
 ## Handoff entries for this item
 {{handoff_entries}}
 
@@ -312,7 +307,6 @@ PromptContext (built by the Pipeline Engine):
   workflow_name: "add-auth",
   stage_id: "implementation",
   architecture_md: "# Architecture\n\n...",
-  progress_md: "# Progress\n\n- scaffolded routes...",
   handoff_entries: "[\n  {\n    \"phase\": \"implement\", ...",
   git_log_recent: "abcd123 scaffold\n1234567 schema\n...",
   recent_diff: "diff --git a/src/auth/login.ts ...",

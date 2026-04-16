@@ -279,6 +279,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'retry budget > 0',
         ['increment retry_count'],
       ),
+      outcome(
+        'awaiting_user',
+        'retry budget exhausted',
+        ['insert pending_attention'],
+      ),
     ]),
 
     diff_check_fail: conditional([
@@ -286,6 +291,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'awaiting_retry',
         'retry budget > 0, classifier=policy',
         ['log forbidden diff'],
+      ),
+      outcome(
+        'awaiting_user',
+        'retry budget exhausted',
+        ['insert pending_attention'],
       ),
     ]),
 

@@ -142,13 +142,20 @@ phases:
             goto: implement
             max_revisits: 3
           "*": continue
+      - name: mark-complete
+        run: ["node", "scripts/mark-feature-complete.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
 
 # ---------------------------------------------------------------------------
 # Worktrees
 #
-# Bootstrap symlinks the repo-root node_modules so each worktree can run
-# tests without a full pnpm install. Safe here because all stages build the
-# same package and no stage adds new pnpm dependencies.
+# Bootstrap runs pnpm install in the worktree so each worktree gets its own
+# isolated node_modules. This avoids cross-contamination between the main
+# workspace and the worktree (e.g. missing direct deps not in the worktree's
+# package.json still being resolvable via the main workspace's store).
 # ---------------------------------------------------------------------------
 
 worktrees:
@@ -156,7 +163,7 @@ worktrees:
   branch_prefix: yoke/
   bootstrap:
     commands:
-      - "ln -sf $(realpath $(git rev-parse --git-common-dir)/..)/node_modules node_modules"
+      - "pnpm install"
 
 # ---------------------------------------------------------------------------
 # Runtime / operational

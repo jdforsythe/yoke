@@ -327,9 +327,63 @@ describe('AC-3: session_ok fault injection → crash recovery restart', () => {
 
     const finalStatus = readItemStatus(items1[0].id);
     // Item must have exited 'in_progress' — crash recovery worked.
-    // Note: the stale session row stays 'running' in SQLite (never ended via
-    // endSession); crash recovery only updates the item state, not the session row.
     expect(['awaiting_retry', 'awaiting_user', 'complete', 'ready']).toContain(finalStatus);
+
+    // feat-pipeline-hardening: stale session rows are now ended during crash
+    // recovery. The session should have status='failed' (no longer 'running')
+    // so it does not count against maxParallel.
+    expect(readRunningSessionCount(workflowId)).toBe(0);
+
+    await scheduler2.stop();
+  });
+});
+
+describe('feat-pipeline-hardening: stale sessions ended during crash recovery', () => {
+  it('stale sessions have status=failed after crash recovery, not running', async () => {
+    const config = makeConfig();
+    const fi = new ActiveFaultInjector(['session_ok']);
+    const scheduler1 = buildScheduler({ config, faultInjector: fi });
+
+    const { workflowId } = ingestWorkflow(db, config);
+    await scheduler1.start();
+
+    // Wait for session to be created with 'running' status.
+    await pollUntil(() => readRunningSessionCount(workflowId) > 0);
+    // Wait for the fault to fire.
+    await pollUntil(
+      () => {
+        const items = readAllItems(workflowId);
+        return items[0]?.status === 'in_progress' && readRunningSessionCount(workflowId) === 1;
+      },
+      { timeoutMs: 3000 },
+    );
+    await scheduler1.stop();
+
+    // Capture the session id for verification.
+    const sessionsBefore = db.reader()
+      .prepare(`SELECT id, status FROM sessions WHERE workflow_id = ?`)
+      .all(workflowId) as { id: string; status: string }[];
+    const staleSession = sessionsBefore.find(s => s.status === 'running');
+    expect(staleSession).toBeDefined();
+
+    // Start a new scheduler — crash recovery should end the stale session.
+    const scheduler2 = buildScheduler({ config });
+    await scheduler2.start();
+
+    await pollUntil(() => {
+      const s = readItemStatus(readAllItems(workflowId)[0].id);
+      return s !== 'in_progress';
+    });
+
+    // The stale session must now be ended (status != 'running').
+    const sessionsAfter = db.reader()
+      .prepare(`SELECT id, status, ended_at FROM sessions WHERE id = ?`)
+      .get(staleSession!.id) as { id: string; status: string; ended_at: string | null };
+    expect(sessionsAfter.status).toBe('failed');
+    expect(sessionsAfter.ended_at).not.toBeNull();
+
+    // No more running sessions — concurrency is unblocked.
+    expect(readRunningSessionCount(workflowId)).toBe(0);
 
     await scheduler2.stop();
   });

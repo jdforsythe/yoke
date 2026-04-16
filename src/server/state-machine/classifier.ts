@@ -51,6 +51,7 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /\b529\b/,          // Anthropic overload HTTP status
   /\b503\b/,          // service unavailable
   /\b502\b/,          // bad gateway
+  /\b500\b/,          // internal server error
   /\b504\b/,          // gateway timeout
   /ECONNRESET/,
   /ETIMEDOUT/,

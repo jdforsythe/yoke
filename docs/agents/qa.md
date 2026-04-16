@@ -96,6 +96,5 @@ Avoid: "comprehensive coverage", "thoroughly tested", "robust" — name the spec
 
 **End:**
 - Summarize: fixtures added, tests added, docs drafted, outstanding gaps, acceptance scenarios green/red.
-- Update `progress.md` with a one-paragraph narrative.
-- Append to `handoff.json`: intended files, deferred criteria, known risks.
+- Append to `handoff.json`: a prose `note`, intended files, deferred criteria, known risks.
 - Stop.

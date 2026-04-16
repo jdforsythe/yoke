@@ -17,6 +17,9 @@ importers:
       ajv:
         specifier: ^8.17.1
         version: 8.18.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.18.0)
       better-sqlite3:
         specifier: ^12.9.0
         version: 12.9.0
@@ -51,6 +54,9 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@20.19.39)(lightningcss@1.32.0)
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
 
   src/web:
     dependencies:
