@@ -8,7 +8,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && pnpm --filter web typecheck",
     "lint": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "dev:web": "pnpm --filter web dev"
   },
   "dependencies": {
     "@fastify/websocket": "^8.3.1",

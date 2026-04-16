@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
-const YOKE_PORT = parseInt(process.env['YOKE_PORT'] ?? '3456', 10);
+const YOKE_PORT = parseInt(process.env['YOKE_PORT'] ?? '7777', 10);
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],

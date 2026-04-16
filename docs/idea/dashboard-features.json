@@ -130,7 +130,8 @@
         "Toast fallback renders via a portal-based stack, not alert()",
         "localStorage key for permission state has a namespaced key (e.g., yoke:push-permission)",
         "The notificationclick handler uses clients.openWindow() or clients.matchAll() + focus(), not window.open()"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-render-reducer",
@@ -248,7 +249,8 @@
         "The component does not poll; it reacts to WebSocket frames for additions and workflow.update for removals",
         "Optimistic removal is display-only; if the HTTP POST fails, the item reappears",
         "The banner stacks below CrashRecoveryBanner using layout order, not z-index manipulation"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-github-buttons",
@@ -306,7 +308,8 @@
         "No dangerouslySetInnerHTML for text content; code highlighting uses a safe library or pre-tokenized approach",
         "The component does not subscribe to the full render-model state; it receives blocks for the active session only",
         "Scroll position restore does not trigger a re-render cascade"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-feature-board",
@@ -367,7 +370,8 @@
         "Token counts are stored as numbers, formatted only at render time",
         "The HUD does not re-render on every stream frame; only on stream.usage frames",
         "Per-session breakdown is derived from the reducer state, not a separate data fetch"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-macos-deep-link",
@@ -395,7 +399,8 @@
         "Subscription deduplication checks the WebSocket client's active subscription set",
         "Error state for invalid workflow uses the same layout as other error states, not a blank page",
         "No server-side code is introduced; this feature is purely client-side routing"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-review-panel",
@@ -424,7 +429,8 @@
         "The component reuses ToolCallRenderer and TextBlockRenderer for nested content, not custom renderers",
         "Summary counts update reactively as subagent results arrive",
         "The panel does not hold subagent state outside the render-model reducer"
-      ]
+      ],
+      "status": "pending"
     },
     {
       "id": "feat-prepost-rendering",
@@ -453,7 +459,8 @@
         "Stderr rendering uses a semantic class, not inline color: red",
         "The collapsible region preserves its expanded/collapsed state across re-renders",
         "No new block types are introduced; pre/post rendering uses SystemNotice with extended metadata"
-      ]
+      ],
+      "status": "pending"
     },
     {
       "id": "feat-control-matrix",
@@ -482,7 +489,8 @@
         "commandId generation uses crypto.randomUUID(), not Math.random()",
         "The component does not directly import the WebSocket module; it receives a sendControl callback via props or context",
         "Destructive action buttons are visually distinct (red/warning treatment)"
-      ]
+      ],
+      "status": "complete"
     }
   ]
 }

@@ -1,20 +1,28 @@
 {
-  "item_id": "feat-attention-banner",
+  "item_id": "feat-stream-pane",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 4,
-      "session_id": "afbc6abf-4add-4d63-bc14-6c954e9d9a43",
-      "ts": "2026-04-16T22:00:00Z",
-      "note": "Attempt 4 addressed two test coverage gaps identified by reviewing the spec against existing tests. RC-5 (optimistic removal is display-only; if the HTTP POST fails, the item reappears) had no e2e coverage — added a deferred-latch test that sends a 500 from the ack endpoint and verifies the item and Acknowledge button reappear after the spinner clears. AC-6 (badge count updates in real-time) only had a static snapshot test; added a test that starts with empty pendingAttention, fires a notice frame with requires_attention, and verifies the bell badge increments to 1. The full feat-attention-banner implementation (AttentionBanner.tsx, WorkflowDetailRoute integration, AppShell bell badge via attentionStore) has been in place since attempts 1–3 and covers all 8 ACs and 6 RCs. The helpers.ts TS2300 duplicate regression (introduced by feat-stream-pane) was already resolved in commit 2c40768 before this session ran.",
+      "attempt": 2,
+      "session_id": "4a972385-d9ee-463d-97e3-c24567c8b4fe",
+      "ts": "2026-04-16T00:00:00Z",
+      "note": "feat-stream-pane fully implemented and all 21 e2e tests pass. LiveStreamPane (src/web/src/components/LiveStream/LiveStreamPane.tsx) uses @tanstack/react-virtual with measureElement for accurate variable-height rows (AC-1/AC-2). Follow-tail auto-scrolls when within 50px of bottom; detaches on upscroll; shows 'Jump to latest' pill when detached (AC-3/AC-4/AC-5). Scroll position is persisted per-sessionId in a module-level Map (AC-9). BlockRouter (React.memo) routes to TextBlockRenderer, ToolCallRenderer, ThinkingBlockRenderer, SystemNoticeRenderer (AC-6/AC-7). The truncated_sentinel is rendered inline by the parent to avoid passing an unstable onLoadEarlier function prop that would defeat React.memo. AC-8 (load earlier messages) required a _prependedBlocks mechanism: types.ts adds _prependedBlocks to SessionRenderState; reducer.ts initialises it in emptySession() and returns [sentinel, ...prepended, ...ring] from getSessionBlocks(); renderStore.ts adds prependSessionBlocks() and loadEarlierFrames() (processes frames via temp state so they don't mutate the live ring). The sentinel stays at index 0 so loadEarlier's blocks[0].type check still works. getSessionBlocksSnapshot cache-invalidates on ring OR prependedBlocks reference change. Window test hooks __yokeDispatch__ and __yokeDispatchText__ are registered in main.tsx for e2e block injection. The AC-8 timing fix waits for 'Block 10000' to be visible (rAF flushed + follow-tail settled) before scrolling to top.",
       "intended_files": [
-        "src/web/e2e/workflow-detail.spec.ts"
+        "src/web/src/store/types.ts",
+        "src/web/src/store/reducer.ts",
+        "src/web/src/store/renderStore.ts",
+        "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+        "src/web/src/main.tsx",
+        "src/web/e2e/stream-pane.spec.ts",
+        "src/web/vite.config.ts",
+        "docs/idea/dashboard-features.json"
       ],
       "deferred_criteria": [],
       "known_risks": [
-        "RC-6 (banner stacks below CrashRecoveryBanner via layout order, not z-index) is not directly testable with Playwright; it is enforced structurally by render order in WorkflowDetailRoute.tsx and relies on reviewer code inspection.",
-        "RC-3 (attention items are never cleared by push-notification failure) is not directly tested; the code path for push failure goes through AppShell's notice listener which dispatches showNotification or toast but never mutates pendingAttention — correct by construction.",
-        "RC-5 deferred-latch test assumes Playwright's route fulfillment delivers the 500 before the default Playwright timeout. This is safe on any non-pathological CI environment."
+        "AC-5 'Jump to latest' test is flaky when the full suite runs concurrently (resource contention causes the pill to detach before click); passes reliably in isolation.",
+        "The AC-8 timing fix (wait for 'Block 10000') relies on follow-tail working before we scroll to top. If follow-tail is broken, the wait will time out rather than fail fast.",
+        "loadEarlierFrames processes frames through a temporary state keyed by sessionId; if the HTTP endpoint returns frames for a different sessionId (e.g. due to a multi-session log), they will not appear because getSessionBlocks is called with the original sessionId on the temp state.",
+        "prependSessionBlocks prepends new blocks BEFORE existing _prependedBlocks, so repeated 'load earlier' calls accumulate in the correct order (newest-prepend at front) only if the API returns blocks in reverse-chronological order as expected."
       ]
     }
   ]
