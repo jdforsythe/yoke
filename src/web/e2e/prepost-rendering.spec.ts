@@ -196,6 +196,9 @@ test('prepost.command.ended shows green exit 0 badge on success (AC-4)', async (
     return badge?.className?.includes('green') ?? false;
   });
   expect(hasGreen).toBe(true);
+
+  // Action label "continue" must be visible
+  await expect(page.getByText('continue')).toBeVisible();
 });
 
 test('prepost.command.ended shows red exit badge for non-zero exit code (AC-4)', async ({
@@ -231,6 +234,9 @@ test('prepost.command.ended shows red exit badge for non-zero exit code (AC-4)',
     return badge?.className?.includes('red') ?? false;
   });
   expect(hasRed).toBe(true);
+
+  // Action label "abort" must be visible
+  await expect(page.getByText('abort')).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,20 @@ export const SystemNoticeRenderer = memo(function SystemNoticeRenderer({
           </span>
         )}
 
+        {/* Action label for finalised prepost commands (continue / abort / ...) */}
+        {isPrepost && block.prepostFinalized && block.action != null &&
+          typeof (block.action as Record<string, unknown>).type === 'string' && (
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+              (block.action as { type: string }).type === 'abort'
+                ? 'bg-red-600/20 text-red-400'
+                : 'bg-gray-600/30 text-gray-400'
+            }`}
+          >
+            {(block.action as { type: string }).type}
+          </span>
+        )}
+
         {/* Toggle button for prepost output log */}
         {isPrepost && hasOutput && (
           <button
