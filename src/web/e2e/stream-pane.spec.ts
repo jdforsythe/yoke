@@ -469,3 +469,217 @@ test('Clicking Jump to latest re-engages follow-tail and hides pill (AC-5)', asy
   // Last block is visible again (scrolled back to bottom)
   await expect(page.getByText('Jump test line 30')).toBeVisible();
 });
+
+// ---------------------------------------------------------------------------
+// 1,000+ block rendering (AC-1)
+// ---------------------------------------------------------------------------
+
+test('Renders 1000+ blocks via follow-tail without timeout (AC-1)', async ({ page }) => {
+  // Inject 1,000 blocks via the window test hook after the session is established.
+  await page.routeWebSocket('**/stream', (ws) => {
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ activeSessions: [makeActiveSession()] }));
+          ws.send(sessionStartedFrame(SESS, 'implement', 1, 2));
+        }
+      } catch { /* ignore */ }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText(/Session started/)).toBeVisible();
+
+  // Inject 1,000 text blocks via the rAF-batched test hook.
+  await page.evaluate(({ sessionId, wfId }) => {
+    const dispatchText = (window as unknown as Record<string, (f: unknown) => void>)['__yokeDispatchText__'];
+    for (let i = 1; i <= 1000; i++) {
+      dispatchText({
+        v: 1, type: 'stream.text', workflowId: wfId, sessionId, seq: 100 + i,
+        ts: new Date().toISOString(),
+        payload: { sessionId, blockId: `bulk-${i}`, textDelta: `Bulk block ${i}`, final: true },
+      });
+    }
+  }, { sessionId: SESS, wfId: WF_ID });
+
+  // Follow-tail must have scrolled to the last block.
+  await expect(page.getByText('Bulk block 1000')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Variable-height block overlap (AC-2)
+// ---------------------------------------------------------------------------
+
+test('Variable-height blocks (short vs code) do not overlap (AC-2)', async ({ page }) => {
+  const shortText = 'Short line.';
+  const codeBlock = '```typescript\n' + 'const x = 42;\n'.repeat(10) + '```';
+
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({ activeSessions: [makeActiveSession()] }));
+    ws.send(sessionStartedFrame(SESS, 'implement', 1, 2));
+    ws.send(streamTextFrame(SESS, 'short-blk', shortText, 3, true));
+    ws.send(streamTextFrame(SESS, 'code-blk', codeBlock, 4, true));
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText(shortText)).toBeVisible();
+  await expect(page.getByText('const x = 42;')).toBeVisible();
+
+  // Verify that the two block rows do not overlap by checking their bounding rects.
+  const noOverlap = await page.evaluate(() => {
+    const rows = document.querySelectorAll('[data-testid="stream-scroll-container"] [data-index]');
+    if (rows.length < 2) return true; // not enough rows to overlap
+    let prevBottom = -Infinity;
+    for (const row of Array.from(rows)) {
+      const rect = row.getBoundingClientRect();
+      if (rect.height === 0) continue; // skip unrendered
+      if (rect.top < prevBottom - 1) return false; // overlap detected
+      prevBottom = rect.bottom;
+    }
+    return true;
+  });
+  expect(noOverlap).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// Load earlier messages — truncated sentinel (AC-8)
+// ---------------------------------------------------------------------------
+
+test('Load earlier messages button fetches older blocks and prepends without scroll jump (AC-8)', async ({
+  page,
+}) => {
+  // Mock the session log API endpoint.
+  const EARLIER_TEXT = 'Earlier log message from HTTP';
+  await page.route(`**/api/sessions/${SESS}/log**`, (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        entries: [
+          JSON.stringify({
+            v: 1, type: 'stream.text', workflowId: WF_ID, sessionId: SESS, seq: 1,
+            ts: new Date().toISOString(),
+            payload: { sessionId: SESS, blockId: 'earlier-blk', textDelta: EARLIER_TEXT, final: true },
+          }),
+        ],
+      }),
+    });
+  });
+
+  await page.routeWebSocket('**/stream', (ws) => {
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ activeSessions: [makeActiveSession()] }));
+          ws.send(sessionStartedFrame(SESS, 'implement', 1, 2));
+        }
+      } catch { /* ignore */ }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText(/Session started/)).toBeVisible();
+
+  // Inject 10,000 blocks via rAF-batched hook to trigger ring eviction.
+  // Ring cap = 10,000; after session.started (1 block), pushing 10,000 more
+  // evicts the first, setting _evictedCount = 1 and making the sentinel appear.
+  await page.evaluate(({ sessionId, wfId }) => {
+    const dispatchText = (window as unknown as Record<string, (f: unknown) => void>)['__yokeDispatchText__'];
+    for (let i = 1; i <= 10000; i++) {
+      dispatchText({
+        v: 1, type: 'stream.text', workflowId: wfId, sessionId, seq: 200 + i,
+        ts: new Date().toISOString(),
+        payload: { sessionId, blockId: `evict-${i}`, textDelta: `Block ${i}`, final: true },
+      });
+    }
+  }, { sessionId: SESS, wfId: WF_ID });
+
+  // Wait for the rAF to flush and follow-tail to scroll to the last block.
+  // Without this wait, the rAF may fire AFTER the next page.evaluate
+  // (scroll to top), leaving the container empty and nearBottom=true —
+  // then follow-tail kicks in when the blocks arrive and scrolls back down.
+  await expect(page.getByText('Block 10000')).toBeVisible();
+
+  // Scroll to the top so the virtualizer renders the sentinel (index 0).
+  // The container now overflows (10 000 blocks rendered), so nearBottom=false
+  // and atBottomRef is correctly set to false — follow-tail stays disengaged.
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="stream-scroll-container"]');
+    if (el) { el.scrollTop = 0; el.dispatchEvent(new Event('scroll', { bubbles: true })); }
+  });
+
+  // The "Load earlier messages" button must appear (sentinel visible).
+  const loadBtn = page.getByRole('button', { name: /Load earlier messages/ });
+  await expect(loadBtn).toBeVisible({ timeout: 10_000 });
+
+  // Clicking it must fetch from the HTTP endpoint and prepend the earlier block.
+  await loadBtn.click();
+  await expect(page.getByText(EARLIER_TEXT)).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Session scroll position preservation (AC-9)
+// ---------------------------------------------------------------------------
+
+test('Scroll position is preserved and restored when switching sessions (AC-9)', async ({
+  page,
+}) => {
+  const SESS_B = 'sess-b-scroll-test';
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ activeSessions: [makeActiveSession()] }));
+          ws.send(sessionStartedFrame(SESS, 'implement', 1, 2));
+          // Send enough blocks so session A overflows the visible viewport.
+          for (let i = 1; i <= 30; i++) {
+            ws.send(streamTextFrame(SESS, `sa-${i}`, `Session A line ${i} — content for scrolling`, 2 + i, true));
+          }
+        }
+      } catch { /* ignore */ }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('Session A line 30')).toBeVisible();
+
+  // Scroll session A to the top (detaches follow-tail).
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="stream-scroll-container"]');
+    if (el && el.scrollHeight > el.clientHeight + 50) {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    }
+  });
+
+  // Confirm follow-tail detached (Jump to latest visible).
+  await expect(page.getByRole('button', { name: /Jump to latest/ })).toBeVisible();
+
+  // Switch to session B — the scroll position of session A should be saved.
+  capturedWs!.send(
+    snapshotFrame({ activeSessions: [{ sessionId: SESS_B, phase: 'implement', attempt: 2, startedAt: new Date().toISOString(), parentSessionId: null }] }),
+  );
+  capturedWs!.send(sessionStartedFrame(SESS_B, 'implement', 2, 99));
+
+  // Session B shows its own started notice (no session A blocks visible).
+  await expect(page.getByText(/Session started/)).toBeVisible();
+
+  // Switch back to session A via a new snapshot listing session A as active.
+  capturedWs!.send(snapshotFrame({ activeSessions: [makeActiveSession()] }));
+
+  // Session A blocks near the top should be visible (scroll restored to ~0).
+  await expect(page.getByText('Session A line 1 — content for scrolling')).toBeVisible();
+
+  // The Jump to latest pill should still be present (scroll position preserved at
+  // top, not auto-scrolled back to bottom).
+  await expect(page.getByRole('button', { name: /Jump to latest/ })).toBeVisible();
+});
