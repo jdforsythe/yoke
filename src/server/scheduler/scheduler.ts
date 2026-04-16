@@ -19,7 +19,7 @@
  *     - bootstrapping     → createWorktree + runBootstrap → bootstrap_ok | fail
  *     - in_progress (not  → spawn agent session (full async lifecycle)
  *       in inFlight)
- *     - awaiting_retry    → fire backoff_elapsed after RETRY_BACKOFF_MS
+ *     - awaiting_retry    → fire backoff_elapsed after exponential backoff (15 s → 30 s → 1 m → 2 m → …)
  *     - rate_limited      → fire rate_limit_window_elapsed after reset_at
  *
  * ## Concurrency
@@ -45,6 +45,7 @@
 
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { JSONPath } from 'jsonpath-plus';
 import type { DbPool } from '../storage/db.js';
 import type { ResolvedConfig } from '../../shared/types/config.js';
 import type { Stage, Phase } from '../../shared/types/config.js';
@@ -81,6 +82,7 @@ import { captureGitHead, scanArtifactWrites } from '../hook-contract/artifact-wr
 import type { ArtifactWriteRecord } from '../pipeline/engine.js';
 import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
 import { seedPerItemStage } from './per-item-seeder.js';
+import { injectHookFailure } from '../prepost/handoff-injector.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,9 +153,41 @@ export type NotifyFn = (opts: {
 const DEFAULT_MAX_PARALLEL = 4;
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_GRACE_PERIOD_MS = 10_000;
-/** Backoff before re-spawning an awaiting_retry item (ms). */
-const RETRY_BACKOFF_MS = 5_000;
+/** Initial backoff for the first transient-retry attempt (ms). */
+const RETRY_BACKOFF_INITIAL_MS = 15_000;
+/** Maximum backoff cap for transient retries (ms). */
+const RETRY_BACKOFF_MAX_MS = 3_600_000; // 1 hour
+
+/**
+ * Compute exponential backoff delay for an awaiting_retry item.
+ * Schedule: 15 s → 30 s → 1 m → 2 m → 4 m → … (capped at 1 h).
+ *
+ * @param retryCount  post-increment items.retry_count (1 for first retry).
+ */
+function computeRetryBackoffMs(retryCount: number): number {
+  return Math.min(
+    RETRY_BACKOFF_INITIAL_MS * Math.pow(2, Math.max(0, retryCount - 1)),
+    RETRY_BACKOFF_MAX_MS,
+  );
+}
 const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'];
+
+/**
+ * Extract the item's stable ID (the value identified by `items_id` JSONPath)
+ * from its serialised data, for use in log labels.  Falls back to the raw
+ * item UUID when the stage has no `items_id` or parsing fails.
+ */
+function itemLabel(itemId: string, data: string, stage: { items_id?: string }): string {
+  if (!stage.items_id) return itemId;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    const result = JSONPath({ path: stage.items_id, json: parsed as object }) as unknown[];
+    const val = result.length === 1 && Array.isArray(result[0]) ? (result[0] as unknown[])[0] : result[0];
+    return typeof val === 'string' && val !== '' ? val : itemId;
+  } catch {
+    return itemId;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -255,6 +289,14 @@ export class Scheduler {
   /** itemId → timestamp(ms) when the item may next be retried. */
   private readonly retryAfterAt = new Map<string, number>();
 
+  /**
+   * itemId → retry mode to pass back to the engine when backoff_elapsed fires.
+   * Set whenever an item enters awaiting_retry, so the engine can re-use the
+   * mode that was chosen at transition time (important for transient retries
+   * which always use 'fresh_with_failure_summary' regardless of the ladder).
+   */
+  private readonly retryModeFor = new Map<string, 'continue' | 'fresh_with_failure_summary' | 'fresh_with_diff'>();
+
   /** itemId → unix seconds when rate-limit window resets. */
   private readonly rateLimitResetAt = new Map<string, number>();
 
@@ -310,6 +352,25 @@ export class Scheduler {
     return result;
   }
 
+  /**
+   * Arms the in-memory retry timer and mode for an item that just entered
+   * awaiting_retry.  Centralises the retryAfterAt / retryModeFor bookkeeping
+   * so every path into awaiting_retry (crash recovery, pre_command_failed,
+   * validator_fail, diff_check_fail, post_command_action, session_fail) uses
+   * the same logic.
+   *
+   * No-op when result.newState is not awaiting_retry.
+   */
+  private _armRetryTimer(
+    itemId: string,
+    retryCount: number,
+    result: ApplyItemTransitionResult,
+  ): void {
+    if (result.newState !== 'awaiting_retry') return;
+    this.retryAfterAt.set(itemId, Date.now() + computeRetryBackoffMs(retryCount));
+    if (result.retryMode) this.retryModeFor.set(itemId, result.retryMode);
+  }
+
   // -------------------------------------------------------------------------
   // start — AC-1
   // -------------------------------------------------------------------------
@@ -350,6 +411,11 @@ export class Scheduler {
           event: 'session_fail',
           guardCtx: { classifierResult: 'transient' },
         });
+        // End the stale session so it no longer counts against maxParallel.
+        // Without this, stale sessions with status='running' inflate the
+        // concurrency count and can prevent any new sessions from spawning.
+        endSession(this.db, stale.sessionId, { exitCode: null });
+        this._armRetryTimer(stale.itemId, item.retry_count + 1, recoveryResult);
         console.log(`[scheduler] crash recovery: ${item.stage_id} → ${recoveryResult.newState}`);
       }
     }
@@ -495,8 +561,12 @@ export class Scheduler {
           // Per-item seeding: intercept before phase_start.
           // When a per-item stage's placeholder item is ready, seed real item
           // rows from the manifest instead of spawning a session.
+          //
+          // item.data === '{}' identifies the placeholder (created by ingest
+          // with no manifest data). Real seeded items have actual manifest
+          // data and must NOT be re-seeded — they fall through to phase_start.
           // ------------------------------------------------------------------
-          if (stage.run === 'per-item') {
+          if (stage.run === 'per-item' && item.data === '{}') {
             const worktreePath = wf.worktree_path;
             if (!worktreePath) {
               // Worktree not yet created — wait for the bootstrap phase of a
@@ -569,12 +639,12 @@ export class Scheduler {
         }
 
         // ------------------------------------------------------------------
-        // awaiting_retry → fire backoff_elapsed after RETRY_BACKOFF_MS
+        // awaiting_retry → fire backoff_elapsed after exponential backoff
         // ------------------------------------------------------------------
         case 'awaiting_retry': {
           // Arm a retry timer if not already set.
           if (!this.retryAfterAt.has(item.id)) {
-            this.retryAfterAt.set(item.id, Date.now() + RETRY_BACKOFF_MS);
+            this.retryAfterAt.set(item.id, Date.now() + computeRetryBackoffMs(item.retry_count));
           }
           const retryAt = this.retryAfterAt.get(item.id)!;
           if (Date.now() < retryAt) break;
@@ -588,9 +658,11 @@ export class Scheduler {
             phase: item.current_phase ?? '',
             attempt: item.retry_count + 1,
             event: 'backoff_elapsed',
+            guardCtx: { currentRetryMode: this.retryModeFor.get(item.id) },
           });
           this._broadcastItemState(wf.id, item.id, item.stage_id, result);
           this.retryAfterAt.delete(item.id);
+          this.retryModeFor.delete(item.id);
           break;
         }
 
@@ -852,6 +924,7 @@ export class Scheduler {
           event: 'pre_command_failed',
           guardCtx: { preCommandAction: preAction, prepostRuns: preRuns },
         });
+        this._armRetryTimer(item.id, attempt, result);
         this._broadcastItemState(wf.id, item.id, item.stage_id, result);
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode: null });
@@ -898,7 +971,7 @@ export class Scheduler {
     }
 
     // --- Spawn session (RC-3: after in_progress transition is committed) ---
-    console.log(`[scheduler] spawning ${item.stage_id}/${phaseKey} attempt=${attempt} cwd=${worktreePath}`);
+    console.log(`[scheduler] spawning ${item.stage_id}/${itemLabel(item.id, item.data, stage)}/${phaseKey} attempt=${attempt} cwd=${worktreePath}`);
     console.log(`[scheduler]   cmd: ${phaseConfig.command} ${phaseConfig.args.join(' ')}`);
     let handle: SpawnHandle;
     try {
@@ -1107,6 +1180,7 @@ export class Scheduler {
           event: 'validator_fail',
           guardCtx: { prepostRuns: preRuns },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
@@ -1164,6 +1238,7 @@ export class Scheduler {
           event: 'diff_check_fail',
           guardCtx: { prepostRuns: preRuns, artifactWrites },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
@@ -1248,9 +1323,34 @@ export class Scheduler {
           event: 'post_command_action',
           guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns, artifactWrites },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} post_command_action=${JSON.stringify(resolvedAction)} → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
+
+        // Inject the failed hook's output into handoff.json so the next agent
+        // spawn sees it via {{handoff}} or a direct Read of handoff.json.
+        // Covers two cases:
+        //   1. retry:fresh_with_failure_summary → awaiting_retry: the failure
+        //      context is in the file when the scheduler re-spawns after backoff.
+        //   2. goto → in_progress: the re-entered phase (e.g. implement) gets the
+        //      hook output (e.g. check-features JSON validation error) immediately.
+        const failedRun = postResult.runs.at(-1);
+        if (failedRun && failedRun.output) {
+          const shouldInject =
+            (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') ||
+            (resolvedAction.kind === 'goto' && result.newState === 'in_progress');
+          if (shouldInject) {
+            injectHookFailure(worktreePath, {
+              phase: phaseKey,
+              attempt,
+              command: failedRun.commandName,
+              exitCode: failedRun.exitCode,
+              output: failedRun.output,
+            });
+          }
+        }
+
         if (result.newState === 'awaiting_user') {
-          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
 
@@ -1271,8 +1371,22 @@ export class Scheduler {
           event: 'session_fail',
           guardCtx: { classifierResult, prepostRuns: allRuns },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
+        // Inject partial output captured before the timeout/error.
+        if (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') {
+          const failedRun = postResult.runs.at(-1);
+          if (failedRun && failedRun.output) {
+            injectHookFailure(worktreePath, {
+              phase: phaseKey,
+              attempt,
+              command: failedRun.commandName,
+              exitCode: failedRun.exitCode,
+              output: failedRun.output,
+            });
+          }
+        }
         if (result.newState === 'awaiting_user') {
-          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
       }
@@ -1293,13 +1407,23 @@ export class Scheduler {
         event: 'session_fail',
         guardCtx: { classifierResult, prepostRuns: preRuns },
       });
-      // Arm retry timer if item entered awaiting_retry.
-      if (result.newState === 'awaiting_retry') {
-        this.retryAfterAt.set(freshItem.id, Date.now() + RETRY_BACKOFF_MS);
+      this._armRetryTimer(freshItem.id, attempt, result);
+      // Inject agent stderr for fresh_with_failure_summary outer-ladder retries.
+      if (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') {
+        const failureOutput = stderr.trim();
+        if (failureOutput) {
+          injectHookFailure(worktreePath, {
+            phase: phaseKey,
+            attempt,
+            command: `${phaseKey}-agent`,
+            exitCode: exitCode ?? null,
+            output: failureOutput,
+          });
+        }
       }
       console.log(`[scheduler] → ${result.newState}`);
       if (result.newState === 'awaiting_user') {
-        console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+        console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
       }
       this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
     }

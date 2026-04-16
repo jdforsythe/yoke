@@ -459,3 +459,29 @@ All questions now have Resolution blocks. Resolved 2026-04-11 to
 | Q-keep-awake-windows | **Accepted.** Accept at config-load time, warn at runtime. |
 | Q-features-json-projection-timing | **Replaced by template injection.** `{{item}}` + `{{item_state}}`. |
 | Q-session-log-directory-collisions | **Accepted.** `~/.yoke/<fingerprint>/` layout. |
+
+---
+
+## Q-needs-approval-enforcement — `pending_stage_approval` not enforced by scheduler
+
+**Identified during:** feat-pipeline-hardening audit (2026-04-16).
+
+**What.** The Pipeline Engine correctly sets `workflows.status = 'pending_stage_approval'`
+when a stage completes and the next stage has `needs_approval: true` (engine.ts line ~1073).
+However, the Scheduler's `_processWorkflow` never checks this status — it processes all
+non-terminal workflows and items' `deps_satisfied` checks pass based on item status alone.
+A workflow paused for stage approval would have its next-stage items start processing
+immediately, bypassing the approval gate.
+
+Additionally, the `stage_approval_granted` event is defined in the State/Event union types
+but has no HTTP endpoint to fire it, and the only TRANSITIONS entry for it is the
+`abandoned` no-op. There is no way to unblock a workflow paused for stage approval.
+
+**Risk.** Low — `needs_approval` is not used in the current pipeline config. The feature is
+documented in state-machine-transitions.md and the engine supports it, but it is not wired
+end-to-end.
+
+**Resolution path.** Implement when `feat-control-matrix` is built (the dashboard feature
+already plans an `approve-stage` button). The scheduler needs a guard in `_processWorkflow`
+to skip items in the stage following a `pending_stage_approval` workflow, and an HTTP
+endpoint / WS control handler needs to fire `stage_approval_granted` + reset workflow status.
