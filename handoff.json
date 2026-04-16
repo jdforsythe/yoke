@@ -1,21 +1,23 @@
 {
-  "item_id": "feat-feature-board",
+  "item_id": "feat-attention-banner",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 1,
-      "session_id": "5fb59b88-c101-48fa-872f-c7790d00c4ab",
-      "ts": "2026-04-16T16:45:03Z",
-      "note": "The FeatureBoard component (src/web/src/components/FeatureBoard/FeatureBoard.tsx) and its supporting route infrastructure (WorkflowDetailRoute, ItemDetailRoute, router.tsx) were already fully implemented. This session added the missing e2e test coverage: (1) added itemStateFrame frame builder to e2e/helpers.ts; (2) added 10 new Playwright smoke tests to e2e/workflow-detail.spec.ts covering AC-2 (blockedReason warning icon), AC-3 (item.state real-time card update), AC-5 (status filter, category filter), AC-6 (deep-link /item/:itemId highlight), AC-7 (j/k keyboard nav + Enter select), AC-8 (in_progress item pinned to top with pulsing indicator), AC-9 (item.data HTTP fetch + collapsible JSON tree), AC-10 (item.data cache; re-selection no refetch), and RC-7 (cache invalidated on item.state frame). Build passes with zero TypeScript errors. No deferred criteria.",
+      "attempt": 2,
+      "session_id": "50110a09-952a-4f6e-9f0e-d6402ccfd4c9",
+      "ts": "2026-04-16T16:47:37Z",
+      "note": "All 8 acceptance criteria were already covered from attempt 1. This session fixed a silent bug in the deep-link highlight (deferred from attempt 1) and added the missing e2e test for it. Root cause: WorkflowList.tsx calls setSearchParams({}, {replace:true}) on mount as part of its filter-sync effect, which runs before AttentionBanner mounts (WorkflowList is earlier in the DOM, so its effects fire first). By the time the snapshot arrives and AttentionBanner mounts, the ?attention URL param has already been cleared, making window.location.search empty and deepLinkRef.current null. Fix: WorkflowDetailRoute now captures searchParams.get('attention') at initial render (before any effects) in a useRef and passes it as the deepLinkedAttentionId prop to AttentionBanner. AttentionBanner uses this prop (not window.location.search) to seed its deepLinkRef. Also fixed: the prior implementation used el.setAttribute('data-highlight','true') (direct DOM mutation), which React reconciliation resets on re-render because the JSX prop was data-highlight='false'. Fixed by tracking highlighted IDs in React state (highlightedIds Set) and using a ref-based timer that survives effect re-runs. URL cleanup now happens via WorkflowList's existing setSearchParams effect — AttentionBanner no longer needs to clean the URL itself. 7/7 AttentionBanner + bell-badge tests pass. The pre-existing FeatureBoard status-filter test failure (ambiguous 'Filter by status' selector matching both WorkflowList sidebar and FeatureBoard dropdowns) was present before this session and is out of scope.",
       "intended_files": [
-        "src/web/e2e/helpers.ts",
-        "src/web/e2e/workflow-detail.spec.ts"
+        "src/web/src/components/AttentionBanner/AttentionBanner.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/e2e/workflow-detail.spec.ts",
+        "handoff.json"
       ],
       "deferred_criteria": [],
       "known_risks": [
-        "AC-8 streaming-item pin test asserts the first [role=option] card contains 'Active Item'. This relies on items rendering in the order returned by useMemo(grouped) sort — if Playwright captures a partial render before the sort completes, the assertion may flake. The layoutEffect guard and immediate mock response mitigate this.",
-        "AC-6 deep-link test asserts data-highlight='true' within the 2 s pulse window. If the CI machine is very slow and the snapshot arrives late, the 2 s cleanup timer may fire before Playwright polls. Playwright's 8 s expect timeout makes this very unlikely.",
-        "item.data cache is module-level (Map singleton). If Playwright reuses a browser context across tests (not the default), a prior test's cache entry could leak into a subsequent test. Default Playwright config gives each test a fresh page context, so this should not occur in practice."
+        "The deep-link ?attention=<id> URL cleanup relies on WorkflowList's filter-sync setSearchParams effect (which runs on every filter change). If a future refactor removes or scopes WorkflowList's setSearchParams so it no longer clears unknown params, the ?attention param would persist in the URL after navigation. This is acceptable since AttentionBanner no longer reads from the URL — it reads from the prop — so the only effect is a stale URL, not broken behavior.",
+        "The pre-existing FeatureBoard status-filter e2e test failure (strict-mode selector violation: two elements match 'Filter by status' combobox — one in WorkflowList sidebar, one in FeatureBoard) was present before this session. It is out of scope for feat-attention-banner but should be fixed in a feat-feature-board revisit.",
+        "highlightedIds Set is React component state. If AttentionBanner unmounts and remounts (edge case: all items acknowledged, then a new notice arrives), deepLinkProcessed.current resets to false but deepLinkRef.current still holds the original attention ID — the highlight would re-fire on the new mount. In practice this is benign (user navigated away and back, a highlight on the previously deep-linked item is harmless)."
       ]
     }
   ]
