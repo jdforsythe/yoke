@@ -375,7 +375,7 @@ export function FeatureBoard({
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
-            aria-label="Filter by status"
+            aria-label="Filter items by status"
           >
             <option value="all">All statuses</option>
             <option value="pending">Pending</option>
