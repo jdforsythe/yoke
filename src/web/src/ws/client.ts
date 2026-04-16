@@ -100,7 +100,10 @@ export class YokeWsClient {
    * if connected; hello handler re-sends on reconnect.
    */
   subscribe(workflowId: string, sinceSeq?: number): void {
-    if (!this.subs.has(workflowId) && this.subs.size >= MAX_SUBSCRIPTIONS) {
+    // Deduplication: already subscribed — do not send a duplicate subscribe frame.
+    // Re-subscription after reconnect is handled by the hello handler directly.
+    if (this.subs.has(workflowId)) return;
+    if (this.subs.size >= MAX_SUBSCRIPTIONS) {
       // At cap — surface as an error event
       this._dispatchSynthetic({
         v: 1,
