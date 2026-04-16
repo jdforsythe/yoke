@@ -7,7 +7,7 @@ import { subscribe, getUsageSnapshot, getSnapshot } from '@/store/renderStore';
 // Formatting
 // ---------------------------------------------------------------------------
 
-function abbreviate(n: number): string {
+export function abbreviate(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toString();
@@ -45,6 +45,9 @@ export function UsageHUD() {
   const total = useSyncExternalStore(subscribe, getUsageSnapshot);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Separate ref for the portal div so the outside-click handler can
+  // distinguish clicks inside the dropdown from clicks outside both elements.
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number } | null>(null);
 
   const hasData = total.inputTokens + total.outputTokens > 0;
@@ -64,9 +67,12 @@ export function UsageHUD() {
       if (e.key === 'Escape') setOpen(false);
     }
     function onPointer(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      // Keep open when clicking inside the trigger button OR inside the portal
+      // dropdown (which is NOT a DOM child of containerRef since it's a portal).
+      if (containerRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onPointer);
@@ -107,10 +113,16 @@ export function UsageHUD() {
             ⚡{abbreviate(total.cacheReadInputTokens)}
           </span>
         )}
+        {total.cacheCreationInputTokens > 0 && (
+          <span className="text-orange-400" title="Cache-write tokens">
+            ✦{abbreviate(total.cacheCreationInputTokens)}
+          </span>
+        )}
       </button>
 
       {open && dropdownPos !== null && createPortal(
         <div
+          ref={dropdownRef}
           style={{
             position: 'fixed',
             top: dropdownPos.top,
@@ -128,7 +140,7 @@ export function UsageHUD() {
             <TokenRow label="Cache write" value={total.cacheCreationInputTokens} />
           </div>
 
-          {model.sessions.size > 1 && (
+          {model.sessions.size > 0 && (
             <>
               <div className="border-t border-gray-700 my-2" />
               <h4 className="text-xs text-gray-500 mb-1 uppercase tracking-wide">
@@ -147,9 +159,15 @@ export function UsageHUD() {
                         </span>
                       )}
                     </div>
-                    <div className="flex gap-3 text-xs font-mono">
-                      <span className="text-blue-400">↑{abbreviate(s.usage.inputTokens)}</span>
-                      <span className="text-green-400">↓{abbreviate(s.usage.outputTokens)}</span>
+                    <div className="flex flex-wrap gap-2 text-xs font-mono">
+                      <span className="text-blue-400" title="Input">↑{abbreviate(s.usage.inputTokens)}</span>
+                      <span className="text-green-400" title="Output">↓{abbreviate(s.usage.outputTokens)}</span>
+                      {s.usage.cacheReadInputTokens > 0 && (
+                        <span className="text-purple-400" title="Cache read">⚡{abbreviate(s.usage.cacheReadInputTokens)}</span>
+                      )}
+                      {s.usage.cacheCreationInputTokens > 0 && (
+                        <span className="text-orange-400" title="Cache write">✦{abbreviate(s.usage.cacheCreationInputTokens)}</span>
+                      )}
                     </div>
                   </div>
                 ))}

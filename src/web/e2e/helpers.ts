@@ -166,38 +166,6 @@ export function itemStateFrame(opts: {
   });
 }
 
-export function sessionStartedFrame(sessionId: string, phase = 'implement'): string {
-  return mkFrame('session.started', {
-    workflowId: WF_ID,
-    sessionId,
-    seq: 6,
-    payload: {
-      sessionId,
-      phase,
-      attempt: 1,
-      startedAt: new Date().toISOString(),
-      parentSessionId: null,
-    },
-  });
-}
-
-export function usageFrame(
-  sessionId: string,
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheCreationInputTokens: number;
-    cacheReadInputTokens: number;
-  },
-): string {
-  return mkFrame('stream.usage', {
-    workflowId: WF_ID,
-    sessionId,
-    seq: 10,
-    payload: { sessionId, ...usage, rawUsage: null },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // WS mock setup
 // ---------------------------------------------------------------------------
@@ -239,7 +207,7 @@ export async function setupWs(page: Page, onSubscribe?: WsSubscribeHandler): Pro
 
 export function sessionStartedFrame(
   sessionId: string,
-  phase: string,
+  phase = 'implement',
   attempt = 1,
   seq = 2,
 ): string {
@@ -363,6 +331,25 @@ export function streamSystemNoticeFrame(
     seq,
     ts: new Date().toISOString(),
     payload: { sessionId, severity, source, message },
+  });
+}
+
+export interface UsageOpts {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
+export function usageFrame(sessionId: string, usage: UsageOpts, seq = 5): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'stream.usage',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { sessionId, ...usage, rawUsage: {} },
   });
 }
 
