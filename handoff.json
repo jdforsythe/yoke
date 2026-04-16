@@ -426,6 +426,22 @@
           "stage.started and stage.complete broadcast to ALL non-frozen sessions. If multiple sessions are active simultaneously, both receive the stage notice, resulting in duplicate notices if multiple sessions render in the same pane. This matches spec intent.",
           "session.ended: if it arrives before session.started (out-of-order delivery), the frame is silently dropped (guard: if (!existing) return state). Correct per spec but worth noting."
         ]
+      },
+      {
+        "phase": "implement",
+        "attempt": 2,
+        "session_id": "af2eeed1-bc38-44eb-8dee-a1756b4f658a",
+        "ts": "2026-04-16T17:28:00Z",
+        "note": "Verification pass. No code changes required. The render-model reducer (src/web/src/store/reducer.ts), BlockRing (blockRing.ts), types (types.ts), and module-level store (renderStore.ts) were all fully implemented by attempt 1. All 28 reducer unit tests pass (28/28). TypeScript build is clean (pnpm --filter web build exits 0). All 10 ACs confirmed covered. All 6 RCs confirmed: pure (state,action)=>state, discriminated union types, string concatenation for delta accumulation, O(1) BlockRing eviction, no React imports in reducer, Map-keyed ToolCall linkage.",
+        "intended_files": [
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "stream.system_notice blockId uses Date.now() + Math.random() — same risk as noted in attempt 1.",
+          "stage.started/stage.complete broadcast to ALL non-frozen sessions — same risk as noted in attempt 1.",
+          "session.ended before session.started silently dropped — same risk as noted in attempt 1."
+        ]
       }
     ]
   },
@@ -447,6 +463,25 @@
           "AC-2 e2e test (real-time index.update patch) uses capturedWs via a local variable in the test process to push the WS frame. This is slightly fragile because it relies on the route handler closure capturing the ws reference synchronously. In practice this works reliably in Playwright but is worth noting for future test maintenance.",
           "The infinite-scroll sentinel uses IntersectionObserver with threshold 0.1. In Playwright's headless Chromium, IntersectionObserver fires correctly, but the e2e test uses page.evaluate to manually set scrollTop rather than Playwright's scroll API — if Chromium changes IntersectionObserver firing semantics in headless mode, the test may need updating.",
           "RC-6 (relative timestamps update on 60s interval) is verified by code inspection only; there is no e2e test asserting that the timestamp text changes after a 60s wait (which would be impractical in a 15s test timeout). The tick-based implementation is correct and covered by code review."
+        ]
+      }
+    ]
+  },
+  {
+    "item_id": "feat-github-buttons",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "a916053d-8935-4594-a185-6ac86c97ee59",
+        "ts": "2026-04-16T16:31:19Z",
+        "note": "The GithubButton component (src/web/src/components/GithubButton/GithubButton.tsx) and its integration in WorkflowDetailRoute were already fully implemented by a prior session. This session audited all 8 acceptance criteria and 6 review criteria against the existing implementation and e2e tests. The component handles all six GithubState.status values exhaustively with a switch (no default fallthrough), renders PR links with target=_blank and rel=noopener noreferrer, and receives all state via WorkflowDetailRoute's workflow.update handler — no HTTP requests. Five tests already existed covering AC-1 through AC-6 partially. This session added: (1) rel=noopener noreferrer assertion to the existing open-badge test (RC-2), (2) idle status test (RC-1 exhaustive coverage), (3) merged and closed PR badge tests (AC-5), (4) real-time workflow.update state-change test (AC-7), and (5) lastCheckedAt title attribute test (AC-8). All 27 workflow-detail e2e tests pass; tsc clean.",
+        "intended_files": [
+          "src/web/e2e/workflow-detail.spec.ts"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The lastCheckedAt tooltip (AC-8) is verified by checking the <a> element's title attribute value matches /Last checked:/. Native browser tooltip rendering on hover is not exercised by Playwright in headless mode — the attribute is correct but its visual display as a tooltip is not tested."
         ]
       }
     ]
