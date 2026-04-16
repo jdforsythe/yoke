@@ -485,5 +485,31 @@
         ]
       }
     ]
+  },
+  {
+    "item_id": "feat-attention-banner",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "02a2b660-5707-4c5e-8a8a-77e4b0049027",
+        "ts": "2026-04-16T16:31:38Z",
+        "note": "All core components were already present from prior sessions: AttentionBanner component (src/web/src/components/AttentionBanner/AttentionBanner.tsx), attentionStore module (src/web/src/store/attentionStore.ts), WorkflowDetailRoute integration (notice frame handler, workflow.update handler, setAttentionCount sync), and AppShell bell badge (useSyncExternalStore over attentionStore). This session fixed the missing AC-3 spinner: the prior implementation used immediate optimistic removal (no spinner visible). The component now tracks a pendingAck Set<number> — clicking Acknowledge shows 'Acknowledging…' (disabled button) while the POST is in-flight; on success the item is added to optimisticHidden (disappears); on failure the spinner clears and the item reappears (RC-5). Added noticeFrame() builder to e2e helpers and four new e2e tests: AC-2 (notice frame adds item in real-time), AC-3 (spinner visible during in-flight POST via deferred route response, item disappears on success), AC-4 (workflow.update with empty pendingAttention removes items), AC-5/AC-6 (bell badge count matches pending attention array length). TypeScript clean. AC-1/AC-7/AC-8 were already covered by the two pre-existing e2e tests.",
+        "intended_files": [
+          "src/web/src/components/AttentionBanner/AttentionBanner.tsx",
+          "src/web/e2e/helpers.ts",
+          "src/web/e2e/workflow-detail.spec.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [
+          "Deep-link: ?attention=<id> scroll-to + 2s pulse highlight is implemented in AttentionBanner (useEffect on deepLinkedId) but no e2e test covers it. The logic uses scrollIntoView and setAttribute('data-highlight','true') which is hard to verify reliably in headless Playwright without a more complex fixture (element must be rendered, scroll position checked). Deferred due to complexity vs. value."
+        ],
+        "known_risks": [
+          "The pendingAck Set is component-local state. If AttentionBanner unmounts and remounts (e.g., all items are acknowledged then a notice frame adds a new item), the pendingAck Set is reset. Any in-flight ack POST from the prior mount would complete against a stale closure — it would call setOptimisticHidden on the old Set, which no longer exists. In practice the unmount only happens when pendingAttention is empty, at which point no items are in-flight. Zero-risk today.",
+          "The AC-3 e2e test uses a deferred route response (ackLatch promise). If the component triggers multiple fetches (e.g., double-click before button is disabled), only one fetch fires because the button is disabled immediately on first click via pendingAck. The test's deferred route handles a single request; additional requests would hang past the test timeout. This is correct behavior but reviewers should note the single-inflight-per-item invariant.",
+          "mockWorkflowsApi (beforeEach) intercepts **/api/workflows** which includes the ack endpoint URL. The AC-3 test registers a more-specific route after beforeEach; Playwright routes are matched last-registered-first so the ack-specific route takes priority. If Playwright changes route-matching order in future versions, the AC-3 test would start receiving the workflow-list JSON response for the ack POST (status 200, wrong body) — the test would still pass since the component only checks res.ok."
+        ]
+      }
+    ]
   }
 ]
