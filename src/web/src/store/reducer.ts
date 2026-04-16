@@ -324,7 +324,7 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
 
       const block: SystemNoticeBlock = {
         type: 'system_notice',
-        blockId: `notice-${sid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        blockId: `notice-${sid}-${frame.seq}`,
         sessionId: sid,
         severity: p.severity,
         source: p.source,
