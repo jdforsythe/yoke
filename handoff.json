@@ -1,30 +1,21 @@
 {
-  "item_id": "feat-render-reducer",
+  "item_id": "feat-feature-board",
   "entries": [
     {
-      "phase": "review:hook-failure",
-      "attempt": 2,
-      "ts": "2026-04-16T16:35:07.585Z",
-      "harness_injected": true,
-      "command": "check-verdict",
-      "exit_code": 1,
-      "blocking_issues": [
-        "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • RC-1: Reducer is not a pure function — stream.system_notice case (reducer.ts:327) generates blockId via `Date.now()` and `Math.random()`, both of which are side effects that make the function non-deterministic. Calling applyFrame with the same state and same frame twice produces different blockIds. Fix: replace with a deterministic ID derived from frame.seq (available on every ServerFrame), e.g. `notice-${sid}-${frame.seq}`.\n"
-      ]
-    },
-    {
       "phase": "implement",
-      "attempt": 3,
-      "session_id": "",
-      "ts": "2026-04-16T17:00:00Z",
-      "note": "Fixed the sole blocking issue from attempt 2: the stream.system_notice case in applyFrame was generating blockId with Date.now() and Math.random(), making the reducer non-deterministic. Replaced with `notice-${sid}-${frame.seq}` — fully deterministic since seq is present on every ServerFrame. Added a regression test 'stream.system_notice produces the same blockId when called twice with the same frame (determinism)' to tests/web/reducer.test.ts to lock in the invariant. All 29 reducer unit tests pass; full suite (1093 tests) green.",
+      "attempt": 1,
+      "session_id": "5fb59b88-c101-48fa-872f-c7790d00c4ab",
+      "ts": "2026-04-16T16:45:03Z",
+      "note": "The FeatureBoard component (src/web/src/components/FeatureBoard/FeatureBoard.tsx) and its supporting route infrastructure (WorkflowDetailRoute, ItemDetailRoute, router.tsx) were already fully implemented. This session added the missing e2e test coverage: (1) added itemStateFrame frame builder to e2e/helpers.ts; (2) added 10 new Playwright smoke tests to e2e/workflow-detail.spec.ts covering AC-2 (blockedReason warning icon), AC-3 (item.state real-time card update), AC-5 (status filter, category filter), AC-6 (deep-link /item/:itemId highlight), AC-7 (j/k keyboard nav + Enter select), AC-8 (in_progress item pinned to top with pulsing indicator), AC-9 (item.data HTTP fetch + collapsible JSON tree), AC-10 (item.data cache; re-selection no refetch), and RC-7 (cache invalidated on item.state frame). Build passes with zero TypeScript errors. No deferred criteria.",
       "intended_files": [
-        "src/web/src/store/reducer.ts",
-        "tests/web/reducer.test.ts"
+        "src/web/e2e/helpers.ts",
+        "src/web/e2e/workflow-detail.spec.ts"
       ],
       "deferred_criteria": [],
       "known_risks": [
-        "If two stream.system_notice frames arrive for the same session with the same seq value (e.g. a backfill replay), they would produce the same blockId and the second would overwrite the first in the ring. This is consistent with the deduplication invariant (seq <= hwm is dropped by the WS client) so in practice it should not occur, but reviewers should verify seq uniqueness is guaranteed by the protocol."
+        "AC-8 streaming-item pin test asserts the first [role=option] card contains 'Active Item'. This relies on items rendering in the order returned by useMemo(grouped) sort — if Playwright captures a partial render before the sort completes, the assertion may flake. The layoutEffect guard and immediate mock response mitigate this.",
+        "AC-6 deep-link test asserts data-highlight='true' within the 2 s pulse window. If the CI machine is very slow and the snapshot arrives late, the 2 s cleanup timer may fire before Playwright polls. Playwright's 8 s expect timeout makes this very unlikely.",
+        "item.data cache is module-level (Map singleton). If Playwright reuses a browser context across tests (not the default), a prior test's cache entry could leak into a subsequent test. Default Playwright config gives each test a fresh page context, so this should not occur in practice."
       ]
     }
   ]
