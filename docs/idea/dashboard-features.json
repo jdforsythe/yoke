@@ -338,7 +338,8 @@
         "Fuzzy search is debounced (200ms) and runs client-side against the in-memory item list, not the server",
         "The component unsubscribes from item.state events on unmount",
         "item.data cache is invalidated when a new item.state frame arrives for the same itemId (data may have changed)"
-      ]
+      ],
+      "status": "complete"
     },
     {
       "id": "feat-usage-hud",
