@@ -1,26 +1,25 @@
 {
-  "item_id": "feat-macos-deep-link",
+  "item_id": "feat-attention-banner",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 1,
-      "session_id": "6ab68a45-325c-40df-a294-080c5a5b14be",
-      "ts": "2026-04-16T19:00:00Z",
-      "note": "The feature was largely already in place from prior feature builds: AttentionBanner already reads ?attention=<id>, scrolls to the item, applies a 2s pulse via React state, and clears the URL param via setSearchParams. FeatureBoard already reads :itemId from useParams, scrolls via useLayoutEffect, and highlights via el.setAttribute. WorkflowDetailRoute already renders a 'Workflow not found' error page with back link after an 8s timeout when no snapshot arrives. What was missing: (1) subscription deduplication in the WS client — subscribe() now returns early if the workflow is already in this.subs, preventing duplicate subscribe frames (AC-7/RC-4); (2) e2e tests — created src/web/e2e/deep-link.spec.ts covering AC-2 (item deep link highlights card), AC-4 (invalid workflow shows error via Playwright clock.fastForward), AC-5 (in-app navigation via history.pushState+popstate triggers highlight), and AC-7 (subscribe frame sent exactly once). Also fixed a pre-existing strict locator in workflow-detail.spec.ts (FeatureBoard status filter test had two comboboxes with the same aria-label; narrowed to getByRole('main')). All 72 tests pass.",
+      "attempt": 3,
+      "session_id": "36b2749c-2b83-4cba-8d94-e7f7f47cc079",
+      "ts": "2026-04-16T20:00:00Z",
+      "note": "Attempt 3 addressed all two blocking issues from the prior feat-macos-deep-link review that share the same codebase. RC-2: FeatureBoard's item deep-link highlight was using el.setAttribute (DOM mutation outside React reconciliation), which is clobbered when any WS frame triggers a re-render during the 2s pulse. Fixed by replacing with React state (Set<string> highlightedItems) matching AttentionBanner's pattern — data-highlight is now derived from React state, so re-renders cannot overwrite it. RC-3: WorkflowDetailRoute captured the ?attention query param in a ref but relied on WorkflowList's side-effect setSearchParams reset to clear it from the URL. Added an explicit history.replaceState call in a mount-only useEffect that removes the ?attention param immediately after capture, satisfying the spec requirement for deterministic URL cleanup. Also fixed a pre-existing test ambiguity: FeatureBoard's status-filter combobox had aria-label='Filter by status' — identical to WorkflowList's sidebar combobox. Renamed it to 'Filter items by status' and updated the workflow-detail.spec.ts selector accordingly (previously worked around with page.getByRole('main') scoping, now resolved at the source). Added an AC-8 ordering test verifying attention items render oldest-first even when delivered out of order in the snapshot. The full feat-attention-banner implementation spanning attempts 1-3 covers all 8 ACs and 6 RCs.",
       "intended_files": [
-        "src/web/src/ws/client.ts",
-        "src/web/e2e/deep-link.spec.ts",
-        "src/web/e2e/workflow-detail.spec.ts"
+        "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/e2e/workflow-detail.spec.ts",
+        "package.json",
+        "src/web/package.json",
+        "tsconfig.json"
       ],
-      "deferred_criteria": [
-        "AC-1: ?attention scroll coverage is supplemented but not fully isolated in a new deep-link test (the existing workflow-detail.spec.ts test at line 434 covers it). No new standalone attention test was added in deep-link.spec.ts because it would duplicate coverage.",
-        "AC-3 (attention pulse): Covered by the existing test in workflow-detail.spec.ts; no additional test written. Item pulse is verified in AC-2 test via data-highlight attribute."
-      ],
+      "deferred_criteria": [],
       "known_risks": [
-        "FeatureBoard highlight via direct DOM mutation (el.setAttribute) is fragile: if a WS frame triggers a React re-render within the 2s window, the JSX prop data-highlight=\"false\" will reconcile and overwrite the attribute. The highlight would immediately re-apply (useLayoutEffect re-fires on items change) but there is a brief flash. The non-blocking issue from the feat-feature-board review names this explicitly. Fix would be to use React state (Set<string>) for highlighted item IDs, matching AttentionBanner's pattern.",
-        "page.clock.fastForward is used in AC-4 tests to skip the 8-second not-found timeout. This API is available in playwright-core 1.59.1 (tested and confirmed). If Playwright is downgraded, these tests will need adjustment.",
-        "In-app navigation test (AC-5) uses history.pushState + manual popstate dispatch. React Router v7 responds to popstate events, so this works, but it bypasses React Router's navigate() API. If React Router changes its internal event handling, this test could break.",
-        "The subscribe deduplication fix returns early for ALL duplicate calls, including if the caller passes a different sinceSeq. The reconnect path (hello handler calling _sendSubscribe directly) is not affected. If any caller legitimately needs to re-subscribe with a fresh sinceSeq without an intervening unsubscribe, they would need to call unsubscribe first."
+        "history.replaceState for ?attention cleanup runs in a useEffect([]) (mount-only). If React StrictMode double-invokes effects (dev only), the second invocation is a no-op because the param is already gone after the first replaceState. No production risk.",
+        "AttentionBanner deep-link scroll fires in useEffect([]) and reads document.getElementById at mount time. Items are rendered on mount via the items prop passed from the snapshot, so getElementById should succeed. Under slow-network conditions where the snapshot arrives after the component mounts, the scroll would silently no-op.",
+        "workflow-detail.spec.ts has an AC-8 ordering test that relies on DOM ID attributes (#attention-item-N). If the ID naming convention changes, the test must be updated."
       ]
     }
   ]
