@@ -116,6 +116,19 @@ export function snapshotFrame(opts: SnapshotOpts = {}): string {
   });
 }
 
+export function noticeFrame(opts: {
+  severity: 'info' | 'requires_attention';
+  kind: string;
+  message: string;
+  persistedAttentionId?: number;
+}): string {
+  return mkFrame('notice', {
+    workflowId: WF_ID,
+    seq: 3,
+    payload: opts,
+  });
+}
+
 export function indexUpdateFrame(id: string, name: string, status: string): string {
   return mkFrame('workflow.index.update', {
     workflowId: id,

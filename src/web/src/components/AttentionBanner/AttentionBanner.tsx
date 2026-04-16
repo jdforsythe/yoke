@@ -22,8 +22,10 @@ interface Props {
 }
 
 export function AttentionBanner({ workflowId, items }: Props) {
-  // optimisticHidden: IDs we've sent an ack for but server hasn't confirmed yet.
+  // optimisticHidden: IDs removed from display after POST succeeded.
   const [optimisticHidden, setOptimisticHidden] = useState<Set<number>>(new Set());
+  // pendingAck: IDs where ack POST is in-flight — shows spinner + disables button.
+  const [pendingAck, setPendingAck] = useState<Set<number>>(new Set());
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Deep-link: ?attention=<id> highlights the specific item.
@@ -53,24 +55,22 @@ export function AttentionBanner({ workflowId, items }: Props) {
   if (visible.length === 0) return null;
 
   async function acknowledge(item: PendingAttention) {
-    // Optimistic removal.
-    setOptimisticHidden((prev) => new Set([...prev, item.id]));
+    // Show spinner on button while POST is in-flight.
+    setPendingAck((prev) => new Set([...prev, item.id]));
     try {
       const res = await fetch(
         `/api/workflows/${encodeURIComponent(workflowId)}/attention/${item.id}/ack`,
         { method: 'POST' },
       );
-      if (!res.ok) {
-        // Revert optimistic removal on failure.
-        setOptimisticHidden((prev) => {
-          const next = new Set(prev);
-          next.delete(item.id);
-          return next;
-        });
+      if (res.ok) {
+        // Optimistic removal: hide item without waiting for WS workflow.update.
+        setOptimisticHidden((prev) => new Set([...prev, item.id]));
       }
+      // On !res.ok: remove from pendingAck (finally), item stays visible (reappears).
     } catch {
-      // Network failure — revert.
-      setOptimisticHidden((prev) => {
+      // Network failure — spinner removed, item stays visible.
+    } finally {
+      setPendingAck((prev) => {
         const next = new Set(prev);
         next.delete(item.id);
         return next;
@@ -109,9 +109,10 @@ export function AttentionBanner({ workflowId, items }: Props) {
           </div>
           <button
             onClick={() => void acknowledge(item)}
-            className="shrink-0 px-2.5 py-1 text-xs font-medium bg-amber-700 hover:bg-amber-600 text-white rounded transition-colors"
+            disabled={pendingAck.has(item.id)}
+            className="shrink-0 px-2.5 py-1 text-xs font-medium bg-amber-700 hover:bg-amber-600 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded transition-colors"
           >
-            Acknowledge
+            {pendingAck.has(item.id) ? 'Acknowledging…' : 'Acknowledge'}
           </button>
         </div>
       ))}

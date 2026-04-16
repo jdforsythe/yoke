@@ -272,6 +272,165 @@ test('AttentionBanner is hidden when pendingAttention is empty', async ({ page }
   await expect(page.getByRole('region', { name: 'Attention required' })).not.toBeVisible();
 });
 
+test('AttentionBanner: notice frame with requires_attention adds item in real-time (AC-2)', async ({
+  page,
+}) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(snapshotFrame({ pendingAttention: [] }));
+        }
+      } catch {
+        // ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByRole('heading', { level: 1, name: WF_NAME })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Attention required' })).not.toBeVisible();
+
+  capturedWs!.send(
+    noticeFrame({
+      severity: 'requires_attention',
+      kind: 'bootstrap_failed',
+      message: 'Bootstrap stage failed',
+      persistedAttentionId: 99,
+    }),
+  );
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner).toBeVisible();
+  await expect(banner.getByText('bootstrap_failed')).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+});
+
+test('AttentionBanner: Acknowledge shows spinner then hides item after POST (AC-3)', async ({
+  page,
+}) => {
+  let resolveAck: () => void = () => {};
+  const ackLatch = new Promise<void>((r) => {
+    resolveAck = r;
+  });
+
+  // Registered after beforeEach's general /api/workflows** mock → takes priority.
+  await page.route(`**/workflows/${WF_ID}/attention/1/ack`, async (route) => {
+    await ackLatch;
+    await route.fulfill({ status: 200, body: '' });
+  });
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        pendingAttention: [
+          {
+            id: 1,
+            kind: 'awaiting_user_retry',
+            payload: null,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+
+  await banner.getByRole('button', { name: 'Acknowledge' }).click();
+
+  // Spinner visible while ack is in-flight (AC-3)
+  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeDisabled();
+
+  // Release the deferred response
+  resolveAck();
+
+  // Item disappears after ack POST succeeds (optimistic removal)
+  await expect(banner).not.toBeVisible();
+});
+
+test('AttentionBanner: item removed when workflow.update clears pendingAttention (AC-4)', async ({
+  page,
+}) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(
+            snapshotFrame({
+              pendingAttention: [
+                {
+                  id: 5,
+                  kind: 'revisit_limit',
+                  payload: null,
+                  createdAt: new Date().toISOString(),
+                },
+              ],
+            }),
+          );
+        }
+      } catch {
+        // ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner).toBeVisible();
+  await expect(banner.getByText('revisit_limit')).toBeVisible();
+
+  capturedWs!.send(workflowUpdateFrame({ pendingAttention: [] }));
+
+  await expect(banner).not.toBeVisible();
+});
+
+test('AppShell bell badge count reflects pending attention items (AC-5/AC-6)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        pendingAttention: [
+          {
+            id: 1,
+            kind: 'awaiting_user_retry',
+            payload: null,
+            createdAt: new Date().toISOString(),
+          },
+          {
+            id: 2,
+            kind: 'bootstrap_failed',
+            payload: null,
+            createdAt: new Date(Date.now() + 1000).toISOString(),
+          },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByRole('region', { name: 'Attention required' })).toBeVisible();
+
+  // Bell badge should show count = 2
+  const bell = page.getByRole('button', { name: 'Notifications' });
+  await expect(bell.locator('span').filter({ hasText: '2' })).toBeVisible();
+});
+
 // ---------------------------------------------------------------------------
 // GithubButton
 // ---------------------------------------------------------------------------
