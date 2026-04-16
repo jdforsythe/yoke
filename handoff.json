@@ -1,27 +1,23 @@
 {
-  "item_id": "feat-stream-pane",
+  "item_id": "feat-control-matrix",
   "entries": [
     {
       "phase": "implement",
       "attempt": 1,
-      "session_id": "c1b80ec5-b910-405c-9055-6e50ce373e8b",
-      "ts": "2026-04-16T21:00:00Z",
-      "note": "The LiveStreamPane component, all four block renderers (TextBlockRenderer, ThinkingBlockRenderer, ToolCallRenderer, SystemNoticeRenderer), the rAF-batched renderStore, and the normalized render-model reducer were already fully implemented in a prior session. This attempt added the missing e2e test coverage. Six stream frame builder functions were added to helpers.ts (sessionStartedFrame, sessionEndedFrame, streamTextFrame, streamThinkingFrame, streamToolUseFrame, streamToolResultFrame, streamSystemNoticeFrame) so all stream-pane tests can construct realistic WS message sequences. A data-testid attribute was added to the scroll container in LiveStreamPane so the upscroll tests can reliably target that element. stream-pane.spec.ts covers: TextBlock rendering (plain and fenced code), ThinkingBlock collapsed-by-default and expand-on-click (AC-6), ToolCallRenderer name/badge/expand/result-update (AC-7), SystemNotice info and warn severity, session.started and session.ended lifecycle notices, follow-tail real-time visibility (AC-3), upscroll detach showing the Jump to latest pill (AC-4), and Jump to latest click re-engaging follow-tail (AC-5). AC-1 (jank-free 1k+ blocks) requires Chrome DevTools profiling and is not automatable in Playwright. AC-2 (variable-height blocks measure without overlap) is tested implicitly through all block-rendering assertions but cannot be verified via DOM assertions alone. AC-8 (Load earlier messages — truncated sentinel) requires filling the 10k-block ring cap which is not feasible in headless e2e; the code path was reviewed and is implemented. AC-9 (session scroll position preserved on tab switch) deferred because the current WorkflowDetailRoute UI does not expose a session-switch control; the scroll cache is in place and implemented correctly.",
+      "session_id": "09a8752a-c74b-4c5c-9484-72e214a120dd",
+      "ts": "2026-04-16T17:33:02Z",
+      "note": "The ControlMatrix component was already fully implemented in a prior session at src/web/components/ControlMatrix/ControlMatrix.tsx and wired into WorkflowDetailRoute. The component uses a declarative RULES object mapping each action to a predicate over (workflowStatus, selectedItem, activeStage), generates commandIds via crypto.randomUUID(), shows optimistic spinner state until 10s timeout, presents a controlled confirmation dialog for destructive actions (cancel, skip), and opens a text-input modal for inject-context. This session added comprehensive e2e test coverage in control-matrix.spec.ts (19 tests). Tests cover: AC-2 (pause sends control frame with action=pause; commandId is in the frame's top-level id field as a UUID); AC-3 (cancel requires confirmation dialog, then sends frame); AC-4 (optimistic disabled state on pause and resume after click); AC-5 (commandId is a UUID via crypto.randomUUID, verified via frame.id); AC-6 (inject-context opens modal, Inject button disabled while empty, cancel closes without sending, filled text sent as extra); AC-7 (approve-stage visible only when stage.needsApproval=true AND stage.status=complete, hidden for in_progress or needsApproval=false, sends stageId in frame); AC-1/AC-8 (actions update dynamically via workflow.update, cancel hidden for complete workflow, no toolbar when no active session). Item-scoped action tests cover skip/unblock for blocked items, retry for failed items, hidden when no item selected, skip confirmation dialog sends itemId, and dynamic update when item.state frame transitions the selected item.",
       "intended_files": [
-        "src/web/e2e/helpers.ts",
-        "src/web/e2e/stream-pane.spec.ts",
-        "src/web/src/components/LiveStream/LiveStreamPane.tsx"
+        "src/web/e2e/control-matrix.spec.ts"
       ],
       "deferred_criteria": [
-        "AC-1: 1k+ block jank-free rendering — requires Chrome DevTools perf profiling, not automatable in Playwright; implementation uses @tanstack/react-virtual with measureElement",
-        "AC-2: variable-height blocks measure correctly — implicitly covered by all block-rendering assertions but no precise DOM height assertion is available",
-        "AC-8: Load earlier messages button — requires 10,001+ blocks to trigger the truncated sentinel; not feasible in headless e2e; code path exists in LiveStreamPane.loadEarlier()",
-        "AC-9: Switching between sessions preserves scroll position — scrollPositionCache is implemented but WorkflowDetailRoute has no session-switch UI to drive from a test"
+        "RC-4: rerun-phase visibility — rerun-phase requires item.state.status in ['complete','failed'] and there is no separate test for it beyond retry (failed). The rule is in RULES and is covered implicitly, but no explicit test for 'complete' item showing 'Rerun phase' button was written. Low risk since the rule is symmetric with retry.",
+        "AC-5 idempotency (same commandId on retry within 5 min) — the client-side idempotency cache reuses commandId for repeated clicks within 5 minutes. Not tested via e2e because Playwright cannot easily assert that two rapid clicks produce identical frame.id values without timing control."
       ],
       "known_risks": [
-        "The upscroll/Jump-to-latest tests (AC-4, AC-5) rely on the virtualized container overflowing with 30 blocks. If the Playwright viewport is very tall or block heights are much smaller than estimated, the container may not overflow and the scroll dispatch will not detach follow-tail. Blocks use long content strings to ensure measurable height.",
-        "rAF batching: text frames sent in rapid succession are flushed together in the next animation frame. If requestAnimationFrame fires before all 30 frames arrive from the WS mock, some may land in a later batch. Playwright's expect().toBeVisible() retries until timeout so this is absorbed on most machines, but very slow CI might see intermittent failures.",
-        "The data-testid on the scroll container will conflict if a second LiveStreamPane or ReviewPanel with an overflow-y-auto container is ever rendered alongside it in the same view."
+        "Item-selection tests rely on clicking #item-<itemId> in the FeatureBoard panel. If FeatureBoard changes its item ID scheme or the item card becomes unclickable (e.g., clickable region changes), item-scoped ControlMatrix tests will silently miss the selectedItem update and fail to see skip/retry/unblock buttons.",
+        "The 10s optimistic timeout (setTimeout in ControlMatrix.handleAction) re-enables buttons after 10s regardless of server ack. The spinner-disabled tests pass because they check immediately after click, before 10s elapses. On very slow CI this is fine, but if a test somehow waited 10+ seconds, the button would re-enable and the toBeDisabled assertion would fail.",
+        "approve-stage active-stage lookup uses stages.find(s => s.status === 'in_progress' || s.status === 'complete'). If multiple stages match, the first one wins. Tests use single-stage scenarios; multi-stage ordering edge cases are not covered."
       ]
     }
   ]
