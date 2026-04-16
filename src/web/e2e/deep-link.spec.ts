@@ -2,17 +2,14 @@
  * Smoke tests: feat-macos-deep-link
  *
  * Covers:
+ *  - AC-1: /workflow/:id?attention=<id> subscribes and renders attention banner
  *  - AC-2: /workflow/:id/item/:itemId subscribes and scrolls to item card
- *  - AC-3: 2-second pulse highlight animation on deep-linked element
+ *  - AC-3: 2-second pulse highlight animation on deep-linked element (item and attention)
  *  - AC-4: Invalid workflow ID renders "Workflow not found" error page with back link
  *  - AC-5: Deep links work on in-app navigation (not just cold start)
- *  - AC-6: ?attention query param cleared from URL after processing
- *          (additional cold-start variant complementing workflow-detail.spec.ts)
+ *  - AC-6: ?attention query param cleared from URL after processing (standalone variant)
  *  - AC-7: Subscribe frame sent exactly once even when navigating to the same
  *          workflow via different route paths (ItemDetailRoute → WorkflowDetailRoute)
- *
- * Note: AC-1 (?attention cold-start), AC-3 for attention, and AC-6 are already
- * covered by workflow-detail.spec.ts "AttentionBanner: ?attention=<id> deep-link".
  */
 
 import { test, expect } from '@playwright/test';
@@ -27,6 +24,14 @@ import {
 } from './helpers';
 
 const ITEM_ID = 'item-dl-001';
+const ATTN_ID = 42;
+
+const ATTENTION_FIXTURE = {
+  id: ATTN_ID,
+  kind: 'validator_fail',
+  payload: 'Validation failed for deep-link test',
+  createdAt: new Date(Date.now() - 5_000).toISOString(),
+};
 
 const ITEM_FIXTURE = {
   id: ITEM_ID,
@@ -43,6 +48,54 @@ const ITEM_FIXTURE = {
 
 test.beforeEach(async ({ page }) => {
   await mockWorkflowsApi(page, [{ id: WF_ID, name: WF_NAME, status: 'in_progress' }]);
+});
+
+// ---------------------------------------------------------------------------
+// AC-1 — Attention deep link on cold start
+// ---------------------------------------------------------------------------
+
+test('AC-1: /workflow/:id?attention=<id> renders the attention banner on cold start', async ({
+  page,
+}) => {
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({ pendingAttention: [ATTENTION_FIXTURE] }));
+  });
+
+  await page.goto(`/workflow/${WF_ID}?attention=${ATTN_ID}`);
+
+  await expect(page.getByRole('region', { name: 'Attention required' })).toBeVisible();
+  await expect(page.locator(`#attention-item-${ATTN_ID}`)).toBeVisible();
+  await expect(page.getByText('validator_fail')).toBeVisible();
+});
+
+test('AC-3: attention deep-link applies 2s pulse highlight to the targeted item', async ({
+  page,
+}) => {
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({ pendingAttention: [ATTENTION_FIXTURE] }));
+  });
+
+  await page.goto(`/workflow/${WF_ID}?attention=${ATTN_ID}`);
+
+  const item = page.locator(`#attention-item-${ATTN_ID}`);
+  await expect(item).toBeVisible();
+  // The 2s pulse CSS class is controlled by data-highlight=true on the element.
+  await expect(item).toHaveAttribute('data-highlight', 'true');
+});
+
+test('AC-6: ?attention query param is cleared from the URL after cold-start processing', async ({
+  page,
+}) => {
+  await setupWs(page, (ws) => {
+    ws.send(snapshotFrame({ pendingAttention: [ATTENTION_FIXTURE] }));
+  });
+
+  await page.goto(`/workflow/${WF_ID}?attention=${ATTN_ID}`);
+
+  // Attention banner should render (param was consumed).
+  await expect(page.locator(`#attention-item-${ATTN_ID}`)).toBeVisible();
+  // URL param must be removed — history.replaceState cleans it.
+  await expect(page).not.toHaveURL(/attention=/);
 });
 
 // ---------------------------------------------------------------------------
