@@ -14,7 +14,6 @@
           "src/server/scheduler/per-item-seeder.ts",
           "src/server/scheduler/scheduler.ts",
           "tests/scheduler/per-item-seeder.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [
@@ -39,7 +38,6 @@
         "note": "tsc clean; 1031/1031 tests pass (2 new). The scheduler-side capture wiring (readRecordMarker → FixtureWriter.open → stdout/stderr tee → close(exitCode) → clearRecordMarker) was already present from feat-process-mgr-scripted attempt 2. This session added the two missing tests: (1) a ScriptedProcessManager capture→replay round-trip test (RC-2), and (2) a clearRecordMarker-on-error test (AC-2 error path, classifier=unknown → awaiting_user).",
         "intended_files": [
           "tests/scheduler/scheduler.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -62,7 +60,6 @@
           "src/cli/doctor.ts",
           "tests/cli/start.test.ts",
           "tests/cli/doctor.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -83,7 +80,6 @@
         "note": "Verification pass. The only code change was a pre-committed fix (91d0f5f) to scheduler.ts: a this.stopped guard after the captureGitHead await prevents insertSession from racing db.close() when stop() is called while the git subprocess is running. No changes to ack-attention.ts, start.ts, or tests. tsc clean, 1024/1024 tests pass.",
         "intended_files": [
           "src/server/scheduler/scheduler.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -107,7 +103,6 @@
           "src/server/pipeline/ack-attention.ts",
           "src/cli/start.ts",
           "tests/pipeline/ack-attention.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [
@@ -162,7 +157,6 @@
           "tests/hook-contract/artifact-writes.test.ts",
           "tests/pipeline/engine.test.ts",
           "tests/scheduler/scheduler.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [
@@ -191,7 +185,6 @@
           "src/cli/start.ts",
           "tests/notifications/dispatcher.test.ts",
           "tests/api/fastify-http.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [
@@ -218,7 +211,6 @@
           "src/server/scheduler/scheduler.ts",
           "tests/fault/injector.test.ts",
           "tests/scheduler/crash-recovery.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -242,7 +234,6 @@
           "tests/artifacts/validator.test.ts",
           "src/server/scheduler/scheduler.ts",
           "tests/scheduler/scheduler.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -263,7 +254,6 @@
         "ts": "2026-04-13T23:30:00Z",
         "intended_files": [
           "src/server/prepost/runner.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -291,7 +281,6 @@
           "tests/config/loader.test.ts",
           "tests/prepost/runner.test.ts",
           "tests/scheduler/scheduler.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -335,7 +324,6 @@
           "tests/process/fixture-writer.test.ts",
           "src/server/scheduler/scheduler.ts",
           "tests/scheduler/scheduler.test.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -353,7 +341,6 @@
           "src/server/process/record-marker.ts",
           "src/cli/record.ts",
           "src/server/scheduler/scheduler.ts",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [],
@@ -378,7 +365,6 @@
           "tests/github/service.test.ts",
           "tests/storage/schema.test.ts",
           "package.json",
-          "progress.md",
           "handoff.json"
         ],
         "deferred_criteria": [
