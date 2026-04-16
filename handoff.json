@@ -1,23 +1,26 @@
 {
-  "item_id": "feat-attention-banner",
+  "item_id": "feat-macos-deep-link",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 2,
-      "session_id": "50110a09-952a-4f6e-9f0e-d6402ccfd4c9",
-      "ts": "2026-04-16T16:47:37Z",
-      "note": "All 8 acceptance criteria were already covered from attempt 1. This session fixed a silent bug in the deep-link highlight (deferred from attempt 1) and added the missing e2e test for it. Root cause: WorkflowList.tsx calls setSearchParams({}, {replace:true}) on mount as part of its filter-sync effect, which runs before AttentionBanner mounts (WorkflowList is earlier in the DOM, so its effects fire first). By the time the snapshot arrives and AttentionBanner mounts, the ?attention URL param has already been cleared, making window.location.search empty and deepLinkRef.current null. Fix: WorkflowDetailRoute now captures searchParams.get('attention') at initial render (before any effects) in a useRef and passes it as the deepLinkedAttentionId prop to AttentionBanner. AttentionBanner uses this prop (not window.location.search) to seed its deepLinkRef. Also fixed: the prior implementation used el.setAttribute('data-highlight','true') (direct DOM mutation), which React reconciliation resets on re-render because the JSX prop was data-highlight='false'. Fixed by tracking highlighted IDs in React state (highlightedIds Set) and using a ref-based timer that survives effect re-runs. URL cleanup now happens via WorkflowList's existing setSearchParams effect — AttentionBanner no longer needs to clean the URL itself. 7/7 AttentionBanner + bell-badge tests pass. The pre-existing FeatureBoard status-filter test failure (ambiguous 'Filter by status' selector matching both WorkflowList sidebar and FeatureBoard dropdowns) was present before this session and is out of scope.",
+      "attempt": 1,
+      "session_id": "6ab68a45-325c-40df-a294-080c5a5b14be",
+      "ts": "2026-04-16T19:00:00Z",
+      "note": "The feature was largely already in place from prior feature builds: AttentionBanner already reads ?attention=<id>, scrolls to the item, applies a 2s pulse via React state, and clears the URL param via setSearchParams. FeatureBoard already reads :itemId from useParams, scrolls via useLayoutEffect, and highlights via el.setAttribute. WorkflowDetailRoute already renders a 'Workflow not found' error page with back link after an 8s timeout when no snapshot arrives. What was missing: (1) subscription deduplication in the WS client — subscribe() now returns early if the workflow is already in this.subs, preventing duplicate subscribe frames (AC-7/RC-4); (2) e2e tests — created src/web/e2e/deep-link.spec.ts covering AC-2 (item deep link highlights card), AC-4 (invalid workflow shows error via Playwright clock.fastForward), AC-5 (in-app navigation via history.pushState+popstate triggers highlight), and AC-7 (subscribe frame sent exactly once). Also fixed a pre-existing strict locator in workflow-detail.spec.ts (FeatureBoard status filter test had two comboboxes with the same aria-label; narrowed to getByRole('main')). All 72 tests pass.",
       "intended_files": [
-        "src/web/src/components/AttentionBanner/AttentionBanner.tsx",
-        "src/web/src/routes/WorkflowDetailRoute.tsx",
-        "src/web/e2e/workflow-detail.spec.ts",
-        "handoff.json"
+        "src/web/src/ws/client.ts",
+        "src/web/e2e/deep-link.spec.ts",
+        "src/web/e2e/workflow-detail.spec.ts"
       ],
-      "deferred_criteria": [],
+      "deferred_criteria": [
+        "AC-1: ?attention scroll coverage is supplemented but not fully isolated in a new deep-link test (the existing workflow-detail.spec.ts test at line 434 covers it). No new standalone attention test was added in deep-link.spec.ts because it would duplicate coverage.",
+        "AC-3 (attention pulse): Covered by the existing test in workflow-detail.spec.ts; no additional test written. Item pulse is verified in AC-2 test via data-highlight attribute."
+      ],
       "known_risks": [
-        "The deep-link ?attention=<id> URL cleanup relies on WorkflowList's filter-sync setSearchParams effect (which runs on every filter change). If a future refactor removes or scopes WorkflowList's setSearchParams so it no longer clears unknown params, the ?attention param would persist in the URL after navigation. This is acceptable since AttentionBanner no longer reads from the URL — it reads from the prop — so the only effect is a stale URL, not broken behavior.",
-        "The pre-existing FeatureBoard status-filter e2e test failure (strict-mode selector violation: two elements match 'Filter by status' combobox — one in WorkflowList sidebar, one in FeatureBoard) was present before this session. It is out of scope for feat-attention-banner but should be fixed in a feat-feature-board revisit.",
-        "highlightedIds Set is React component state. If AttentionBanner unmounts and remounts (edge case: all items acknowledged, then a new notice arrives), deepLinkProcessed.current resets to false but deepLinkRef.current still holds the original attention ID — the highlight would re-fire on the new mount. In practice this is benign (user navigated away and back, a highlight on the previously deep-linked item is harmless)."
+        "FeatureBoard highlight via direct DOM mutation (el.setAttribute) is fragile: if a WS frame triggers a React re-render within the 2s window, the JSX prop data-highlight=\"false\" will reconcile and overwrite the attribute. The highlight would immediately re-apply (useLayoutEffect re-fires on items change) but there is a brief flash. The non-blocking issue from the feat-feature-board review names this explicitly. Fix would be to use React state (Set<string>) for highlighted item IDs, matching AttentionBanner's pattern.",
+        "page.clock.fastForward is used in AC-4 tests to skip the 8-second not-found timeout. This API is available in playwright-core 1.59.1 (tested and confirmed). If Playwright is downgraded, these tests will need adjustment.",
+        "In-app navigation test (AC-5) uses history.pushState + manual popstate dispatch. React Router v7 responds to popstate events, so this works, but it bypasses React Router's navigate() API. If React Router changes its internal event handling, this test could break.",
+        "The subscribe deduplication fix returns early for ALL duplicate calls, including if the caller passes a different sinceSeq. The reconnect path (hello handler calling _sendSubscribe directly) is not affected. If any caller legitimately needs to re-subscribe with a fresh sinceSeq without an intervening unsubscribe, they would need to call unsubscribe first."
       ]
     }
   ]
