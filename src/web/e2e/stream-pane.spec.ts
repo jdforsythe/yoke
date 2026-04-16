@@ -218,7 +218,8 @@ test('ToolCallRenderer shows ok badge when stream.tool_result arrives (AC-7)', a
 
   capturedWs!.send(streamToolResultFrame(SESS, 'tool-result-ok', 'ok', 'src/main.ts:42: TODO fix', 4));
 
-  await expect(page.getByText('ok')).toBeVisible();
+  // exact: true avoids matching "Yoke" (brand) and "tokens" (UsageHUD) as substrings.
+  await expect(page.getByText('ok', { exact: true })).toBeVisible();
   await expect(page.getByText('running')).not.toBeVisible();
 });
 
