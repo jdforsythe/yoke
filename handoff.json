@@ -1,23 +1,48 @@
 {
-  "item_id": "feat-control-matrix",
+  "item_id": "feat-macos-deep-link",
   "entries": [
     {
       "phase": "implement",
       "attempt": 1,
-      "session_id": "09a8752a-c74b-4c5c-9484-72e214a120dd",
-      "ts": "2026-04-16T17:33:02Z",
-      "note": "The ControlMatrix component was already fully implemented in a prior session at src/web/components/ControlMatrix/ControlMatrix.tsx and wired into WorkflowDetailRoute. The component uses a declarative RULES object mapping each action to a predicate over (workflowStatus, selectedItem, activeStage), generates commandIds via crypto.randomUUID(), shows optimistic spinner state until 10s timeout, presents a controlled confirmation dialog for destructive actions (cancel, skip), and opens a text-input modal for inject-context. This session added comprehensive e2e test coverage in control-matrix.spec.ts (19 tests). Tests cover: AC-2 (pause sends control frame with action=pause; commandId is in the frame's top-level id field as a UUID); AC-3 (cancel requires confirmation dialog, then sends frame); AC-4 (optimistic disabled state on pause and resume after click); AC-5 (commandId is a UUID via crypto.randomUUID, verified via frame.id); AC-6 (inject-context opens modal, Inject button disabled while empty, cancel closes without sending, filled text sent as extra); AC-7 (approve-stage visible only when stage.needsApproval=true AND stage.status=complete, hidden for in_progress or needsApproval=false, sends stageId in frame); AC-1/AC-8 (actions update dynamically via workflow.update, cancel hidden for complete workflow, no toolbar when no active session). Item-scoped action tests cover skip/unblock for blocked items, retry for failed items, hidden when no item selected, skip confirmation dialog sends itemId, and dynamic update when item.state frame transitions the selected item.",
+      "session_id": "6ab68a45-325c-40df-a294-080c5a5b14be",
+      "ts": "2026-04-16T19:00:00Z",
+      "note": "The feature was largely already in place from prior feature builds: AttentionBanner already reads ?attention=<id>, scrolls to the item, applies a 2s pulse via React state, and clears the URL param via setSearchParams. FeatureBoard already reads :itemId from useParams, scrolls via useLayoutEffect, and highlights via el.setAttribute. WorkflowDetailRoute already renders a 'Workflow not found' error page with back link after an 8s timeout when no snapshot arrives. What was missing: (1) subscription deduplication in the WS client — subscribe() now returns early if the workflow is already in this.subs, preventing duplicate subscribe frames (AC-7/RC-4); (2) e2e tests — created src/web/e2e/deep-link.spec.ts covering AC-2 (item deep link highlights card), AC-4 (invalid workflow shows error via Playwright clock.fastForward), AC-5 (in-app navigation via history.pushState+popstate triggers highlight), and AC-7 (subscribe frame sent exactly once). Also fixed a pre-existing strict locator in workflow-detail.spec.ts (FeatureBoard status filter test had two comboboxes with the same aria-label; narrowed to getByRole('main')). All 72 tests pass.",
       "intended_files": [
-        "src/web/e2e/control-matrix.spec.ts"
+        "src/web/src/ws/client.ts",
+        "src/web/e2e/deep-link.spec.ts",
+        "src/web/e2e/workflow-detail.spec.ts"
       ],
       "deferred_criteria": [
-        "RC-4: rerun-phase visibility — rerun-phase requires item.state.status in ['complete','failed'] and there is no separate test for it beyond retry (failed). The rule is in RULES and is covered implicitly, but no explicit test for 'complete' item showing 'Rerun phase' button was written. Low risk since the rule is symmetric with retry.",
-        "AC-5 idempotency (same commandId on retry within 5 min) — the client-side idempotency cache reuses commandId for repeated clicks within 5 minutes. Not tested via e2e because Playwright cannot easily assert that two rapid clicks produce identical frame.id values without timing control."
+        "AC-1: ?attention scroll coverage is supplemented but not fully isolated in a new deep-link test (the existing workflow-detail.spec.ts test at line 434 covers it). No new standalone attention test was added in deep-link.spec.ts because it would duplicate coverage.",
+        "AC-3 (attention pulse): Covered by the existing test in workflow-detail.spec.ts; no additional test written. Item pulse is verified in AC-2 test via data-highlight attribute."
       ],
       "known_risks": [
-        "Item-selection tests rely on clicking #item-<itemId> in the FeatureBoard panel. If FeatureBoard changes its item ID scheme or the item card becomes unclickable (e.g., clickable region changes), item-scoped ControlMatrix tests will silently miss the selectedItem update and fail to see skip/retry/unblock buttons.",
-        "The 10s optimistic timeout (setTimeout in ControlMatrix.handleAction) re-enables buttons after 10s regardless of server ack. The spinner-disabled tests pass because they check immediately after click, before 10s elapses. On very slow CI this is fine, but if a test somehow waited 10+ seconds, the button would re-enable and the toBeDisabled assertion would fail.",
-        "approve-stage active-stage lookup uses stages.find(s => s.status === 'in_progress' || s.status === 'complete'). If multiple stages match, the first one wins. Tests use single-stage scenarios; multi-stage ordering edge cases are not covered."
+        "FeatureBoard highlight via direct DOM mutation (el.setAttribute) is fragile: if a WS frame triggers a React re-render within the 2s window, the JSX prop data-highlight=\"false\" will reconcile and overwrite the attribute.",
+        "page.clock.fastForward is used in AC-4 tests to skip the 8-second not-found timeout.",
+        "In-app navigation test (AC-5) uses history.pushState + manual popstate dispatch.",
+        "The subscribe deduplication fix returns early for ALL duplicate calls."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "09e31880-125c-4bb5-8dfc-0007eb3c0907",
+      "ts": "2026-04-16T23:00:00Z",
+      "note": "Attempt 2 addressed the two deferred criteria from attempt 1 (AC-1 and AC-3 for attention deep-links). Three new standalone tests were added to deep-link.spec.ts: (1) AC-1 cold-start attention test — navigates to /workflow/:id?attention=42 and verifies the banner renders with the targeted item; (2) AC-3 attention pulse test — verifies data-highlight=true on the attention item; (3) AC-6 URL cleanup test — verifies the ?attention= param is removed from the address bar by history.replaceState. Additionally, the test infrastructure was repaired: helpers.ts had sessionStartedFrame phase required (breaking 1-arg callers in usage-hud.spec.ts) — fixed by making phase default to 'implement'. usageFrame() builder was added to helpers.ts. Two strict-mode locator violations introduced by UsageHUD (getByText('ok') matching 'Yoke'/'tokens', getByText('Test Workflow') matching sidebar row + detail header) were fixed in stream-pane.spec.ts and usage-hud.spec.ts. UsageHUD.tsx improvements from a prior session (dropdownRef outside-click fix, cache-write tokens, sessions.size > 0 threshold) were committed. All 130 tests pass.",
+      "intended_files": [
+        "src/web/e2e/helpers.ts",
+        "src/web/e2e/deep-link.spec.ts",
+        "src/web/e2e/stream-pane.spec.ts",
+        "src/web/e2e/usage-hud.spec.ts",
+        "src/web/src/components/UsageHUD/UsageHUD.tsx",
+        "docs/idea/dashboard-features.json",
+        "handoff.json"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The attention deep-link pulse test (AC-3) checks data-highlight=true immediately after page load. The 2s setTimeout clearing the highlight could theoretically expire on a very slow machine before the assertion runs, but in practice the assertion runs well within 100ms of page load.",
+        "AC-1/AC-3 tests use ATTN_ID=42 (numeric). If the attention ID format ever changes to non-numeric, Number('abc')=NaN means the highlight would never apply but text assertions would still pass.",
+        "usage-hud.spec.ts AC-8 'outside click' test clicks on locator('main') at position {x:10, y:10}. If the portal position changes, the click might land inside the dropdown."
       ]
     }
   ]
