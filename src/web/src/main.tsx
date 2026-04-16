@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
 import { getClient } from './ws/client';
-import { dispatch, dispatchTextDelta } from './store/renderStore';
+import { dispatch, dispatchTextDelta, getSnapshot } from './store/renderStore';
 import './index.css';
 
 // Test hook: exposes render-store dispatch so e2e tests can inject arbitrary
@@ -12,6 +12,7 @@ import './index.css';
 // overhead is negligible and the unconditional export simplifies test builds.
 (window as unknown as Record<string, unknown>)['__yokeDispatch__'] = dispatch;
 (window as unknown as Record<string, unknown>)['__yokeDispatchText__'] = dispatchTextDelta;
+(window as unknown as Record<string, unknown>)['__yokeGetSnapshot__'] = getSnapshot;
 
 // Register service worker for push notifications
 if ('serviceWorker' in navigator) {

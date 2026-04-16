@@ -354,6 +354,72 @@ export function usageFrame(sessionId: string, usage: UsageOpts, seq = 5): string
 }
 
 // ---------------------------------------------------------------------------
+// Prepost frame builders
+// ---------------------------------------------------------------------------
+
+export function prepostStartedFrame(
+  sessionId: string,
+  runId: number,
+  name: string,
+  phase: string,
+  when: 'pre' | 'post',
+  seq: number,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'prepost.command.started',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: {
+      runId,
+      phase,
+      when,
+      name,
+      argv: [name],
+      startedAt: new Date().toISOString(),
+    },
+  });
+}
+
+export function prepostOutputFrame(
+  sessionId: string,
+  runId: number,
+  stream: 'stdout' | 'stderr',
+  chunk: string,
+  seq: number,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'prepost.command.output',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { runId, stream, chunk },
+  });
+}
+
+export function prepostEndedFrame(
+  sessionId: string,
+  runId: number,
+  exitCode: number,
+  action: unknown,
+  seq: number,
+): string {
+  return JSON.stringify({
+    v: 1,
+    type: 'prepost.command.ended',
+    workflowId: WF_ID,
+    sessionId,
+    seq,
+    ts: new Date().toISOString(),
+    payload: { runId, exitCode, action, endedAt: new Date().toISOString() },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // REST API mock
 // ---------------------------------------------------------------------------
 
