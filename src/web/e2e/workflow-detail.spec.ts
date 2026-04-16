@@ -462,6 +462,34 @@ test('AttentionBanner: ?attention=<id> deep-link clears URL param and highlights
   await expect(item).toHaveAttribute('data-highlight', 'true');
 });
 
+test('AttentionBanner: items render in createdAt ascending order (AC-8)', async ({ page }) => {
+  const older = new Date(Date.now() - 5000).toISOString();
+  const newer = new Date().toISOString();
+
+  await setupWs(page, (ws) => {
+    // Supply newer item first to confirm sort order, not insertion order.
+    ws.send(
+      snapshotFrame({
+        pendingAttention: [
+          { id: 2, kind: 'validator_fail', payload: null, createdAt: newer },
+          { id: 1, kind: 'bootstrap_failed', payload: null, createdAt: older },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner).toBeVisible();
+
+  const cards = banner.locator('[id^="attention-item-"]');
+  await expect(cards).toHaveCount(2);
+  // Oldest first: id=1 (bootstrap_failed) should precede id=2 (validator_fail)
+  await expect(cards.nth(0)).toHaveId('attention-item-1');
+  await expect(cards.nth(1)).toHaveId('attention-item-2');
+});
+
 // ---------------------------------------------------------------------------
 // GithubButton
 // ---------------------------------------------------------------------------
@@ -953,7 +981,7 @@ test('FeatureBoard status filter hides non-matching items (AC-5)', async ({ page
   await expect(page.getByText('Beta Feature')).toBeVisible();
 
   // Narrow to the FeatureBoard's filter (WorkflowList sidebar has an identical label)
-  await page.getByRole('main').getByRole('combobox', { name: 'Filter by status' }).selectOption('pending');
+  await page.getByRole('combobox', { name: 'Filter items by status' }).selectOption('pending');
 
   await expect(page.getByText('Alpha Feature')).toBeVisible();
   await expect(page.getByText('Beta Feature')).not.toBeVisible();
