@@ -1,21 +1,27 @@
 {
-  "item_id": "feat-feature-board",
+  "item_id": "feat-stream-pane",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 2,
-      "session_id": "9f896df0-3349-4766-b413-0ac3ac551de6",
+      "attempt": 1,
+      "session_id": "c1b80ec5-b910-405c-9055-6e50ce373e8b",
       "ts": "2026-04-16T21:00:00Z",
-      "note": "Attempt 2 addressed the outstanding blocking issue carried over from the feat-macos-deep-link review (RC-2: FeatureBoard DOM-mutation highlight). The React-state fix (highlightedItems: Set<string>) and the RC-3 URL-cleanup fix (history.replaceState in WorkflowDetailRoute) were already committed in commit 42f7e16 by the feat-attention-banner attempt 3 session; those changes are present in the branch. The remaining gap was a label mismatch: the FeatureBoard status-filter select had aria-label='Filter by status' (same as WorkflowList), while the AC-5 test at line 1063 selects by 'Filter items by status'. Fixed by renaming the aria-label in FeatureBoard.tsx to 'Filter items by status', making it unambiguous without requiring a page.getByRole('main') scope guard. Additionally, three new tests were added to workflow-detail.spec.ts by this session: AC-4 subtitle search ('FeatureBoard search filters by displaySubtitle'), AC-2 subtitle render ('FeatureBoard renders displaySubtitle when present'), and AC-2 phase label ('FeatureBoard renders currentPhase label when non-null'). These tests exercise the data-testid='item-subtitle' and data-testid='item-phase' attributes added in the prior session. All ACs (1–10) and all RCs (1–7) are now covered: RC-2 via React-state highlight, RC-3 via explicit replaceState, RC-6 via WorkflowDetailRoute cleanup, RC-7 via cache-invalidation test.",
+      "note": "The LiveStreamPane component, all four block renderers (TextBlockRenderer, ThinkingBlockRenderer, ToolCallRenderer, SystemNoticeRenderer), the rAF-batched renderStore, and the normalized render-model reducer were already fully implemented in a prior session. This attempt added the missing e2e test coverage. Six stream frame builder functions were added to helpers.ts (sessionStartedFrame, sessionEndedFrame, streamTextFrame, streamThinkingFrame, streamToolUseFrame, streamToolResultFrame, streamSystemNoticeFrame) so all stream-pane tests can construct realistic WS message sequences. A data-testid attribute was added to the scroll container in LiveStreamPane so the upscroll tests can reliably target that element. stream-pane.spec.ts covers: TextBlock rendering (plain and fenced code), ThinkingBlock collapsed-by-default and expand-on-click (AC-6), ToolCallRenderer name/badge/expand/result-update (AC-7), SystemNotice info and warn severity, session.started and session.ended lifecycle notices, follow-tail real-time visibility (AC-3), upscroll detach showing the Jump to latest pill (AC-4), and Jump to latest click re-engaging follow-tail (AC-5). AC-1 (jank-free 1k+ blocks) requires Chrome DevTools profiling and is not automatable in Playwright. AC-2 (variable-height blocks measure without overlap) is tested implicitly through all block-rendering assertions but cannot be verified via DOM assertions alone. AC-8 (Load earlier messages — truncated sentinel) requires filling the 10k-block ring cap which is not feasible in headless e2e; the code path was reviewed and is implemented. AC-9 (session scroll position preserved on tab switch) deferred because the current WorkflowDetailRoute UI does not expose a session-switch control; the scroll cache is in place and implemented correctly.",
       "intended_files": [
-        "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
-        "src/web/e2e/workflow-detail.spec.ts"
+        "src/web/e2e/helpers.ts",
+        "src/web/e2e/stream-pane.spec.ts",
+        "src/web/src/components/LiveStream/LiveStreamPane.tsx"
       ],
-      "deferred_criteria": [],
+      "deferred_criteria": [
+        "AC-1: 1k+ block jank-free rendering — requires Chrome DevTools perf profiling, not automatable in Playwright; implementation uses @tanstack/react-virtual with measureElement",
+        "AC-2: variable-height blocks measure correctly — implicitly covered by all block-rendering assertions but no precise DOM height assertion is available",
+        "AC-8: Load earlier messages button — requires 10,001+ blocks to trigger the truncated sentinel; not feasible in headless e2e; code path exists in LiveStreamPane.loadEarlier()",
+        "AC-9: Switching between sessions preserves scroll position — scrollPositionCache is implemented but WorkflowDetailRoute has no session-switch UI to drive from a test"
+      ],
       "known_risks": [
-        "The AC-5 status-filter test no longer uses page.getByRole('main') scoping; it relies on the unique 'Filter items by status' label. If WorkflowList ever adopts that same label, the test would become ambiguous again.",
-        "The highlightedItems useLayoutEffect dep array omits onSelectItem (stable callback ref) to avoid an infinite loop risk if the parent passes an unstable lambda. An eslint-disable comment was added; if onSelectItem changes identity, the deep-link scroll fires again on every items re-render.",
-        "The data-testid attributes on displaySubtitle and currentPhase span elements are test-only markup; they do not add accessibility value. A future accessibility audit may prefer aria-label or role-based selection instead."
+        "The upscroll/Jump-to-latest tests (AC-4, AC-5) rely on the virtualized container overflowing with 30 blocks. If the Playwright viewport is very tall or block heights are much smaller than estimated, the container may not overflow and the scroll dispatch will not detach follow-tail. Blocks use long content strings to ensure measurable height.",
+        "rAF batching: text frames sent in rapid succession are flushed together in the next animation frame. If requestAnimationFrame fires before all 30 frames arrive from the WS mock, some may land in a later batch. Playwright's expect().toBeVisible() retries until timeout so this is absorbed on most machines, but very slow CI might see intermittent failures.",
+        "The data-testid on the scroll container will conflict if a second LiveStreamPane or ReviewPanel with an overflow-y-auto container is ever rendered alongside it in the same view."
       ]
     }
   ]
