@@ -182,9 +182,11 @@ test('text search sends q param after debounce and reflects in URL', async ({ pa
   });
   await page.goto('/');
 
-  const searchReq = page.waitForRequest((req) => req.url().includes('q=mysearch'));
+  // waitForResponse ensures the route handler has run and set lastApiUrl
+  // before we assert; waitForRequest resolves before the handler fires.
+  const searchRes = page.waitForResponse((res) => res.url().includes('q=mysearch'));
   await page.getByPlaceholder('Search workflows…').fill('mysearch');
-  await searchReq; // waits up to test timeout for debounced request
+  await searchRes;
 
   expect(lastApiUrl).toContain('q=mysearch');
   await expect(page).toHaveURL(/q=mysearch/);
