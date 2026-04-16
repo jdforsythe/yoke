@@ -78,6 +78,7 @@ function emptySession(sessionId: string): SessionRenderState {
     _ring: new BlockRing(MAX_BLOCKS),
     _blockMap: new Map(),
     _evictedCount: 0,
+    _prependedBlocks: [],
     frozen: false,
     needsSnapshot: false,
     usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
@@ -461,11 +462,15 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
 export function getSessionBlocks(state: RenderModelState, sessionId: string): readonly RenderBlock[] {
   const session = state.sessions.get(sessionId);
   if (!session) return [];
-  const blocks = session._ring.toArray();
-  if (session._evictedCount > 0 && blocks[0]?.type !== 'truncated_sentinel') {
-    return [createSentinel(session.sessionId), ...blocks];
+  const ringBlocks = session._ring.toArray();
+  const prepended = session._prependedBlocks;
+  if (session._evictedCount > 0) {
+    // Order: sentinel → prepended (already-loaded earlier content) → ring.
+    // Sentinel stays at index 0 so LiveStreamPane.loadEarlier can find it via
+    // blocks[0].type === 'truncated_sentinel'.
+    return [createSentinel(session.sessionId), ...prepended, ...ringBlocks];
   }
-  return blocks;
+  return [...prepended, ...ringBlocks];
 }
 
 export function getSessionUsage(state: RenderModelState, sessionId: string) {

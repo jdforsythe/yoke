@@ -29,6 +29,7 @@ import {
   getSessionBlocks,
   getSessionUsage,
 } from './reducer';
+import type { SessionRenderState } from './types';
 import type { RenderModelState, SessionUsage, RenderBlock } from './types';
 import type { ServerFrame } from '@/ws/types';
 import type { BlockRing } from './blockRing';
@@ -58,11 +59,12 @@ let _usageSnapshot: SessionUsage = {
 const EMPTY_BLOCKS: readonly RenderBlock[] = Object.freeze([]);
 
 // Per-session blocks cache: keyed by sessionId, stores the last ring reference
-// and the corresponding materialised blocks array. When the ring reference is
-// unchanged (no push/update since last call), the SAME blocks array reference
-// is returned so useSyncExternalStore skips re-renders for that session.
+// AND prependedBlocks reference. When BOTH are unchanged (no push/update
+// since last call), the SAME blocks array reference is returned so
+// useSyncExternalStore skips re-renders for that session.
 interface SessionBlocksEntry {
   ring: BlockRing;
+  prependedBlocks: readonly RenderBlock[];
   blocks: readonly RenderBlock[];
 }
 const _sessionBlocksCache = new Map<string, SessionBlocksEntry>();
@@ -184,13 +186,63 @@ export function getSessionBlocksSnapshot(sessionId: string): readonly RenderBloc
   if (!session) return EMPTY_BLOCKS;
 
   const cached = _sessionBlocksCache.get(sessionId);
-  // Ring reference is stable unless a push/update occurred for this session.
-  // Return the cached array when ring hasn't changed (Object.is equality).
-  if (cached && cached.ring === session._ring) return cached.blocks;
+  // Both the ring AND prependedBlocks must be unchanged for the cached array
+  // to be valid.  prependedBlocks changes when loadEarlierFrames is called.
+  if (
+    cached &&
+    cached.ring === session._ring &&
+    cached.prependedBlocks === session._prependedBlocks
+  ) {
+    return cached.blocks;
+  }
 
   const blocks = getSessionBlocks(_state, sessionId);
-  _sessionBlocksCache.set(sessionId, { ring: session._ring, blocks });
+  _sessionBlocksCache.set(sessionId, {
+    ring: session._ring,
+    prependedBlocks: session._prependedBlocks,
+    blocks,
+  });
   return blocks;
+}
+
+/**
+ * Prepend a list of already-materialised blocks before the ring content for
+ * the given session.  Used by LiveStreamPane.loadEarlierFrames so that
+ * HTTP-fetched older blocks appear above current content (sentinel → prepended
+ * → ring) without moving the user's scroll position.
+ */
+export function prependSessionBlocks(sessionId: string, blocks: readonly RenderBlock[]): void {
+  const session = _state.sessions.get(sessionId);
+  if (!session || blocks.length === 0) return;
+  const updated: SessionRenderState = {
+    ...session,
+    _prependedBlocks: [...blocks, ...session._prependedBlocks],
+  };
+  const sessions = new Map(_state.sessions);
+  sessions.set(sessionId, updated);
+  _state = { sessions };
+  _updateUsageSnapshot();
+  _notify();
+}
+
+/**
+ * Process a list of raw ServerFrames fetched from the HTTP log endpoint,
+ * convert them to RenderBlocks via applyFrame, and prepend the resulting
+ * blocks to the session's _prependedBlocks list.
+ *
+ * Uses a temporary state so the frames don't mutate the live ring or
+ * trigger delta-accumulation side effects in the real session.
+ */
+export function loadEarlierFrames(sessionId: string, frames: ServerFrame[]): void {
+  if (frames.length === 0) return;
+  let tempState = createInitialState();
+  for (const frame of frames) {
+    tempState = applyFrame(tempState, frame);
+  }
+  const newBlocks = getSessionBlocks(tempState, sessionId).filter(
+    (b) => b.type !== 'truncated_sentinel',
+  );
+  prependSessionBlocks(sessionId, newBlocks);
 }
 
 // Re-export pure accessors so consumers don't need to import from reducer.

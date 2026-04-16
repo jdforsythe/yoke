@@ -109,6 +109,13 @@ export interface SessionRenderState {
    */
   readonly _evictedCount: number;
 
+  /**
+   * Blocks loaded from the HTTP log endpoint ("Load earlier messages").
+   * Rendered between the sentinel and the ring content so they appear
+   * at the top of the stream without a scroll jump.
+   */
+  readonly _prependedBlocks: readonly RenderBlock[];
+
   readonly frozen: boolean;
   /** True when an orphan tool_result or prepost.ended arrived without a prior start */
   readonly needsSnapshot: boolean;
