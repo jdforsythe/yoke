@@ -52,8 +52,7 @@
       "blocking_issues": [
         "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • AC-4: prepost.command.ended must finalize the notice with both exit code AND action label. block.action is populated by the reducer (e.g. { type: 'continue' } or { type: 'abort' }) but SystemNoticeRenderer.tsx never renders it — only the 'exit N' badge is displayed. The e2e tests for AC-4 also do not assert the action label, so the gap is untested. A user cannot tell from the UI whether the hook resulted in continue vs abort.\n"
       ]
-    }
-  ],
+    },
     {
       "phase": "implement",
       "attempt": 3,
@@ -71,6 +70,22 @@
         "The action badge type-guard uses 'block.action != null && typeof (block.action as Record<string,unknown>).type === string' — this covers { type: string } objects but will silently render nothing for action payloads with different shapes (e.g. action as a bare string or number). Acceptable for the current protocol but would need updating if the action shape evolves.",
         "AC-3 CSS class check still uses text-red- substring match rather than computed style. Tailwind version changes could invalidate the assertion without a logic regression.",
         "AC-6 test still relies on 20 pre-filled blocks to overflow the pane for follow-tail to engage. If estimateSize or container height changes, the test may not overflow and could give a false pass."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 4,
+      "session_id": "9943ff6c-082e-4ebe-8195-2d613dfdbc6b",
+      "ts": "2026-04-16T22:00:00Z",
+      "note": "No new code changes were made. The review-verdict.json found in the worktree root contains the attempt 2 verdict (AC-4: action label not rendered) but this issue was already fixed in attempt 3 (commit 147bca6: SystemNoticeRenderer.tsx renders block.action.type as a badge after the exit code badge). All 10 prepost-rendering e2e tests pass (AC-1 through AC-8). The test suite verifies both 'continue' and 'abort' action label visibility in the AC-4 tests. The stale review-verdict.json appears to be an artifact from the attempt 2 review that was not cleared before attempt 3's review ran, causing the harness to loop back unnecessarily. No deferred criteria remain beyond the previously acknowledged AC-5 timing assertion gap.",
+      "intended_files": [],
+      "deferred_criteria": [
+        "AC-5 rAF flush timing not explicitly asserted with a timing measurement. All three prepost frame types route through dispatchTextDelta (RC-2), but no e2e test measures the 16ms batch interval. The code path is correct."
+      ],
+      "known_risks": [
+        "The review-verdict.json file in the worktree is stale (from attempt 2 review). If the harness reads it without re-running the reviewer, it will incorrectly report FAIL again. The reviewer should run the e2e test suite or inspect the current SystemNoticeRenderer.tsx (lines 60-71) to confirm the action label is rendered.",
+        "AC-3 CSS class check still uses text-red- substring match rather than computed style — fragile against Tailwind version changes.",
+        "AC-6 test relies on 20 pre-filled blocks to overflow the virtualizer container — could give a false pass if estimateSize or container height changes."
       ]
     }
   ],
