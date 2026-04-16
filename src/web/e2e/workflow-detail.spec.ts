@@ -434,9 +434,6 @@ test('AppShell bell badge count reflects pending attention items (AC-5/AC-6)', a
 test('AttentionBanner: ?attention=<id> deep-link clears URL param and highlights item', async ({
   page,
 }) => {
-  const pageLogs: string[] = [];
-  page.on('console', (msg) => pageLogs.push(`[browser] ${msg.type()}: ${msg.text()}`));
-
   await setupWs(page, (ws) => {
     ws.send(
       snapshotFrame({
@@ -458,17 +455,10 @@ test('AttentionBanner: ?attention=<id> deep-link clears URL param and highlights
   await expect(banner).toBeVisible();
 
   // URL param should be consumed and cleared from the address bar
-  await expect(page).not.toHaveURL(/attention=/, { timeout: 8000 });
-
-  // Debug: check URL was cleaned first
-  const url = page.url();
-  console.log('URL after deep-link:', url);
-  console.log('Browser logs:', pageLogs.join('\n'));
+  await expect(page).not.toHaveURL(/attention=/);
 
   // The targeted item should have data-highlight=true while the 2s pulse runs
   const item = page.locator('#attention-item-1');
-  const attrBefore = await item.getAttribute('data-highlight');
-  console.log('data-highlight before wait:', attrBefore);
   await expect(item).toHaveAttribute('data-highlight', 'true');
 });
 

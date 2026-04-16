@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
 import { setAttentionCount } from '@/store/attentionStore';
@@ -52,6 +52,11 @@ interface WorkflowDetailState {
 export function WorkflowDetailRoute() {
   const { workflowId } = useParams<{ workflowId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Capture the attention deep-link ID at initial render, before WorkflowList's
+  // setSearchParams effect clears it (WorkflowList runs its effect on mount and
+  // replaces all URL params with its own filter state, dropping ?attention).
+  const initialAttentionIdRef = useRef(searchParams.get('attention'));
 
   const [state, setState] = useState<WorkflowDetailState>({
     snapshot: null,
@@ -290,6 +295,7 @@ export function WorkflowDetailRoute() {
         <AttentionBanner
           workflowId={workflowId!}
           items={snapshot.pendingAttention}
+          deepLinkedAttentionId={initialAttentionIdRef.current}
         />
       )}
 

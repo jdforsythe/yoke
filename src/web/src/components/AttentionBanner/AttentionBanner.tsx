@@ -12,41 +12,56 @@
  * Renders below CrashRecoveryBanner via layout order (no z-index tricks).
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { PendingAttention } from '@/ws/types';
-import { useSearchParams } from 'react-router-dom';
 
 interface Props {
   workflowId: string;
   items: PendingAttention[];
+  /** Attention ID from ?attention=<id> deep link, captured by WorkflowDetailRoute
+   *  before WorkflowList's setSearchParams effect clears the URL param. */
+  deepLinkedAttentionId?: string | null;
 }
 
-export function AttentionBanner({ workflowId, items }: Props) {
+export function AttentionBanner({ workflowId, items, deepLinkedAttentionId }: Props) {
   // optimisticHidden: IDs removed from display after POST succeeded.
   const [optimisticHidden, setOptimisticHidden] = useState<Set<number>>(new Set());
   // pendingAck: IDs where ack POST is in-flight — shows spinner + disables button.
   const [pendingAck, setPendingAck] = useState<Set<number>>(new Set());
-  const [searchParams, setSearchParams] = useSearchParams();
+  // highlightedIds: IDs currently showing the 2s pulse animation (React-controlled).
+  const [highlightedIds, setHighlightedIds] = useState<Set<number>>(new Set());
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Deep-link: ?attention=<id> highlights the specific item.
-  const deepLinkedId = searchParams.get('attention');
+  // Deep-link: ?attention=<id> highlights the specific item on mount.
+  // The ID is passed as a prop from WorkflowDetailRoute (captured there before
+  // WorkflowList's setSearchParams clears it from the URL).
+  const deepLinkRef = useRef(deepLinkedAttentionId ?? null);
+  const deepLinkProcessed = useRef(false);
 
-  // Consume the attention query param after processing.
-  // Uses data-attribute pattern (data-[highlight=true]:animate-pulse) consistent
-  // with FeatureBoard — avoids direct class-list mutation (RC-2).
   useEffect(() => {
-    if (!deepLinkedId) return;
-    // Clear the param from the URL without navigation (always, even if el not yet rendered).
-    const next = new URLSearchParams(searchParams);
-    next.delete('attention');
-    setSearchParams(next, { replace: true });
-    const el = document.getElementById(`attention-item-${deepLinkedId}`);
+    const rawId = deepLinkRef.current;
+    if (!rawId || deepLinkProcessed.current) return;
+    deepLinkProcessed.current = true;
+
+    const numId = Number(rawId);
+
+    const el = document.getElementById(`attention-item-${numId}`);
     if (!el) return;
+
     el.scrollIntoView({ block: 'center' });
-    el.setAttribute('data-highlight', 'true');
-    const t = setTimeout(() => el.removeAttribute('data-highlight'), 2000);
-    return () => clearTimeout(t);
-  }, [deepLinkedId, searchParams, setSearchParams]);
+    setHighlightedIds((prev) => new Set([...prev, numId]));
+
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightedIds((prev) => {
+        const n = new Set(prev);
+        n.delete(numId);
+        return n;
+      });
+      highlightTimerRef.current = null;
+    }, 2000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const visible = items
     .filter((item) => !optimisticHidden.has(item.id))
@@ -88,7 +103,7 @@ export function AttentionBanner({ workflowId, items }: Props) {
         <div
           key={item.id}
           id={`attention-item-${item.id}`}
-          data-highlight="false"
+          data-highlight={highlightedIds.has(item.id) ? 'true' : 'false'}
           className="flex items-start gap-3 px-4 py-2.5 bg-amber-950/40 border-b border-amber-900/30 last:border-b-0 data-[highlight=true]:animate-pulse"
         >
           <span className="text-amber-400 shrink-0" aria-hidden>
