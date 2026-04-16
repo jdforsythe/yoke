@@ -57,8 +57,7 @@ test('prepost.command.started renders pre-command notice with command name and p
   await page.goto(`/workflow/${WF_ID}`);
 
   // Reducer message: "Pre-command: lint.sh (phase: implement)"
-  await expect(page.getByText(/Pre-command: lint\.sh/)).toBeVisible();
-  await expect(page.getByText(/implement/)).toBeVisible();
+  await expect(page.getByText(/Pre-command: lint\.sh \(phase: implement\)/)).toBeVisible();
   // Source label shows 'hook'
   await expect(page.getByText('hook')).toBeVisible();
 });
@@ -297,20 +296,21 @@ test('Orphan prepost.command.ended (no started) sets needsSnapshot on session (A
   await page.goto(`/workflow/${WF_ID}`);
   await expect(page.getByText(/Session started/)).toBeVisible();
 
-  // Send ended with runId 9999 — no preceding started for this runId.
+  // Send ended with runId 9999 — no preceded started for this runId.
   capturedWs!.send(prepostEndedFrame(SESS, 9999, 0, null, 10));
 
-  // Verify via window test hook that needsSnapshot is set.
-  const needsSnapshot = await page.evaluate((sessionId: string) => {
-    const getSnapshot = (window as unknown as Record<string, (sid: string) => unknown>)[
-      '__yokeGetSnapshot__'
-    ] as (() => { sessions: Map<string, { needsSnapshot: boolean }> }) | undefined;
-    if (!getSnapshot) return null;
-    const snap = getSnapshot();
-    return snap.sessions.get(sessionId)?.needsSnapshot ?? null;
-  }, SESS);
-
-  expect(needsSnapshot).toBe(true);
+  // prepost.command.ended is rAF-batched; poll until the state update lands.
+  await page.waitForFunction(
+    (sessionId: string) => {
+      const getSnapshot = (window as unknown as Record<string, unknown>)[
+        '__yokeGetSnapshot__'
+      ] as (() => { sessions: Map<string, { needsSnapshot: boolean }> }) | undefined;
+      if (!getSnapshot) return false;
+      return getSnapshot().sessions.get(sessionId)?.needsSnapshot === true;
+    },
+    SESS,
+    { timeout: 2000 },
+  );
 });
 
 // ---------------------------------------------------------------------------

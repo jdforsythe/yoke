@@ -437,7 +437,6 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         action: p.action,
         prepostFinalized: true,
         severity: p.exitCode === 0 ? 'info' : 'warn',
-        message: existing.message + ` — exit ${p.exitCode}`,
       };
       return setSession(state, updateBlock(session, found.physIdx, updated));
     }

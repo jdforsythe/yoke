@@ -230,9 +230,12 @@ export function WorkflowDetailRoute() {
     offs.push(client.on('stream.text', dispatchTextDelta));
     offs.push(client.on('stream.thinking', dispatchTextDelta));
 
-    // prepost.command.output chunks are rAF-batched (same 16ms flush as text
-    // deltas) to prevent per-chunk re-renders — satisfies feat-prepost RC-2 / AC-5.
+    // prepost.command.* frames share the rAF queue with stream.text so that
+    // chronological order is preserved when a hook fires between text deltas
+    // (AC-8 / RC-2). All three prepost types join the same flush batch.
+    offs.push(client.on('prepost.command.started', dispatchTextDelta));
     offs.push(client.on('prepost.command.output', dispatchTextDelta));
+    offs.push(client.on('prepost.command.ended', dispatchTextDelta));
 
     // All other stream frames — immediate dispatch.
     for (const t of [
@@ -240,8 +243,6 @@ export function WorkflowDetailRoute() {
       'stream.tool_result',
       'stream.usage',
       'stream.system_notice',
-      'prepost.command.started',
-      'prepost.command.ended',
       'stage.started',
       'stage.complete',
     ] as const) {

@@ -97,6 +97,15 @@ export function LiveStreamPane({ sessionId, workflowId }: Props) {
     }
   }, [blocks.length, detached, virtualizer]);
 
+  // Re-anchor to bottom when a block's measured height changes (e.g., a prepost
+  // log is expanded or collapsed). Height changes don't modify blocks.length so
+  // the effect above does not fire; this one catches layout-only changes.
+  const totalSize = virtualizer.getTotalSize();
+  useEffect(() => {
+    if (!atBottomRef.current || detached || blocks.length === 0) return;
+    virtualizer.scrollToIndex(blocks.length - 1, { align: 'end' });
+  }, [totalSize, detached, blocks.length, virtualizer]);
+
   // Restore scroll position when sessionId changes.
   useEffect(() => {
     const el = parentRef.current;
