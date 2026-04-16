@@ -402,5 +402,53 @@
         ]
       }
     ]
+  },
+  {
+    "item_id": "feat-render-reducer",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "a7389b20-fbd4-4361-bd36-7d08f48ad2fc",
+        "ts": "2026-04-16T16:26:15Z",
+        "note": "The render-model reducer was fully implemented in prior sessions. This session verified all 10 acceptance criteria are covered: AC-1 (text delta accumulation by blockId), AC-2 (frozen on final:true, subsequent deltas dropped), AC-3 (tool_use creates pending ToolCallBlock; tool_result updates to ok/error with output), AC-4 (orphan tool_result sets needsSnapshot), AC-5 (session.ended freezes session, all subsequent stream frames rejected), AC-6 (stream.system_notice produces SystemNotice with correct severity and source), AC-7 (10,000-block cap enforced via BlockRing, eviction O(1), truncated_sentinel prepended by getSessionBlocks), AC-8 (stream.usage updates per-session usage accumulator via getSessionUsage), AC-9 (stage.started produces SystemNotice info/harness with stage ID, run mode, item count), AC-10 (stage.complete produces SystemNotice with stage ID, next stage, needsApproval, item summary counts). All review criteria satisfied: pure (state, action)=>state function with no side effects, discriminated union block types, string concatenation for delta accumulation, O(1) BlockRing eviction, no React imports, Map-keyed ToolCall linkage. 28/28 reducer unit tests pass; 1092/1092 total tests pass; tsc clean.",
+        "intended_files": [
+          "src/web/src/store/reducer.ts",
+          "src/web/src/store/blockRing.ts",
+          "src/web/src/store/types.ts",
+          "src/web/src/store/renderStore.ts",
+          "tests/web/reducer.test.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "stream.system_notice blockId uses Date.now() + Math.random() for uniqueness. This is non-deterministic and could theoretically collide in rapid-fire tests, though in practice the entropy is sufficient. A seq-based or counter-based ID would be strictly safer.",
+          "stage.started and stage.complete broadcast to ALL non-frozen sessions. If multiple sessions are active simultaneously, both receive the stage notice, resulting in duplicate notices if multiple sessions render in the same pane. This matches spec intent.",
+          "session.ended: if it arrives before session.started (out-of-order delivery), the frame is silently dropped (guard: if (!existing) return state). Correct per spec but worth noting."
+        ]
+      }
+    ]
+  },
+  {
+    "item_id": "feat-workflow-list",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "a7a41dd4-789c-4f91-abaa-1e3bea1bc6cf",
+        "ts": "2026-04-16T13:00:00Z",
+        "note": "The WorkflowList component (src/web/src/components/WorkflowList/WorkflowList.tsx) and all e2e tests were already implemented by a prior commit (76bebff). This session audited all AC and RC against the existing implementation and tests, found 13/13 e2e tests covering every AC (AC-1 through AC-8) and RC-3 with no gaps. One test had a race condition: 'text search sends q param after debounce and reflects in URL' used waitForRequest which resolves when the browser sends the request — before the Playwright route handler fires and sets lastApiUrl — causing a flaky false-negative. Fixed by switching to waitForResponse, which resolves only after route.fulfill() completes. All 46 e2e tests pass (46/46). TypeScript is clean (pnpm --filter web build). No new source files were added; only the test race fix was committed.",
+        "intended_files": [
+          "src/web/e2e/workflow-list.spec.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "AC-2 e2e test (real-time index.update patch) uses capturedWs via a local variable in the test process to push the WS frame. This is slightly fragile because it relies on the route handler closure capturing the ws reference synchronously. In practice this works reliably in Playwright but is worth noting for future test maintenance.",
+          "The infinite-scroll sentinel uses IntersectionObserver with threshold 0.1. In Playwright's headless Chromium, IntersectionObserver fires correctly, but the e2e test uses page.evaluate to manually set scrollTop rather than Playwright's scroll API — if Chromium changes IntersectionObserver firing semantics in headless mode, the test may need updating.",
+          "RC-6 (relative timestamps update on 60s interval) is verified by code inspection only; there is no e2e test asserting that the timestamp text changes after a 60s wait (which would be impractical in a 15s test timeout). The tick-based implementation is correct and covered by code review."
+        ]
+      }
+    ]
   }
 ]
