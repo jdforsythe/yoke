@@ -379,5 +379,28 @@
         ]
       }
     ]
+  },
+  {
+    "item_id": "feat-pipeline-hardening",
+    "entries": [
+      {
+        "phase": "implement",
+        "attempt": 1,
+        "session_id": "c33cf7fb-0fdd-4ded-a549-6499232edcc2",
+        "ts": "2026-04-16T12:18:00Z",
+        "note": "All backend ACs were already implemented by a prior commit (eb07d00): endSession called in crash recovery (AC-1/AC-6), pending_attention for validator_fail/diff_check_fail/post_command_action retry-exhausted (AC-2/AC-3), centralized _armRetryTimer helper (AC-4), handoff-injector unit tests at tests/prepost/handoff-injector.test.ts (AC-5), and scheduler integration tests for awaiting_retry restart (AC-7) and two-phase workflow advancement (AC-8). This session implemented the two remaining items: (1) RC-2 compliance — the two hardcoded `{ to: 'awaiting_user', sideEffects: [] }` fallbacks in selectConditionalOutcome for the awaiting_retry:backoff_elapsed exhausted path were replaced with references to a new explicit TRANSITIONS outcome (`o[1]`, guard: 'retry ladder exhausted', sideEffects: ['insert pending_attention']); (2) AC-9 — added a scheduler integration test at tests/scheduler/scheduler.test.ts verifying that post_command_action goto injects a harness hook-failure entry into handoff.json in the worktree and the scheduler re-spawns the session on the revisited phase. 1092/1092 tests pass (1 new).",
+        "intended_files": [
+          "src/server/state-machine/transitions.ts",
+          "src/server/pipeline/engine.ts",
+          "tests/scheduler/scheduler.test.ts",
+          "handoff.json"
+        ],
+        "deferred_criteria": [],
+        "known_risks": [
+          "The backoff_elapsed retry_count<=0 safety guard now inserts pending_attention. In theory an item could land in awaiting_retry with retry_count=0 (which normally shouldn't happen) and silently notify the user. In practice this guard was never reachable; it now has pending_attention which is safer than the former no-op silent transition.",
+          "The new TRANSITIONS outcome o[1] for backoff_elapsed ('retry ladder exhausted') is only reachable when the caller derives retryMode=awaiting_user from the ladder. For transient retries (unlimited budget), currentRetryMode is always set and never reaches 'awaiting_user', so pending_attention is not spuriously inserted there."
+        ]
+      }
+    ]
   }
 ]
