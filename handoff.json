@@ -1,28 +1,24 @@
 {
-  "item_id": "feat-stream-pane",
+  "item_id": "feat-prepost-rendering",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 2,
-      "session_id": "4a972385-d9ee-463d-97e3-c24567c8b4fe",
-      "ts": "2026-04-16T00:00:00Z",
-      "note": "feat-stream-pane fully implemented and all 21 e2e tests pass. LiveStreamPane (src/web/src/components/LiveStream/LiveStreamPane.tsx) uses @tanstack/react-virtual with measureElement for accurate variable-height rows (AC-1/AC-2). Follow-tail auto-scrolls when within 50px of bottom; detaches on upscroll; shows 'Jump to latest' pill when detached (AC-3/AC-4/AC-5). Scroll position is persisted per-sessionId in a module-level Map (AC-9). BlockRouter (React.memo) routes to TextBlockRenderer, ToolCallRenderer, ThinkingBlockRenderer, SystemNoticeRenderer (AC-6/AC-7). The truncated_sentinel is rendered inline by the parent to avoid passing an unstable onLoadEarlier function prop that would defeat React.memo. AC-8 (load earlier messages) required a _prependedBlocks mechanism: types.ts adds _prependedBlocks to SessionRenderState; reducer.ts initialises it in emptySession() and returns [sentinel, ...prepended, ...ring] from getSessionBlocks(); renderStore.ts adds prependSessionBlocks() and loadEarlierFrames() (processes frames via temp state so they don't mutate the live ring). The sentinel stays at index 0 so loadEarlier's blocks[0].type check still works. getSessionBlocksSnapshot cache-invalidates on ring OR prependedBlocks reference change. Window test hooks __yokeDispatch__ and __yokeDispatchText__ are registered in main.tsx for e2e block injection. The AC-8 timing fix waits for 'Block 10000' to be visible (rAF flushed + follow-tail settled) before scrolling to top.",
+      "attempt": 1,
+      "session_id": "c775fef7-70d5-480a-85b9-7c9a6c10a989",
+      "ts": "2026-04-16T12:00:00Z",
+      "note": "feat-prepost-rendering is fully implemented. The reducer (src/web/src/store/reducer.ts) already had all three prepost.command.* handlers: prepost.command.started inserts a SystemNoticeBlock with runId, source=hook, pre/post label, and empty outputChunks[]; prepost.command.output appends chunks to the block via updateBlock (O(1) via _blockMap); prepost.command.ended finalizes with exitCode, action, prepostFinalized=true, severity update, and orphan detection (needsSnapshot). The SystemNoticeRenderer (src/web/src/components/LiveStream/SystemNoticeRenderer.tsx) renders the collapsible log region, stderr in text-red-400, and the exit code badge (green for 0, red for non-zero). WorkflowDetailRoute dispatches prepost.command.output via dispatchTextDelta (rAF-batched, satisfying AC-5/RC-2). This session added: (1) three prepost frame builders (prepostStartedFrame, prepostOutputFrame, prepostEndedFrame) to e2e/helpers.ts, (2) a __yokeGetSnapshot__ window test hook in main.tsx for AC-7 needsSnapshot assertion, and (3) src/web/e2e/prepost-rendering.spec.ts with 10 tests covering AC-1 through AC-8 (AC-5 is implicitly satisfied by the rAF path in WorkflowDetailRoute and is not separately tested with a timing assertion).",
       "intended_files": [
-        "src/web/src/store/types.ts",
-        "src/web/src/store/reducer.ts",
-        "src/web/src/store/renderStore.ts",
-        "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+        "src/web/e2e/helpers.ts",
         "src/web/src/main.tsx",
-        "src/web/e2e/stream-pane.spec.ts",
-        "src/web/vite.config.ts",
-        "docs/idea/dashboard-features.json"
+        "src/web/e2e/prepost-rendering.spec.ts"
       ],
-      "deferred_criteria": [],
+      "deferred_criteria": [
+        "AC-5 rAF flush timing not explicitly asserted — the 16ms batching is wired in WorkflowDetailRoute (prepost.command.output → dispatchTextDelta) but the test suite does not contain a timing assertion measuring the batch interval. The behavior is correct but not directly asserted in e2e."
+      ],
       "known_risks": [
-        "AC-5 'Jump to latest' test is flaky when the full suite runs concurrently (resource contention causes the pill to detach before click); passes reliably in isolation.",
-        "The AC-8 timing fix (wait for 'Block 10000') relies on follow-tail working before we scroll to top. If follow-tail is broken, the wait will time out rather than fail fast.",
-        "loadEarlierFrames processes frames through a temporary state keyed by sessionId; if the HTTP endpoint returns frames for a different sessionId (e.g. due to a multi-session log), they will not appear because getSessionBlocks is called with the original sessionId on the temp state.",
-        "prependSessionBlocks prepends new blocks BEFORE existing _prependedBlocks, so repeated 'load earlier' calls accumulate in the correct order (newest-prepend at front) only if the API returns blocks in reverse-chronological order as expected."
+        "AC-7 needsSnapshot test uses window.__yokeGetSnapshot__() which accesses the module-level render store directly. If the WS mock delivers the orphan ended frame before React has mounted and registered the frame handler, the assertion may race. The test waits for 'Session started' text before injecting the orphan frame to reduce this risk.",
+        "AC-6 follow-tail stability test relies on the pane overflow after 20 pre-filled blocks. If virtualizer estimateSize or container height changes, 20 blocks may not overflow and the test could produce a false pass (pill never appears regardless).",
+        "The AC-3 red-class check uses a CSS class substring match (text-red-) rather than a computed style check. If Tailwind purges or renames the class in a future version the test may fail without a logic regression."
       ]
     }
   ]
