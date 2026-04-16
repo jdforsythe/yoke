@@ -1,48 +1,20 @@
 {
-  "item_id": "feat-macos-deep-link",
+  "item_id": "feat-attention-banner",
   "entries": [
     {
       "phase": "implement",
-      "attempt": 1,
-      "session_id": "6ab68a45-325c-40df-a294-080c5a5b14be",
-      "ts": "2026-04-16T19:00:00Z",
-      "note": "The feature was largely already in place from prior feature builds: AttentionBanner already reads ?attention=<id>, scrolls to the item, applies a 2s pulse via React state, and clears the URL param via setSearchParams. FeatureBoard already reads :itemId from useParams, scrolls via useLayoutEffect, and highlights via el.setAttribute. WorkflowDetailRoute already renders a 'Workflow not found' error page with back link after an 8s timeout when no snapshot arrives. What was missing: (1) subscription deduplication in the WS client — subscribe() now returns early if the workflow is already in this.subs, preventing duplicate subscribe frames (AC-7/RC-4); (2) e2e tests — created src/web/e2e/deep-link.spec.ts covering AC-2 (item deep link highlights card), AC-4 (invalid workflow shows error via Playwright clock.fastForward), AC-5 (in-app navigation via history.pushState+popstate triggers highlight), and AC-7 (subscribe frame sent exactly once). Also fixed a pre-existing strict locator in workflow-detail.spec.ts (FeatureBoard status filter test had two comboboxes with the same aria-label; narrowed to getByRole('main')). All 72 tests pass.",
+      "attempt": 4,
+      "session_id": "afbc6abf-4add-4d63-bc14-6c954e9d9a43",
+      "ts": "2026-04-16T22:00:00Z",
+      "note": "Attempt 4 addressed two test coverage gaps identified by reviewing the spec against existing tests. RC-5 (optimistic removal is display-only; if the HTTP POST fails, the item reappears) had no e2e coverage — added a deferred-latch test that sends a 500 from the ack endpoint and verifies the item and Acknowledge button reappear after the spinner clears. AC-6 (badge count updates in real-time) only had a static snapshot test; added a test that starts with empty pendingAttention, fires a notice frame with requires_attention, and verifies the bell badge increments to 1. The full feat-attention-banner implementation (AttentionBanner.tsx, WorkflowDetailRoute integration, AppShell bell badge via attentionStore) has been in place since attempts 1–3 and covers all 8 ACs and 6 RCs. The helpers.ts TS2300 duplicate regression (introduced by feat-stream-pane) was already resolved in commit 2c40768 before this session ran.",
       "intended_files": [
-        "src/web/src/ws/client.ts",
-        "src/web/e2e/deep-link.spec.ts",
         "src/web/e2e/workflow-detail.spec.ts"
-      ],
-      "deferred_criteria": [
-        "AC-1: ?attention scroll coverage is supplemented but not fully isolated in a new deep-link test (the existing workflow-detail.spec.ts test at line 434 covers it). No new standalone attention test was added in deep-link.spec.ts because it would duplicate coverage.",
-        "AC-3 (attention pulse): Covered by the existing test in workflow-detail.spec.ts; no additional test written. Item pulse is verified in AC-2 test via data-highlight attribute."
-      ],
-      "known_risks": [
-        "FeatureBoard highlight via direct DOM mutation (el.setAttribute) is fragile: if a WS frame triggers a React re-render within the 2s window, the JSX prop data-highlight=\"false\" will reconcile and overwrite the attribute.",
-        "page.clock.fastForward is used in AC-4 tests to skip the 8-second not-found timeout.",
-        "In-app navigation test (AC-5) uses history.pushState + manual popstate dispatch.",
-        "The subscribe deduplication fix returns early for ALL duplicate calls."
-      ]
-    },
-    {
-      "phase": "implement",
-      "attempt": 2,
-      "session_id": "09e31880-125c-4bb5-8dfc-0007eb3c0907",
-      "ts": "2026-04-16T23:00:00Z",
-      "note": "Attempt 2 addressed the two deferred criteria from attempt 1 (AC-1 and AC-3 for attention deep-links). Three new standalone tests were added to deep-link.spec.ts: (1) AC-1 cold-start attention test — navigates to /workflow/:id?attention=42 and verifies the banner renders with the targeted item; (2) AC-3 attention pulse test — verifies data-highlight=true on the attention item; (3) AC-6 URL cleanup test — verifies the ?attention= param is removed from the address bar by history.replaceState. Additionally, the test infrastructure was repaired: helpers.ts had sessionStartedFrame phase required (breaking 1-arg callers in usage-hud.spec.ts) — fixed by making phase default to 'implement'. usageFrame() builder was added to helpers.ts. Two strict-mode locator violations introduced by UsageHUD (getByText('ok') matching 'Yoke'/'tokens', getByText('Test Workflow') matching sidebar row + detail header) were fixed in stream-pane.spec.ts and usage-hud.spec.ts. UsageHUD.tsx improvements from a prior session (dropdownRef outside-click fix, cache-write tokens, sessions.size > 0 threshold) were committed. All 130 tests pass.",
-      "intended_files": [
-        "src/web/e2e/helpers.ts",
-        "src/web/e2e/deep-link.spec.ts",
-        "src/web/e2e/stream-pane.spec.ts",
-        "src/web/e2e/usage-hud.spec.ts",
-        "src/web/src/components/UsageHUD/UsageHUD.tsx",
-        "docs/idea/dashboard-features.json",
-        "handoff.json"
       ],
       "deferred_criteria": [],
       "known_risks": [
-        "The attention deep-link pulse test (AC-3) checks data-highlight=true immediately after page load. The 2s setTimeout clearing the highlight could theoretically expire on a very slow machine before the assertion runs, but in practice the assertion runs well within 100ms of page load.",
-        "AC-1/AC-3 tests use ATTN_ID=42 (numeric). If the attention ID format ever changes to non-numeric, Number('abc')=NaN means the highlight would never apply but text assertions would still pass.",
-        "usage-hud.spec.ts AC-8 'outside click' test clicks on locator('main') at position {x:10, y:10}. If the portal position changes, the click might land inside the dropdown."
+        "RC-6 (banner stacks below CrashRecoveryBanner via layout order, not z-index) is not directly testable with Playwright; it is enforced structurally by render order in WorkflowDetailRoute.tsx and relies on reviewer code inspection.",
+        "RC-3 (attention items are never cleared by push-notification failure) is not directly tested; the code path for push failure goes through AppShell's notice listener which dispatches showNotification or toast but never mutates pendingAttention — correct by construction.",
+        "RC-5 deferred-latch test assumes Playwright's route fulfillment delivers the 500 before the default Playwright timeout. This is safe on any non-pathological CI environment."
       ]
     }
   ]
