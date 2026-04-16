@@ -41,6 +41,54 @@
         "AC-3 CSS class check still uses text-red- substring match rather than computed style. Tailwind version changes could invalidate the assertion without a logic regression.",
         "AC-6 test still relies on 20 pre-filled blocks to overflow the pane for follow-tail to engage. If estimateSize or container height changes, the test may not overflow and could give a false pass."
       ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 2,
+      "ts": "2026-04-16T20:13:02.396Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • AC-4: prepost.command.ended must finalize the notice with both exit code AND action label. block.action is populated by the reducer (e.g. { type: 'continue' } or { type: 'abort' }) but SystemNoticeRenderer.tsx never renders it — only the 'exit N' badge is displayed. The e2e tests for AC-4 also do not assert the action label, so the gap is untested. A user cannot tell from the UI whether the hook resulted in continue vs abort.\n"
+      ]
+    }
+  ],
+    {
+      "phase": "implement",
+      "attempt": 3,
+      "session_id": "07dcd983-f900-49fc-960d-b8a58dcea27b",
+      "ts": "2026-04-16T21:00:00Z",
+      "note": "Fixed the sole blocking issue from attempt 2 review: AC-4 required the finalized prepost notice to display both exit code AND the action label (continue/abort). SystemNoticeRenderer.tsx now renders a second badge for block.action.type immediately after the exit code badge when prepostFinalized is true and action is a non-null object with a string type field. 'abort' gets a red-tinted badge; all other action types (e.g. 'continue') get a neutral gray badge. The AC-4 e2e tests were extended with assertions verifying the action label is visible after the ended frame arrives. All 10 prepost-rendering tests pass; full 162-test suite passes with no regressions.",
+      "intended_files": [
+        "src/web/src/components/LiveStream/SystemNoticeRenderer.tsx",
+        "src/web/e2e/prepost-rendering.spec.ts"
+      ],
+      "deferred_criteria": [
+        "AC-5 rAF flush timing not explicitly asserted with a timing measurement. All three prepost frame types route through dispatchTextDelta, satisfying the RC-2 requirement, but no e2e test measures the 16ms batch interval."
+      ],
+      "known_risks": [
+        "The action badge type-guard uses 'block.action != null && typeof (block.action as Record<string,unknown>).type === string' — this covers { type: string } objects but will silently render nothing for action payloads with different shapes (e.g. action as a bare string or number). Acceptable for the current protocol but would need updating if the action shape evolves.",
+        "AC-3 CSS class check still uses text-red- substring match rather than computed style. Tailwind version changes could invalidate the assertion without a logic regression.",
+        "AC-6 test still relies on 20 pre-filled blocks to overflow the pane for follow-tail to engage. If estimateSize or container height changes, the test may not overflow and could give a false pass."
+      ]
+    }
+  ],
+  "review_entries": [
+    {
+      "phase": "review",
+      "attempt": 1,
+      "session_id": "",
+      "ts": "2026-04-16T00:00:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-4: prepost.command.ended must finalize the notice with both exit code AND action label. block.action is populated by the reducer (e.g. { type: 'continue' } or { type: 'abort' }) but SystemNoticeRenderer.tsx never renders it — only the 'exit N' badge is displayed. The e2e tests for AC-4 also do not assert the action label, so the gap is untested. A user cannot tell from the UI whether the hook resulted in continue vs abort."
+      ],
+      "non_blocking": [
+        "AC-5 rAF flush timing is not directly asserted in any e2e test (acknowledged in handoff; code path is correct).",
+        "AC-3 / AC-4 class checks use CSS class substring match (text-red-, green) rather than computed styles — fragile against Tailwind version changes.",
+        "AC-6 test relies on 20 pre-filled blocks to overflow the virtualizer container; if estimateSize or container height changes the overflow may not occur, risking a false pass."
+      ]
     }
   ]
 }
