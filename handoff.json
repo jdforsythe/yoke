@@ -20,6 +20,27 @@
         "AC-6 follow-tail stability test relies on the pane overflow after 20 pre-filled blocks. If virtualizer estimateSize or container height changes, 20 blocks may not overflow and the test could produce a false pass (pill never appears regardless).",
         "The AC-3 red-class check uses a CSS class substring match (text-red-) rather than a computed style check. If Tailwind purges or renames the class in a future version the test may fail without a logic regression."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "2f65372e-e292-4b2a-8dbe-a305a0657241",
+      "ts": "2026-04-16T13:00:00Z",
+      "note": "Fixed 4 test failures from attempt 1. (1) reducer.ts: removed the '— exit N' suffix that was appended to the prepost ended block's message. The exit code badge already displays the value; the duplicated text caused getByText('exit 0'/'exit 1') strict-mode violations in AC-4 and AC-8 tests. (2) WorkflowDetailRoute.tsx: routed all three prepost frame types (started, output, ended) through dispatchTextDelta instead of only output. This joins them in the same rAF flush queue as stream.text, preserving chronological order when a hook fires between text deltas (AC-8). (3) LiveStreamPane.tsx: added a totalSize-watching useEffect that re-scrolls to the last block when any block's measured height changes while follow-tail is active. This prevents the virtualizer's internal scroll correction from disengaging follow-tail when a prepost log is expanded or collapsed (AC-6). (4) prepost-rendering.spec.ts: tightened the AC-1 phase locator from /implement/ (matched both session.started and prepost notices) to /Pre-command: lint\\.sh \\(phase: implement\\)/; changed AC-7 from page.evaluate (synchronous, before rAF) to page.waitForFunction (polls until needsSnapshot=true, tolerates rAF delay). All 10 prepost-rendering tests pass; full 162-test e2e suite passes with no regressions.",
+      "intended_files": [
+        "src/web/e2e/prepost-rendering.spec.ts",
+        "src/web/src/components/LiveStream/LiveStreamPane.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/src/store/reducer.ts"
+      ],
+      "deferred_criteria": [
+        "AC-5 rAF flush timing not explicitly asserted with a timing measurement. All three prepost frame types now route through dispatchTextDelta, satisfying the RC-2 requirement, but no e2e test measures the 16ms batch interval."
+      ],
+      "known_risks": [
+        "The totalSize-based re-anchor effect in LiveStreamPane fires on every virtualizer measurement change. In a pane with many rapidly-updating blocks, this could trigger multiple scrollToIndex calls per rAF. The calls are idempotent but could conflict with a user who scrolls up while a height measurement is in flight.",
+        "AC-3 CSS class check still uses text-red- substring match rather than computed style. Tailwind version changes could invalidate the assertion without a logic regression.",
+        "AC-6 test still relies on 20 pre-filled blocks to overflow the pane for follow-tail to engage. If estimateSize or container height changes, the test may not overflow and could give a false pass."
+      ]
     }
   ]
 }
