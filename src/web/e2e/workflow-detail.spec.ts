@@ -15,7 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 import type { WebSocketRoute } from '@playwright/test';
-import { setupWs, mockWorkflowsApi, snapshotFrame, workflowUpdateFrame, noticeFrame, helloFrame, WF_ID, WF_NAME } from './helpers';
+import { setupWs, mockWorkflowsApi, snapshotFrame, workflowUpdateFrame, noticeFrame, helloFrame, itemStateFrame, WF_ID, WF_NAME } from './helpers';
 
 test.beforeEach(async ({ page }) => {
   await mockWorkflowsApi(page, [{ id: WF_ID, name: WF_NAME, status: 'in_progress' }]);
@@ -431,6 +431,47 @@ test('AppShell bell badge count reflects pending attention items (AC-5/AC-6)', a
   await expect(bell.locator('span').filter({ hasText: '2' })).toBeVisible();
 });
 
+test('AttentionBanner: ?attention=<id> deep-link clears URL param and highlights item', async ({
+  page,
+}) => {
+  const pageLogs: string[] = [];
+  page.on('console', (msg) => pageLogs.push(`[browser] ${msg.type()}: ${msg.text()}`));
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        pendingAttention: [
+          {
+            id: 1,
+            kind: 'awaiting_user_retry',
+            payload: 'Review required',
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}?attention=1`);
+
+  const banner = page.getByRole('region', { name: 'Attention required' });
+  await expect(banner).toBeVisible();
+
+  // URL param should be consumed and cleared from the address bar
+  await expect(page).not.toHaveURL(/attention=/, { timeout: 8000 });
+
+  // Debug: check URL was cleaned first
+  const url = page.url();
+  console.log('URL after deep-link:', url);
+  console.log('Browser logs:', pageLogs.join('\n'));
+
+  // The targeted item should have data-highlight=true while the 2s pulse runs
+  const item = page.locator('#attention-item-1');
+  const attrBefore = await item.getAttribute('data-highlight');
+  console.log('data-highlight before wait:', attrBefore);
+  await expect(item).toHaveAttribute('data-highlight', 'true');
+});
+
 // ---------------------------------------------------------------------------
 // GithubButton
 // ---------------------------------------------------------------------------
@@ -824,4 +865,423 @@ test('ControlMatrix not rendered when no active session', async ({ page }) => {
 
   await expect(page.getByRole('heading', { level: 1, name: WF_NAME })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pause' })).not.toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// FeatureBoard — extended AC coverage
+// ---------------------------------------------------------------------------
+
+test('FeatureBoard shows blockedReason warning icon with tooltip (AC-2)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Blocked Feature',
+            displaySubtitle: null,
+            state: { status: 'blocked', currentPhase: null, retryCount: 0, blockedReason: 'Dependency failed' },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  const warning = page.locator('[title="Dependency failed"]');
+  await expect(warning).toBeVisible();
+  await expect(warning).toHaveText('⚠');
+});
+
+test('FeatureBoard item.state frame updates card status in real-time (AC-3)', async ({ page }) => {
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(
+            snapshotFrame({
+              items: [
+                {
+                  id: 'item-1',
+                  stageId: 'stage-1',
+                  displayTitle: 'Feature One',
+                  displaySubtitle: null,
+                  state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+                },
+              ],
+            }),
+          );
+        }
+      } catch {
+        // malformed — ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('Feature One')).toBeVisible();
+  await expect(page.locator('.bg-gray-500\\/20').filter({ hasText: 'pending' })).toBeVisible();
+
+  capturedWs!.send(itemStateFrame({ itemId: 'item-1', state: { status: 'complete', currentPhase: null } }));
+
+  await expect(page.locator('.bg-green-500\\/20').filter({ hasText: 'complete' })).toBeVisible();
+  await expect(page.locator('.bg-gray-500\\/20').filter({ hasText: 'pending' })).not.toBeVisible();
+});
+
+test('FeatureBoard status filter hides non-matching items (AC-5)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Alpha Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-2',
+            stageId: 'stage-1',
+            displayTitle: 'Beta Feature',
+            displaySubtitle: null,
+            state: { status: 'complete', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('Alpha Feature')).toBeVisible();
+  await expect(page.getByText('Beta Feature')).toBeVisible();
+
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('pending');
+
+  await expect(page.getByText('Alpha Feature')).toBeVisible();
+  await expect(page.getByText('Beta Feature')).not.toBeVisible();
+});
+
+test('FeatureBoard category filter hides non-matching stage groups (AC-5)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        stages: [
+          { id: 'stage-a', run: 'once', phases: ['implement'], status: 'in_progress', needsApproval: false },
+          { id: 'stage-b', run: 'once', phases: ['implement'], status: 'pending', needsApproval: false },
+        ],
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-a',
+            displayTitle: 'Stage A Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-2',
+            stageId: 'stage-b',
+            displayTitle: 'Stage B Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('Stage A Feature')).toBeVisible();
+  await expect(page.getByText('Stage B Feature')).toBeVisible();
+
+  await page.getByRole('combobox', { name: 'Filter by category' }).selectOption('stage-a');
+
+  await expect(page.getByText('Stage A Feature')).toBeVisible();
+  await expect(page.getByText('Stage B Feature')).not.toBeVisible();
+});
+
+test('FeatureBoard deep-link /item/:itemId scrolls to and highlights target item (AC-6)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-deep',
+            stageId: 'stage-1',
+            displayTitle: 'Linked Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+
+  await page.goto(`/workflow/${WF_ID}/item/item-deep`);
+  await expect(page.getByText('Linked Feature')).toBeVisible();
+
+  // Deep-link useLayoutEffect sets data-highlight="true" after items render
+  const card = page.locator('#item-item-deep');
+  await expect(card).toHaveAttribute('data-highlight', 'true');
+});
+
+test('FeatureBoard j/k keyboard navigation moves focus ring and Enter selects item (AC-7)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'First Item',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-2',
+            stageId: 'stage-1',
+            displayTitle: 'Second Item',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('First Item')).toBeVisible();
+
+  const listbox = page.getByRole('listbox', { name: 'Items' });
+  await listbox.focus();
+
+  // j moves aria-activedescendant to first item
+  await listbox.press('j');
+  await expect(listbox).toHaveAttribute('aria-activedescendant', 'item-item-1');
+
+  // j again moves to second item
+  await listbox.press('j');
+  await expect(listbox).toHaveAttribute('aria-activedescendant', 'item-item-2');
+
+  // k moves back to first
+  await listbox.press('k');
+  await expect(listbox).toHaveAttribute('aria-activedescendant', 'item-item-1');
+
+  // Enter selects the focused item (aria-selected becomes true)
+  await listbox.press('Enter');
+  await expect(page.locator('#item-item-1')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('FeatureBoard pins in_progress item to top of its stage group (AC-8)', async ({ page }) => {
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-first-pending',
+            stageId: 'stage-1',
+            displayTitle: 'Pending Item',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-streaming',
+            stageId: 'stage-1',
+            displayTitle: 'Active Item',
+            displaySubtitle: null,
+            state: { status: 'in_progress', currentPhase: 'implement', retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+
+  await expect(page.getByText('Active Item')).toBeVisible();
+
+  // Streaming indicator (pulsing dot) is visible on the active item
+  const activeCard = page.locator('#item-item-streaming');
+  await expect(activeCard.locator('[aria-label="Streaming"]')).toBeVisible();
+
+  // Active item should be first among the item cards (pinned to top of group)
+  const cards = page.locator('[role="option"]');
+  const firstText = await cards.first().textContent();
+  expect(firstText).toContain('Active Item');
+});
+
+test('FeatureBoard fetches and renders item.data in collapsible JSON tree on selection (AC-9)', async ({
+  page,
+}) => {
+  // Register specific item data route — takes priority over the general workflows mock (LIFO).
+  await page.route(`**/items/item-1/data`, (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ featureFlag: 'experiment-x', target: 'premium' }),
+    });
+  });
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Data Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('Data Feature')).toBeVisible();
+
+  // Click on the item to select it and trigger item.data fetch
+  await page.locator('#item-item-1').click();
+
+  // "Show data" toggle button should appear after fetch completes
+  const showBtn = page.getByRole('button', { name: /Show data/ });
+  await expect(showBtn).toBeVisible();
+
+  // Expand the JSON tree
+  await showBtn.click();
+  await expect(page.getByText(/featureFlag/)).toBeVisible();
+});
+
+test('FeatureBoard item.data is cached; re-selection after deselect does not refetch (AC-10)', async ({
+  page,
+}) => {
+  let item1FetchCount = 0;
+
+  await page.route(`**/items/item-1/data`, async (route) => {
+    item1FetchCount++;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ key: 'cached-value' }),
+    });
+  });
+  // Explicit route for item-2 so it doesn't fall through to the general mock.
+  await page.route(`**/items/item-2/data`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+
+  await setupWs(page, (ws) => {
+    ws.send(
+      snapshotFrame({
+        items: [
+          {
+            id: 'item-1',
+            stageId: 'stage-1',
+            displayTitle: 'Cached Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+          {
+            id: 'item-2',
+            stageId: 'stage-1',
+            displayTitle: 'Other Feature',
+            displaySubtitle: null,
+            state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+          },
+        ],
+      }),
+    );
+  });
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('Cached Feature')).toBeVisible();
+
+  // First selection — triggers fetch
+  await page.locator('#item-item-1').click();
+  await expect(page.getByRole('button', { name: /Show data/ })).toBeVisible();
+  expect(item1FetchCount).toBe(1);
+
+  // Select item-2 to deselect item-1
+  await page.locator('#item-item-2').click();
+
+  // Re-select item-1 — must serve from cache (no second fetch)
+  await page.locator('#item-item-1').click();
+  await expect(page.getByRole('button', { name: /Show data/ })).toBeVisible();
+
+  expect(item1FetchCount).toBe(1);
+});
+
+test('FeatureBoard item.data cache is invalidated on item.state frame (RC-7)', async ({ page }) => {
+  let item1FetchCount = 0;
+  let capturedWs: WebSocketRoute | null = null;
+
+  await page.route(`**/items/item-1/data`, async (route) => {
+    item1FetchCount++;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ version: item1FetchCount }),
+    });
+  });
+  await page.route(`**/items/item-2/data`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+
+  await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
+    capturedWs = ws;
+    ws.send(helloFrame());
+    ws.onMessage((msg: string | Buffer) => {
+      try {
+        const f = JSON.parse(msg.toString()) as { type: string };
+        if (f.type === 'subscribe') {
+          ws.send(
+            snapshotFrame({
+              items: [
+                {
+                  id: 'item-1',
+                  stageId: 'stage-1',
+                  displayTitle: 'Versioned Feature',
+                  displaySubtitle: null,
+                  state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+                },
+                {
+                  id: 'item-2',
+                  stageId: 'stage-1',
+                  displayTitle: 'Other Feature',
+                  displaySubtitle: null,
+                  state: { status: 'pending', currentPhase: null, retryCount: 0, blockedReason: null },
+                },
+              ],
+            }),
+          );
+        }
+      } catch {
+        // malformed — ignore
+      }
+    });
+  });
+
+  await page.goto(`/workflow/${WF_ID}`);
+  await expect(page.getByText('Versioned Feature')).toBeVisible();
+
+  // Select item-1 → first fetch
+  await page.locator('#item-item-1').click();
+  await expect(page.getByRole('button', { name: /Show data/ })).toBeVisible();
+  expect(item1FetchCount).toBe(1);
+
+  // Select item-2 to deselect item-1
+  await page.locator('#item-item-2').click();
+
+  // Send item.state frame for item-1 → invalidates its cache entry
+  capturedWs!.send(itemStateFrame({ itemId: 'item-1', state: { status: 'complete' } }));
+  await expect(page.locator('#item-item-1').locator('.bg-green-500\\/20')).toBeVisible();
+
+  // Re-select item-1 — cache was invalidated, so a fresh fetch must fire
+  await page.locator('#item-item-1').click();
+  await expect(page.getByRole('button', { name: /Show data/ })).toBeVisible();
+
+  expect(item1FetchCount).toBe(2);
 });

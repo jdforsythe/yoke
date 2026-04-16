@@ -150,6 +150,22 @@ export function workflowUpdateFrame(patch: Record<string, unknown>): string {
   });
 }
 
+export function itemStateFrame(opts: {
+  itemId: string;
+  stageId?: string;
+  state: Partial<{ status: string; currentPhase: string | null; retryCount: number; blockedReason: string | null }>;
+}): string {
+  return mkFrame('item.state', {
+    workflowId: WF_ID,
+    seq: 5,
+    payload: {
+      itemId: opts.itemId,
+      stageId: opts.stageId ?? 'stage-1',
+      state: opts.state,
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // WS mock setup
 // ---------------------------------------------------------------------------
