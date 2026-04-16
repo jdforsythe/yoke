@@ -644,15 +644,16 @@ function selectConditionalOutcome(
       // If the caller stored the chosen mode in guardCtx.currentRetryMode (e.g.
       // for transient retries where the budget is unlimited), use it directly.
       // Otherwise re-derive from ladder[retry_count - 1]; when the ladder runs
-      // out ('awaiting_user' sentinel or undefined), exhaust to awaiting_user.
+      // out ('awaiting_user' sentinel or undefined), exhaust to awaiting_user
+      // with a pending_attention notification so the user is informed (o[1]).
       if (item.retry_count <= 0) {
-        return { to: 'awaiting_user', sideEffects: [] };
+        return { to: o[1].to, sideEffects: o[1].sideEffects };
       }
       const retryMode: RetryMode =
         ctx.currentRetryMode ??
         (ladder[item.retry_count - 1] ?? 'awaiting_user');
       if (retryMode === 'awaiting_user') {
-        return { to: 'awaiting_user', sideEffects: [] };
+        return { to: o[1].to, sideEffects: o[1].sideEffects };
       }
       return {
         to: o[0].to,

@@ -335,6 +335,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'retry budget remaining',
         ['compute next retry_mode from ladder', 'assemble prompt'],
       ),
+      outcome(
+        'awaiting_user',
+        'retry ladder exhausted',
+        ['insert pending_attention'],
+      ),
     ]),
     retries_exhausted: direct('awaiting_user', ['insert pending_attention']),
     user_cancel: direct('abandoned', []),
