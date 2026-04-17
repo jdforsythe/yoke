@@ -1,200 +1,108 @@
 /**
- * Playwright spec for feat-workflow-archive.
+ * Real-backend Playwright spec for feat-workflow-archive.
  *
- * NOTE: test-real-backend-fixture (src/web/e2e/fixtures/realBackend.ts) has
- * not been implemented yet, so this spec uses page.route() mocks for the HTTP
- * API while exercising the full UI path.  When the realBackend fixture lands,
- * this file should be updated to seed workflows via db.writer and assert
- * against a live server.
+ * Seeds workflows directly into SQLite via the realBackend fixture, then
+ * asserts the full UI round-trip: archive button hover, click, 409 conflict,
+ * Show archived checkbox, and unarchive.
  *
- * Covers:
- *   AC: archive button appears on row hover
- *   AC: clicking archive removes the row from the default view
- *   AC: 409 on in_progress workflow shows no crash (button silently no-ops)
- *   AC: Show archived checkbox fetches ?archived=true and shows archived rows
- *   AC: clicking unarchive in archived view removes the row
+ * Covers AC:
+ *   - Archive button appears on row hover and removes row from default view
+ *   - 409 on in_progress workflow does not crash the UI
+ *   - Show archived checkbox fetches ?archived=true and shows archived rows
+ *   - Unarchive button in archived view removes the row
  */
 
-import { test, expect } from '@playwright/test';
-import { setupWs, mockWorkflowsApi } from '../helpers';
+import { test, expect } from '../fixtures/realBackend.js';
+import type { BackendHandle } from '../fixtures/realBackend.js';
 
-const ACTIVE_WF = {
-  id: 'wf-active-001',
-  name: 'Active Workflow',
-  status: 'completed',
-};
+// Helper to insert a workflow row with sensible defaults.
+function seedWorkflow(
+  db: BackendHandle['db'],
+  opts: { id: string; name: string; status: string; archivedAt?: string },
+): void {
+  const now = new Date().toISOString();
+  db.writer
+    .prepare(
+      `INSERT INTO workflows (id, name, spec, pipeline, config, status, archived_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(opts.id, opts.name, '{}', '{}', '{}', opts.status, opts.archivedAt ?? null, now, now);
+}
 
-const IN_PROGRESS_WF = {
-  id: 'wf-live-002',
-  name: 'In-Progress Workflow',
-  status: 'in_progress',
-};
-
-const ARCHIVED_WF = {
-  id: 'wf-arch-003',
-  name: 'Archived Workflow',
-  status: 'completed',
-};
-
-test.describe('feat-workflow-archive — UI round-trip', () => {
-  test('archive button appears on row hover and removes row on success', async ({ page }) => {
-    await setupWs(page);
-
-    // Default view: only active workflow.
-    await page.route('**/api/workflows**', (route) => {
-      const url = route.request().url();
-      if (url.includes('archived=true')) {
-        void route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ workflows: [], hasMore: false }),
-        });
-        return;
-      }
-      const now = new Date().toISOString();
-      void route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          workflows: [{ ...ACTIVE_WF, createdAt: now, updatedAt: now, unreadEvents: 0, activeSessions: 0 }],
-          hasMore: false,
-        }),
-      });
-    });
-
-    // Archive endpoint returns 200.
-    await page.route(`**/api/workflows/${ACTIVE_WF.id}/archive`, (route) => {
-      void route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ status: 'archived', workflowId: ACTIVE_WF.id }),
-      });
-    });
+test.describe('feat-workflow-archive — real backend round-trip', () => {
+  test('archive button appears on row hover and removes row on success', async ({ page, backend }) => {
+    seedWorkflow(backend.db, { id: 'wf-arch-001', name: 'Archivable Workflow', status: 'completed' });
 
     await page.goto('/');
-    await expect(page.getByText(ACTIVE_WF.name)).toBeVisible();
+    await expect(page.getByText('Archivable Workflow')).toBeVisible();
 
-    // Hover the row to reveal the archive button.
-    const row = page.getByRole('listitem').filter({ hasText: ACTIVE_WF.name });
+    const row = page.getByRole('listitem').filter({ hasText: 'Archivable Workflow' });
     await row.hover();
 
     const archiveBtn = row.getByRole('button', { name: /archive workflow/i });
     await expect(archiveBtn).toBeVisible();
 
-    // Click archive — row should disappear from the default view.
     await archiveBtn.click();
-    await expect(page.getByText(ACTIVE_WF.name)).not.toBeVisible();
+    await expect(page.getByText('Archivable Workflow')).not.toBeVisible();
   });
 
-  test('409 response (in_progress workflow) does not crash the UI', async ({ page }) => {
-    await setupWs(page);
-    await mockWorkflowsApi(page, [IN_PROGRESS_WF]);
-
-    // Archive endpoint returns 409.
-    await page.route(`**/api/workflows/${IN_PROGRESS_WF.id}/archive`, (route) => {
-      void route.fulfill({
-        status: 409,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          error: "cannot archive a workflow with status 'in_progress'",
-          currentStatus: 'in_progress',
-        }),
-      });
-    });
+  test('409 response (in_progress workflow) does not crash the UI', async ({ page, backend }) => {
+    seedWorkflow(backend.db, { id: 'wf-live-002', name: 'Running Workflow', status: 'in_progress' });
 
     await page.goto('/');
-    await expect(page.getByText(IN_PROGRESS_WF.name)).toBeVisible();
+    await expect(page.getByText('Running Workflow')).toBeVisible();
 
-    const row = page.getByRole('listitem').filter({ hasText: IN_PROGRESS_WF.name });
+    const row = page.getByRole('listitem').filter({ hasText: 'Running Workflow' });
     await row.hover();
 
     const archiveBtn = row.getByRole('button', { name: /archive workflow/i });
     await archiveBtn.click();
 
-    // Row stays visible since the archive failed (409 → ok=false → no optimistic remove).
-    await expect(page.getByText(IN_PROGRESS_WF.name)).toBeVisible();
-    // No crash: page is still functional.
+    // Row stays visible — server returned 409, optimistic remove did not fire.
+    await expect(page.getByText('Running Workflow')).toBeVisible();
+    // Page remains functional after the conflict.
     await expect(page.getByLabel('Filter by status')).toBeVisible();
   });
 
-  test('Show archived checkbox fetches ?archived=true and shows archived row', async ({ page }) => {
-    await setupWs(page);
-    const now = new Date().toISOString();
-
-    await page.route('**/api/workflows**', (route) => {
-      const url = route.request().url();
-      if (url.includes('archived=true')) {
-        void route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            workflows: [{ ...ARCHIVED_WF, createdAt: now, updatedAt: now, unreadEvents: 0, activeSessions: 0 }],
-            hasMore: false,
-          }),
-        });
-        return;
-      }
-      // Default view: no archived workflows.
-      void route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ workflows: [], hasMore: false }),
-      });
+  test('Show archived checkbox shows archived workflow', async ({ page, backend }) => {
+    const archivedAt = new Date().toISOString();
+    seedWorkflow(backend.db, {
+      id: 'wf-arch-003',
+      name: 'Hidden Archived Workflow',
+      status: 'completed',
+      archivedAt,
     });
 
     await page.goto('/');
-    // Archived row not visible initially.
-    await expect(page.getByText(ARCHIVED_WF.name)).not.toBeVisible();
+    // Default view excludes archived rows.
+    await expect(page.getByText('Hidden Archived Workflow')).not.toBeVisible();
 
-    // Toggle "Show archived".
+    // Toggle "Show archived" checkbox.
     await page.getByLabel('Show archived workflows').check();
-    await expect(page.getByText(ARCHIVED_WF.name)).toBeVisible();
+    await expect(page.getByText('Hidden Archived Workflow')).toBeVisible();
   });
 
-  test('unarchive button in archived view removes row from archived list', async ({ page }) => {
-    await setupWs(page);
-    const now = new Date().toISOString();
-
-    await page.route('**/api/workflows**', (route) => {
-      const url = route.request().url();
-      if (url.includes('archived=true')) {
-        void route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            workflows: [{ ...ARCHIVED_WF, createdAt: now, updatedAt: now, unreadEvents: 0, activeSessions: 0 }],
-            hasMore: false,
-          }),
-        });
-        return;
-      }
-      void route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ workflows: [], hasMore: false }),
-      });
-    });
-
-    await page.route(`**/api/workflows/${ARCHIVED_WF.id}/unarchive`, (route) => {
-      void route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ status: 'unarchived', workflowId: ARCHIVED_WF.id }),
-      });
+  test('unarchive button in archived view removes row from archived list', async ({ page, backend }) => {
+    const archivedAt = new Date().toISOString();
+    seedWorkflow(backend.db, {
+      id: 'wf-arch-004',
+      name: 'To Be Unarchived',
+      status: 'completed',
+      archivedAt,
     });
 
     await page.goto('/');
     await page.getByLabel('Show archived workflows').check();
-    await expect(page.getByText(ARCHIVED_WF.name)).toBeVisible();
+    await expect(page.getByText('To Be Unarchived')).toBeVisible();
 
-    const row = page.getByRole('listitem').filter({ hasText: ARCHIVED_WF.name });
+    const row = page.getByRole('listitem').filter({ hasText: 'To Be Unarchived' });
     await row.hover();
 
     const unarchiveBtn = row.getByRole('button', { name: /unarchive workflow/i });
     await expect(unarchiveBtn).toBeVisible();
     await unarchiveBtn.click();
 
-    // Row removed from archived view after unarchive.
-    await expect(page.getByText(ARCHIVED_WF.name)).not.toBeVisible();
+    // Row disappears from the archived view after successful unarchive.
+    await expect(page.getByText('To Be Unarchived')).not.toBeVisible();
   });
 });
