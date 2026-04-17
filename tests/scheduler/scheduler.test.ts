@@ -1795,3 +1795,102 @@ describe('feat-pipeline-hardening: two-phase workflow', () => {
     await scheduler.stop();
   }, 20_000);
 });
+
+// ---------------------------------------------------------------------------
+// feat-pipeline-hardening AC-9: post_command_action goto → handoff injection → re-spawn
+// ---------------------------------------------------------------------------
+
+describe('feat-pipeline-hardening: post_command_action goto injects handoff entry and re-spawns', () => {
+  it('goto action writes hook-failure entry to handoff.json and item completes on next session', async () => {
+    const worktreePath = path.join(tmpDir, 'wt');
+    const config = makeConfig({
+      pipeline: {
+        stages: [{ id: 'stage-alpha', run: 'once' as const, phases: ['phase-impl'] }],
+      },
+      phases: {
+        'phase-impl': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          // Post command triggers the runner so post_command_action fires.
+          post: [{ name: 'run-check', run: ['echo', 'checking'], actions: {} as never }],
+        },
+      },
+    });
+
+    let postCallCount = 0;
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: new StubProcessManager([{ type: 'exit', code: 0 }]),
+      worktreeManager: makeWorktreeManager({ worktreePath }),
+      prepostRunner: async (opts) => {
+        if (opts.when !== 'post') return { kind: 'complete' as const, runs: [] };
+        postCallCount++;
+        if (postCallCount === 1) {
+          // First post run: goto action with captured output so injectHookFailure fires.
+          return {
+            kind: 'action' as const,
+            command: 'run-check',
+            action: { goto: 'phase-impl', max_revisits: 3 },
+            runs: [{
+              commandName: 'run-check',
+              argv: ['echo', 'checking'],
+              when: 'post' as const,
+              startedAt: new Date().toISOString(),
+              endedAt: new Date().toISOString(),
+              exitCode: 1,
+              actionTaken: null,
+              output: 'check failed: missing required changes',
+            }],
+          };
+        }
+        // Second+ post run: complete normally.
+        return { kind: 'complete' as const, runs: [] };
+      },
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+    const workflowId = sched.workflowId!;
+    const [item] = db.reader()
+      .prepare('SELECT id FROM items WHERE workflow_id = ?')
+      .all(workflowId) as { id: string }[];
+
+    // The goto re-spawns the session; item should eventually complete.
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string };
+      return wf.status === 'completed';
+    }, { timeoutMs: 15_000 });
+
+    const itemRow = db.reader()
+      .prepare('SELECT status FROM items WHERE id = ?')
+      .get(item.id) as { status: string };
+    expect(itemRow.status).toBe('complete');
+
+    // Post runner was invoked at least twice: once for goto, once for complete.
+    expect(postCallCount).toBeGreaterThanOrEqual(2);
+
+    // handoff.json must exist in the worktree with a hook-failure entry.
+    const handoffPath = path.join(worktreePath, 'handoff.json');
+    expect(fs.existsSync(handoffPath)).toBe(true);
+    const handoff = JSON.parse(fs.readFileSync(handoffPath, 'utf8')) as Record<string, unknown>;
+    expect(Array.isArray(handoff.entries)).toBe(true);
+    const entries = handoff.entries as Array<Record<string, unknown>>;
+    const hookEntry = entries.find(e => typeof e.phase === 'string' && e.phase.includes('hook-failure'));
+    expect(hookEntry).toBeDefined();
+    expect(hookEntry!.harness_injected).toBe(true);
+    expect(hookEntry!.command).toBe('run-check');
+    const issues = hookEntry!.blocking_issues as string[];
+    expect(issues[0]).toContain('check failed: missing required changes');
+
+    await sched.stop();
+  }, 20_000);
+});
