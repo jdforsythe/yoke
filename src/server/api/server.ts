@@ -73,6 +73,58 @@ function mapWorkflowRow(row: DbWorkflowRow): WorkflowRow {
   };
 }
 
+interface DbTimelineEvent {
+  id: number;
+  ts: string;
+  workflow_id: string;
+  item_id: string | null;
+  session_id: string | null;
+  stage: string | null;
+  phase: string | null;
+  attempt: number | null;
+  event_type: string;
+  level: string;
+  message: string;
+  extra: string | null;
+}
+
+function mapTimelineEvent(e: DbTimelineEvent) {
+  return {
+    id: e.id,
+    ts: e.ts,
+    workflowId: e.workflow_id,
+    itemId: e.item_id,
+    sessionId: e.session_id,
+    stage: e.stage,
+    phase: e.phase,
+    attempt: e.attempt,
+    eventType: e.event_type,
+    level: e.level,
+    message: e.message,
+    extra: e.extra ? (() => { try { return JSON.parse(e.extra!); } catch { return e.extra; } })() : null,
+  };
+}
+
+interface DbUsageRow {
+  dimension: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  session_count: number;
+}
+
+function mapUsageRow(row: DbUsageRow) {
+  return {
+    dimension: row.dimension,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens,
+    cacheReadInputTokens: row.cache_read_input_tokens,
+    sessionCount: row.session_count,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -282,27 +334,11 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         .prepare(
           'SELECT id, ts, workflow_id, item_id, session_id, stage, phase, attempt, event_type, level, message, extra FROM events WHERE workflow_id = ? ORDER BY ts, id',
         )
-        .all(id) as Array<{
-          id: number;
-          ts: string;
-          workflow_id: string;
-          item_id: string | null;
-          session_id: string | null;
-          stage: string | null;
-          phase: string | null;
-          attempt: number | null;
-          event_type: string;
-          level: string;
-          message: string;
-          extra: string | null;
-        }>;
+        .all(id) as DbTimelineEvent[];
 
       return reply.send({
         workflowId: id,
-        events: events.map((e) => ({
-          ...e,
-          extra: e.extra ? (() => { try { return JSON.parse(e.extra!); } catch { return e.extra; } })() : null,
-        })),
+        events: events.map(mapTimelineEvent),
       });
     },
   );
@@ -384,9 +420,9 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
            GROUP BY ${col}
            ORDER BY input_tokens DESC`,
         )
-        .all(id);
+        .all(id) as DbUsageRow[];
 
-      return reply.send({ workflowId: id, groupBy, rows });
+      return reply.send({ workflowId: id, groupBy, rows: rows.map(mapUsageRow) });
     },
   );
 

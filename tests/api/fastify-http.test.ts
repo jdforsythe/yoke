@@ -209,8 +209,8 @@ describe('GET /api/workflows/:id/timeline', () => {
       .run(id);
 
     const { body } = await inject('GET', `/api/workflows/${id}/timeline`);
-    const events = (body as any).events as Array<{ event_type: string }>;
-    expect(events.some((e) => e.event_type === 'phase_start')).toBe(true);
+    const events = (body as any).events as Array<{ eventType: string }>;
+    expect(events.some((e) => e.eventType === 'phase_start')).toBe(true);
   });
 });
 
@@ -273,9 +273,9 @@ describe('GET /api/workflows/:id/usage', () => {
     insertSession(id);
 
     const { body } = await inject('GET', `/api/workflows/${id}/usage?groupBy=session`);
-    const rows = (body as any).rows as Array<{ dimension: string; input_tokens: number }>;
+    const rows = (body as any).rows as Array<{ dimension: string; inputTokens: number }>;
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(typeof rows[0].input_tokens).toBe('number');
+    expect(typeof rows[0].inputTokens).toBe('number');
   });
 
   it('groupBy=phase aggregates by session phase', async () => {
