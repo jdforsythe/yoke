@@ -260,6 +260,11 @@ export interface SchedulerOpts {
    * If omitted, no notification dispatch occurs (safe for tests that don't need it).
    */
   notify?: NotifyFn;
+  /**
+   * Injectable clock function. Defaults to Date.now.
+   * Override in tests to control retry timer expiry without real waits.
+   */
+  now?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +282,7 @@ export class Scheduler {
   private readonly broadcastFn: BroadcastFn;
   private readonly faultInjector: FaultInjector;
   private readonly notifyFn?: NotifyFn;
+  private readonly clockNow: () => number;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -324,6 +330,7 @@ export class Scheduler {
     this.broadcastFn = opts.broadcast;
     this.faultInjector = opts.faultInjector ?? new NoopFaultInjector();
     this.notifyFn = opts.notify;
+    this.clockNow = opts.now ?? (() => Date.now());
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
@@ -368,7 +375,7 @@ export class Scheduler {
     result: ApplyItemTransitionResult,
   ): void {
     if (result.newState !== 'awaiting_retry') return;
-    this.retryAfterAt.set(itemId, Date.now() + computeRetryBackoffMs(retryCount));
+    this.retryAfterAt.set(itemId, this.clockNow() + computeRetryBackoffMs(retryCount));
     if (result.retryMode) this.retryModeFor.set(itemId, result.retryMode);
   }
 
@@ -681,10 +688,10 @@ export class Scheduler {
         case 'awaiting_retry': {
           // Arm a retry timer if not already set.
           if (!this.retryAfterAt.has(item.id)) {
-            this.retryAfterAt.set(item.id, Date.now() + computeRetryBackoffMs(item.retry_count));
+            this.retryAfterAt.set(item.id, this.clockNow() + computeRetryBackoffMs(item.retry_count));
           }
           const retryAt = this.retryAfterAt.get(item.id)!;
-          if (Date.now() < retryAt) break;
+          if (this.clockNow() < retryAt) break;
 
           const result = this._applyTransition({
             db: this.db,
