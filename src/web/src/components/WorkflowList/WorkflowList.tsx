@@ -2,19 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import type { WorkflowIndexUpdatePayload, ServerFrame } from '@/ws/types';
+import type { WorkflowRow } from '@shared/types/workflow';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface WorkflowRow {
-  id: string;
-  name: string;
-  status: string;
-  updatedAt: string;
-  createdAt: string;
-  unreadEvents: number;
-}
 
 interface WorkflowsApiResponse {
   workflows: WorkflowRow[];
@@ -161,14 +153,17 @@ export function WorkflowList() {
       setRows((prev) => {
         const idx = prev.findIndex((r) => r.id === p.id);
         if (idx < 0) {
-          // New workflow — prepend.
+          // New workflow — prepend. currentStage/activeSessions come from the
+          // next HTTP fetch; WS frame doesn't include them, so use defaults.
           return [
             {
               id: p.id,
               name: p.name,
               status: p.status,
+              currentStage: null,
               updatedAt: p.updatedAt,
               createdAt: p.updatedAt,
+              activeSessions: 0,
               unreadEvents: p.unreadEvents,
             },
             ...prev,
