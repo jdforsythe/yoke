@@ -4,6 +4,8 @@
  * Source of truth: docs/design/state-machine-transitions.md
  *
  * State: lifecycle position of an item within a pipeline stage.
+ *   Canonical definition lives in src/shared/types/states.ts so the UI can
+ *   import it without crossing the server boundary.
  * Event: named trigger raised by Process Manager, Pre/Post Runner,
  *        Worktree Manager, retry ladder, or HTTP control.
  *
@@ -12,19 +14,7 @@
  * record produces a TypeScript error.
  */
 
-/** Lifecycle states an item can occupy within a stage. */
-export type State =
-  | 'pending'
-  | 'ready'
-  | 'bootstrapping'
-  | 'bootstrap_failed'
-  | 'in_progress'
-  | 'awaiting_retry'
-  | 'rate_limited'
-  | 'awaiting_user'
-  | 'blocked'
-  | 'complete'
-  | 'abandoned';
+export type { State } from '../../shared/types/states.js';
 
 /**
  * Events the Pipeline Engine recognises. Raised by concrete modules;
