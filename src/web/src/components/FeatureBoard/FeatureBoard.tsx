@@ -123,7 +123,12 @@ export function FeatureBoard({
   const [focusedIdx, setFocusedIdx] = useState<number>(-1);
   const [itemData, setItemData] = useState<Record<string, unknown>>({});
   const [itemDataExpanded, setItemDataExpanded] = useState<Set<string>>(new Set());
-  const [fetchingData, setFetchingData] = useState<Set<string>>(new Set());
+  // fetchingData is a ref, not state: mutating a Set creates a new reference that
+  // would re-fire the fetch effect (and since a 404 leaves itemDataCache empty,
+  // the effect would refetch forever). Refs don't trigger re-renders or act as
+  // effect dependencies. Render still reads it because selection/itemData state
+  // changes around the fetch already trigger the re-renders we need.
+  const fetchingData = useRef<Set<string>>(new Set());
   // Highlight set tracks which itemIds are pulsing from a deep-link. React state
   // prevents the data-highlight attribute being overwritten by re-renders during
   // the 2 s animation window (the prior DOM-mutation approach was fragile).
@@ -211,34 +216,47 @@ export function FeatureBoard({
   }, [focusedIdx, flatFiltered]);
 
   // Fetch item.data on selection (once per selection, cached).
+  // A null entry in itemDataCache means "we tried and got a non-ok response";
+  // we still cache it so we don't refetch (and 404-loop) on the next render.
   useEffect(() => {
     if (!selectedItemId) return;
     if (itemDataCache.has(selectedItemId)) {
-      setItemData((prev) => ({ ...prev, [selectedItemId]: itemDataCache.get(selectedItemId) }));
+      const cached = itemDataCache.get(selectedItemId);
+      if (cached !== null) {
+        setItemData((prev) => ({ ...prev, [selectedItemId]: cached }));
+      }
       return;
     }
-    if (fetchingData.has(selectedItemId)) return;
+    if (fetchingData.current.has(selectedItemId)) return;
 
-    setFetchingData((prev) => new Set([...prev, selectedItemId]));
+    fetchingData.current.add(selectedItemId);
+    // Force a re-render so the "Loading data…" message appears. We reuse
+    // itemData state (no-op spread) since fetchingData is a ref now.
+    setItemData((prev) => ({ ...prev }));
+
     fetch(
       `/api/workflows/${encodeURIComponent(workflowId)}/items/${encodeURIComponent(selectedItemId)}/data`,
     )
-      .then((r) => (r.ok ? r.json() : null))
+      .then(async (r) => (r.ok ? ((await r.json()) as unknown) : null))
       .then((data: unknown) => {
+        itemDataCache.set(selectedItemId, data);
         if (data !== null) {
-          itemDataCache.set(selectedItemId, data);
           setItemData((prev) => ({ ...prev, [selectedItemId]: data }));
+        } else {
+          // Trigger a re-render so the "No data available." state replaces
+          // the loading indicator.
+          setItemData((prev) => ({ ...prev }));
         }
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // Treat network errors like a non-ok response so we don't loop.
+        itemDataCache.set(selectedItemId, null);
+        setItemData((prev) => ({ ...prev }));
+      })
       .finally(() => {
-        setFetchingData((prev) => {
-          const next = new Set(prev);
-          next.delete(selectedItemId);
-          return next;
-        });
+        fetchingData.current.delete(selectedItemId);
       });
-  }, [selectedItemId, workflowId, fetchingData]);
+  }, [selectedItemId, workflowId]);
 
   // ---------------------------------------------------------------------------
   // Render helpers
@@ -317,11 +335,18 @@ export function FeatureBoard({
           </div>
         </div>
 
-        {/* item.data collapsible — only shown when selected */}
+        {/* item.data collapsible — only shown when selected.
+            Three states:
+              1. fetching in-flight  → "Loading data…"
+              2. cache has null (fetch completed with non-ok response or error)
+                                      → "No data available."
+              3. data present        → JSON viewer */}
         {isSelected && (
           <div className="mt-2 ml-4">
-            {fetchingData.has(item.id) ? (
+            {fetchingData.current.has(item.id) ? (
               <p className="text-xs text-gray-500">Loading data…</p>
+            ) : itemDataCache.has(item.id) && itemDataCache.get(item.id) === null ? (
+              <p className="text-xs text-gray-500">No data available.</p>
             ) : data !== undefined ? (
               <div>
                 <button

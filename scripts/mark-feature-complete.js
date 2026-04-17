@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 /**
- * Post-review gate: marks a feature complete in docs/idea/dashboard-features.json.
+ * Post-review gate: marks a feature complete in a feature manifest JSON file.
  *
- * Reads review-verdict.json written by the review agent.
- * If verdict is PASS, sets status:"complete" on the matching entry in the
- * features manifest so that a future workflow re-run skips this feature.
+ * Contract:
+ *   - Caller passes the manifest path as the first CLI argument.
+ *   - Script reads review-verdict.json written by the review agent.
+ *   - If verdict is PASS, sets status:"complete" on the matching entry in the
+ *     features manifest so that a future workflow re-run skips this feature.
+ *
+ * Usage:
+ *   node scripts/mark-feature-complete.js <path/to/features.json>
  *
  * Exit 0 always — failures are logged but non-blocking so the pipeline
  * continues regardless. The pipeline tracks completion state in SQLite;
@@ -17,7 +22,11 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 
 const VERDICT_PATH = "review-verdict.json";
-const FEATURES_PATH = "docs/idea/dashboard-features.json";
+const FEATURES_PATH = process.argv[2];
+if (!FEATURES_PATH) {
+  console.error("Usage: node scripts/mark-feature-complete.js <path/to/features.json>");
+  process.exit(0); // non-blocking — preserve existing exit-0 contract
+}
 
 // --- read verdict -----------------------------------------------------------
 

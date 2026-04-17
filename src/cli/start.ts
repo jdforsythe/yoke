@@ -38,6 +38,7 @@ import { Scheduler, type PromptAssemblerFn } from '../server/scheduler/scheduler
 import { dispatchNotification } from '../server/notifications/dispatcher.js';
 import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
 import { makeRetryItemsFn } from '../server/pipeline/retry-items.js';
+import { makeControlExecutor } from '../server/pipeline/control-executor.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +127,12 @@ export interface StartOptions {
   configPath?: string;
   /** Server port. Default: 7777 */
   port?: number;
+  /**
+   * Dev-only: construct the Scheduler but skip `scheduler.start()` so no items
+   * advance. The API/WS serve the existing DB frozen — useful for manual UI
+   * testing against real state without spawning a new execution run.
+   */
+  noScheduler?: boolean;
   /**
    * Override the git-repository check (injectable for tests).
    * Default: runs `git rev-parse --show-toplevel` in config.configDir.
@@ -265,7 +272,20 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     },
   });
 
-  await scheduler.start();
+  // Wire the control executor now that scheduler is constructed. It needs
+  // scheduler.killSession to SIGTERM running sessions when a workflow is
+  // cancelled (RC-3 — no writes in API layer; all state changes happen in
+  // the engine-layer executor).
+  callbacks.controlExecutor = makeControlExecutor(
+    db.writer,
+    (sid) => scheduler.killSession(sid),
+    (wfId, frameType, payload) =>
+      state.registry.broadcast(wfId, null, frameType, payload),
+  );
+
+  if (!opts.noScheduler) {
+    await scheduler.start();
+  }
 
   return {
     url,
@@ -273,7 +293,9 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     fastify,
     scheduler,
     async close() {
-      await scheduler.stop();
+      if (!opts.noScheduler) {
+        await scheduler.stop();
+      }
       await fastify.close();
       db.close();
       // Remove discovery file on clean shutdown.
@@ -296,13 +318,16 @@ export function register(program: Command): void {
     .description('Start the Yoke pipeline engine')
     .option('-c, --config <path>', 'Path to .yoke.yml', '.yoke.yml')
     .option('-p, --port <number>', 'Server port', '7777')
-    .action(async (opts: { config: string; port: string }) => {
+    .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
+    .action(async (opts: { config: string; port: string; scheduler: boolean }) => {
       const configPath = path.resolve(opts.config);
       const port = parseInt(opts.port, 10);
+      // commander maps --no-scheduler to opts.scheduler === false
+      const noScheduler = opts.scheduler === false;
 
       let handle: StartHandle;
       try {
-        handle = await startServer({ configPath, port });
+        handle = await startServer({ configPath, port, noScheduler });
       } catch (err) {
         if (err instanceof ConfigLoadError) {
           console.error(`Configuration error: ${err.message}`);
@@ -316,6 +341,9 @@ export function register(program: Command): void {
       }
 
       console.log(`Yoke server running at ${handle.url}`);
+      if (noScheduler) {
+        console.log('Scheduler disabled (--no-scheduler): no items will advance.');
+      }
 
       // Keep process alive. SIGINT / SIGTERM → graceful drain then shutdown.
       async function shutdown(signal: string): Promise<never> {

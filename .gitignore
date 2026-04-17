@@ -8,3 +8,5 @@ bin/
 .worktrees/
 .yoke/
 handoff.json
+test-results/
+playwright-report/

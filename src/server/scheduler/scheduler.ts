@@ -430,6 +430,32 @@ export class Scheduler {
   // -------------------------------------------------------------------------
 
   /**
+   * Signal the process group for a single in-flight session (SIGTERM →
+   * SIGKILL escalation via SpawnHandle.cancel()).
+   *
+   * Called by the control executor when a workflow is user-cancelled.  The
+   * inFlight map is keyed by itemId, so we iterate to locate the entry with
+   * a matching sessionId.  Entries in the 'pending' placeholder state have
+   * no handle to signal — we skip them (the scheduler tick will drop the
+   * placeholder once the pending write resolves and the DB shows the item
+   * already in a terminal state).
+   *
+   * Fire-and-forget: we don't await cancel() so the caller (running inside
+   * a synchronous engine transaction boundary) doesn't block on kernel I/O.
+   * SpawnHandle.cancel() handles re-entrancy internally.
+   */
+  killSession(sessionId: string): void {
+    for (const [, entry] of this.inFlight) {
+      if (entry === 'pending') continue;
+      if (entry.sessionId === sessionId) {
+        void entry.handle.cancel();
+        return;
+      }
+    }
+    // sessionId not in inFlight → already exited or never started.  No-op.
+  }
+
+  /**
    * Stops the poll loop and cancels all in-flight sessions.
    *
    * Sends SIGTERM to each session's process group, waits up to gracePeriodMs

@@ -6,9 +6,13 @@ You are reviewing the implementation of feature **{{item.id}}** for project **{{
 
 ## Feature spec
 
-Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{item.id}}"`.
+Read `docs/idea/fixes-round-1-features.json` and find the entry with `"id": "{{item.id}}"`.
 That entry's `description`, `acceptance_criteria`, and `review_criteria` fields are the
 review contract. Do not proceed until you have read the full spec.
+
+<!-- TODO: once the assembler exposes `{{stage.items_from}}`, replace the hardcoded
+     manifest path above with that template variable so this prompt is round-agnostic. -->
+
 
 ## Architecture reference
 {{architecture_md}}
@@ -74,7 +78,7 @@ the error reported on stderr and re-run before stopping.
 
 If verdict is PASS, no handoff.json entry is needed.
 
-**Do NOT modify `docs/idea/dashboard-features.json`.** It is the item manifest;
+**Do NOT modify `docs/idea/fixes-round-1-features.json`.** It is the item manifest;
 SQLite owns completion state. The pipeline runs a diff check against this file
 after every session — any change trips `diff_check_fail` and sends you back to
 implement.

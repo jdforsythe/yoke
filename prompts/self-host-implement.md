@@ -6,9 +6,13 @@ You are implementing feature **{{item.id}}** for project **{{workflow_name}}**.
 
 ## Feature spec
 
-Read `docs/idea/dashboard-features.json` and find the entry with `"id": "{{item.id}}"`.
+Read `docs/idea/fixes-round-1-features.json` and find the entry with `"id": "{{item.id}}"`.
 That entry's `description`, `acceptance_criteria`, `review_criteria`, and `depends_on`
 fields are your implementation contract. Do not proceed until you have read the full spec.
+
+<!-- TODO: once the assembler exposes `{{stage.items_from}}`, replace the hardcoded
+     manifest path above with that template variable so this prompt is round-agnostic. -->
+
 
 ## Architecture
 {{architecture_md}}
@@ -32,7 +36,7 @@ Implement this feature per docs/agents/backend.md session protocol:
 - Every new code path that can fail gets a test.
 - If the plan is ambiguous, stop and file a question in handoff.json rather than guessing.
 
-**Do NOT modify `docs/idea/dashboard-features.json`.** It is the item manifest
+**Do NOT modify `docs/idea/fixes-round-1-features.json`.** It is the item manifest
 the pipeline scheduled from; SQLite owns completion state. The pipeline runs a
 diff check against this file after every session — any change trips
 `diff_check_fail` and loops you back to implement with nothing to show for it.

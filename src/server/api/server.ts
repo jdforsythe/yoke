@@ -109,6 +109,12 @@ export type AckAttentionFn = (workflowId: string, attentionId: number) => AckAtt
 // Re-export RetryItemsResult so the CLI can import it from a single place.
 export type { RetryItemsResult, RetryItemsFn } from '../pipeline/retry-items.js';
 
+// Re-export control executor types so the CLI can import them from a single place.
+export type {
+  ControlExecutorResult,
+  ControlExecutorFn,
+} from '../pipeline/control-executor.js';
+
 /**
  * Optional callbacks injected into the server at creation time.
  * These allow the API layer to delegate writes to the pipeline engine layer
@@ -127,6 +133,14 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   retryItems?: import('../pipeline/retry-items.js').RetryItemsFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/control or sends a
+   * WS control frame.  Executes cancel (and future pause/resume) actions via
+   * the pipeline engine.  If omitted, the endpoint falls back to the legacy
+   * stub behaviour (record + cache without executing) so existing tests keep
+   * working.
+   */
+  controlExecutor?: import('../pipeline/control-executor.js').ControlExecutorFn;
 }
 
 /**
@@ -153,7 +167,17 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
   // WebSocket route at /stream (§4 Lifecycle).
   // Registered directly on the root fastify instance so it inherits the
   // @fastify/websocket plugin decoration without sub-plugin scoping issues.
-  const wsHandler = createWsHandler({ db, idempotency, seqStore, backfillBuffer, registry });
+  const wsHandler = createWsHandler({
+    db,
+    idempotency,
+    seqStore,
+    backfillBuffer,
+    registry,
+    // controlExecutor is read at call time via the callbacks closure so
+    // start.ts can wire it in after createServer returns (same pattern as
+    // ackAttention / retryItems above).
+    getControlExecutor: () => callbacks.controlExecutor,
+  });
   fastify.get('/stream', { websocket: true }, (connection: SocketStream) => {
     wsHandler(connection.socket);
   });
@@ -389,9 +413,46 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       if (!wf) return notFound(reply, 'workflow not found');
 
       // Idempotency check (AC-4, RC: not by re-executing).
+      // Cache hits always reply 200 (distinct from the original 202) so the
+      // client can tell re-play apart from first execution; the body is the
+      // identical body originally returned.
       const cached = idempotency.get(body.commandId);
       if (cached !== undefined) {
         return reply.status(200).send(cached);
+      }
+
+      // If an executor is wired (start.ts injects it), delegate real execution
+      // to the engine layer. Otherwise fall back to the stub accepted-response
+      // so existing tests that don't inject callbacks keep passing.
+      if (callbacks.controlExecutor) {
+        const result = callbacks.controlExecutor(id, body.action);
+
+        if (result.status === 'workflow_not_found') {
+          return notFound(reply, 'workflow not found');
+        }
+        if (result.status === 'invalid_action') {
+          return reply.status(400).send({
+            error: `invalid action: ${result.action}`,
+            action: result.action,
+          });
+        }
+        if (result.status === 'already_terminal') {
+          return reply.status(409).send({
+            error: 'workflow is already terminal',
+          });
+        }
+
+        // accepted
+        const responseBody = {
+          status: 'accepted',
+          commandId: body.commandId,
+          workflowId: id,
+          action: body.action,
+          cancelledItems: result.cancelledItems,
+        };
+        // Cache AFTER successful execution (so a failure retry can re-run).
+        idempotency.set(body.commandId, responseBody);
+        return reply.status(202).send(responseBody);
       }
 
       // Cache and return accepted response. Actual execution deferred to pipeline engine.

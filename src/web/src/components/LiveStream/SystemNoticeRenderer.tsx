@@ -1,5 +1,11 @@
 import { memo, useState } from 'react';
 import type { SystemNoticeBlock } from '@/store/types';
+import { severityClasses } from './severityClasses';
+
+// Re-export so existing consumers (e.g. unit tests) can keep importing from
+// this module path without behaviour change.
+export { severityClasses } from './severityClasses';
+export type { SeverityPalette } from './severityClasses';
 
 /**
  * Renders a SystemNoticeBlock with a left-rule accent coloured by severity.
@@ -11,18 +17,6 @@ import type { SystemNoticeBlock } from '@/store/types';
  *
  * Severity colours: info=blue, warn=amber, error=red, requires_attention=amber
  */
-
-function severityClasses(severity: SystemNoticeBlock['severity']) {
-  switch (severity) {
-    case 'info':
-      return { border: 'border-l-blue-500', bg: 'bg-blue-950/10', text: 'text-blue-300' };
-    case 'warn':
-    case 'requires_attention':
-      return { border: 'border-l-amber-500', bg: 'bg-amber-950/10', text: 'text-amber-300' };
-    case 'error':
-      return { border: 'border-l-red-500', bg: 'bg-red-950/10', text: 'text-red-300' };
-  }
-}
 
 export const SystemNoticeRenderer = memo(function SystemNoticeRenderer({
   block,

@@ -1,0 +1,319 @@
+{
+  "project": "yoke",
+  "created": "2026-04-16T00:00:00Z",
+  "_topological_order": [
+    "test-real-backend-fixture",
+    "fix-camelcase-api",
+    "fix-status-vocabulary",
+    "fix-awaiting-retry-filter",
+    "fix-workflow-switch-reset",
+    "feat-item-data-endpoint",
+    "feat-workflow-rename",
+    "feat-workflow-archive",
+    "feat-stage-history",
+    "test-state-machine-coverage",
+    "test-pipeline-hooks-and-retries",
+    "test-api-control-and-attention",
+    "infra-contract-script",
+    "test-e2e-full-suite",
+    "infra-coverage-gate"
+  ],
+  "features": [
+    {
+      "id": "test-real-backend-fixture",
+      "category": "test-infra",
+      "priority": 0,
+      "depends_on": [],
+      "description": "Add a Playwright fixture that boots a real Yoke backend instead of mocking the WS + REST surface. The fixture spawns startServer({ port: 0, noScheduler: true }) against a temporary .yoke/ directory (tmp-promises or os.tmpdir + uuid), waits for the server to be listening, and exposes both the resolved baseURL and the writer DbPool so specs can seed workflows/items/sessions directly. Tear-down stops the server, closes the pool, and removes the temp dir even on test failure. Lives at src/web/e2e/fixtures/realBackend.ts and exports an extended `test` from @playwright/test. Add one smoke spec under src/web/e2e/real/ that uses the fixture, seeds a single workflow, and asserts it renders in the sidebar — proves end-to-end wiring before any other real-backend specs are written. The existing mocked specs under src/web/e2e/ stay; new specs gated on a real backend live under src/web/e2e/real/ so the two suites can be run independently. Update playwright.config.ts to expand testDir or add a project for the real-backend suite. The .yoke/ temp dir must be entirely self-contained — no shared state between tests, no leakage into the repo's .yoke/.",
+      "acceptance_criteria": [
+        "src/web/e2e/fixtures/realBackend.ts exports a `test` from @playwright/test extended with a `backend` fixture that yields { baseURL: string, db: DbPool }",
+        "Fixture creates a unique temp .yoke/ dir per test and removes it after each test (including on failure)",
+        "Fixture boots startServer({ port: 0, noScheduler: true }) and returns the OS-assigned URL",
+        "src/web/e2e/real/smoke.spec.ts uses the fixture, seeds one workflow via db.writer, navigates to /, and asserts the workflow row is visible",
+        "playwright.config.ts is updated so the new suite runs (either expanded testDir or a second project)",
+        "Both the old mocked suite and the new real-backend suite pass when run together"
+      ],
+      "review_criteria": [
+        "Tear-down is in a `finally` or fixture cleanup so it runs on test failure, not just success",
+        "No port collisions when tests run in parallel — port:0 is used everywhere, never a fixed port",
+        "The fixture imports startServer from src/cli/start.ts (the production entry point), not a test-only re-implementation",
+        "Temp dirs are created under os.tmpdir(), never inside the repo",
+        "No global state between tests — each test gets its own backend instance, not a shared one"
+      ]
+    },
+    {
+      "id": "fix-camelcase-api",
+      "category": "api-bugfix",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Fix bug A2 — workflow rows show 'NaNd ago' because /api/workflows returns snake_case columns (created_at, updated_at) directly from SQLite, but the frontend's WorkflowRow interface expects camelCase (createdAt, updatedAt). new Date(undefined).getTime() returns NaN, so relativeTime renders 'NaNd ago' for every row. Root cause: src/server/api/server.ts:177 SELECTs the columns as-is and sends them through. The fix has two parts: (1) Define a stable WorkflowStatus union and a WorkflowRow type in src/shared/types/ that the API and the UI both import. (2) At the API edge in server.ts, alias the snake_case columns to camelCase (either in the SQL with `AS`, or in a small mapping function before reply.send). Apply the same treatment to /api/workflows/:id/timeline, /api/workflows/:id/usage, and /api/sessions/:id/log responses where applicable. Update the UI to import the shared type instead of declaring its own. Audit every fetch() call in src/web/src to ensure no consumer still expects snake_case fields. Add a unit test in tests/api/workflows-list.test.ts that asserts the response shape against the shared type. The unreadEvents field on WorkflowRow is currently never populated by the API — leave it as 0 for now (the WS workflow.index.update frame is the source of truth) but include it in the shape so the type matches reality.",
+      "acceptance_criteria": [
+        "tests/api/workflows-list.test.ts asserts the response includes camelCase createdAt and updatedAt fields populated from the SQLite columns",
+        "Workflow list rows render `Ns ago`/`Nm ago`/`Nh ago`/`Nd ago` text — never `NaN`",
+        "src/shared/types/ exports a WorkflowRow type that is imported by both the API server and the WorkflowList component",
+        "All other affected GET endpoints (timeline, usage, sessions log) return camelCase fields where their responses are consumed by the UI"
+      ],
+      "review_criteria": [
+        "No snake_case field name appears in any JSON response body across the API",
+        "WorkflowStatus is a single TypeScript union type — no duplicated string literals between server and UI",
+        "The mapping happens at the API boundary, not in every UI component",
+        "Tests use the shared type for assertions so adding/removing a field fails CI in one place"
+      ]
+    },
+    {
+      "id": "fix-status-vocabulary",
+      "category": "api-bugfix",
+      "priority": 2,
+      "depends_on": ["fix-camelcase-api"],
+      "description": "Fix bug A3 — the WorkflowList status filter dropdown options (active, paused, complete, failed, cancelled) don't match the actual workflow statuses written by the engine (pending, in_progress, completed, abandoned, completed_with_blocked). Selecting any status other than 'All' returns an empty list. Use the WorkflowStatus union introduced by fix-camelcase-api as the single source of truth. Update src/web/src/components/WorkflowList/WorkflowList.tsx STATUS_OPTIONS and statusChipClass to use the actual status values. Decide on user-facing labels separately from internal status keys — internal: 'in_progress', label: 'In progress'. Make the URL ?status= query param round-trip correctly through filter state. Add a regression test in tests/api/workflows-list.test.ts that walks through every value of WorkflowStatus and asserts the server returns the correct subset. Add a Playwright spec under src/web/e2e/real/ (gated on test-real-backend-fixture) that seeds workflows of every status, picks each filter option in turn, and asserts the visible row count matches the seeded count.",
+      "acceptance_criteria": [
+        "Each option in the WorkflowList status dropdown returns the correct subset of workflows when selected against a backend with at least one workflow per status",
+        "Display labels are derived from the WorkflowStatus union, not duplicated string literals",
+        "URL ?status=in_progress on initial load selects the In progress filter and fetches only matching rows",
+        "tests/api/workflows-list.test.ts covers every value of the WorkflowStatus union",
+        "src/web/e2e/real/workflow-list-status-filter.spec.ts asserts each filter value via real backend"
+      ],
+      "review_criteria": [
+        "Single source of truth — the union is declared once in src/shared/types/ and consumed by both server and UI",
+        "Adding a new status to the union causes a TypeScript error in any switch/match that doesn't handle it",
+        "Test references the union directly so adding a new status without test coverage fails CI"
+      ]
+    },
+    {
+      "id": "fix-awaiting-retry-filter",
+      "category": "ui-bugfix",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Fix bug B2 — the FeatureBoard status filter (src/web/src/components/FeatureBoard/FeatureBoard.tsx:380-386) is missing 'awaiting_retry' and 'awaiting_user' options, so items in those states cannot be filtered to. Also extend itemStatusClass (line 43-58) to assign distinct chip colors for these states (today they fall through to the gray 'pending' palette, which is misleading). Use the State union from src/server/state-machine/states.ts as the source of truth. Move the State union into src/shared/types/ if it isn't already so the UI can import it without crossing the server boundary. Render every value of the union in the dropdown — adding a new state in the future should require updating the dropdown labels but never the dropdown structure. Add a unit test that walks the State union and asserts every value has a label + chip class.",
+      "acceptance_criteria": [
+        "FeatureBoard status dropdown includes options for every value of the State union (pending, ready, bootstrapping, bootstrap_failed, in_progress, awaiting_retry, rate_limited, awaiting_user, blocked, complete, abandoned)",
+        "itemStatusClass returns a distinct, semantically-meaningful palette for awaiting_retry (orange/amber) and awaiting_user (yellow) — not the gray default",
+        "Unit test in tests/web/itemStatus.test.ts walks the State union and asserts coverage"
+      ],
+      "review_criteria": [
+        "State union is in src/shared/types/ and imported by both server and UI — no circular imports",
+        "Adding a new state to the union without extending the dropdown causes a TypeScript error or a failing test",
+        "Color choices follow the existing palette convention (Tailwind opacity-shifted colors, not raw hex)"
+      ]
+    },
+    {
+      "id": "fix-workflow-switch-reset",
+      "category": "ui-bugfix",
+      "priority": 2,
+      "depends_on": ["test-real-backend-fixture"],
+      "description": "Fix bug B3 — clicking a workflow in the sidebar does not update the right-hand stage panel until the page is refreshed. Root cause: WorkflowDetailRoute (src/web/src/routes/WorkflowDetailRoute.tsx) keys its useEffect on workflowId and calls client.subscribe(workflowId), but it does not reset its `state` to the initial zero value before the new snapshot arrives. Until workflow.snapshot for the new id is delivered, the previous workflow's snapshot remains in state, and any race where the previous snapshot frame arrives after the unsubscribe can clobber the new state. Fix: in the workflowId-keyed useEffect, call setState({ snapshot: null, items: new Map(), activeSessionId: null, activeSessionPhase: null }) before the new client.subscribe, and reset selectedItemId to null. Also harden the workflow.snapshot frame handler (line 121) to ignore frames whose workflow.id does not match the current workflowId — it already does this, but verify it survives the closure capture. Add a Playwright spec under src/web/e2e/real/ that seeds two workflows, navigates to A, asserts A's stage list, clicks B in the sidebar, and asserts B's stage list within 2s without a page reload.",
+      "acceptance_criteria": [
+        "Clicking a different workflow in the sidebar updates the stages panel within 2 seconds without a page reload",
+        "src/web/e2e/real/workflow-switch.spec.ts seeds two workflows with distinct stages and asserts switching works",
+        "WorkflowDetailRoute's workflowId-keyed useEffect resets local state before re-subscribing",
+        "No regression in the existing /workflow/:id deep-link behaviour"
+      ],
+      "review_criteria": [
+        "The state reset happens synchronously, in the same effect tick as the subscribe call",
+        "No race where a late-arriving snapshot from the previous subscription clobbers the new workflow's snapshot",
+        "selectedItemId is also reset so a stale item.id from the previous workflow doesn't briefly flash a wrong card"
+      ]
+    },
+    {
+      "id": "feat-item-data-endpoint",
+      "category": "api-feature",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Implement GET /api/workflows/:id/items/:itemId/data — the endpoint FeatureBoard.tsx:223 calls but which currently 404s because it doesn't exist on the server. The endpoint reads items.data (a TEXT column containing opaque JSON written by the planner/seeder) and returns it as a parsed JSON body. Add to src/server/api/server.ts following the same pattern as the existing routes: read from db.reader(), validate the workflow exists and the item belongs to it, parse the data column, return 200 with the parsed JSON. Return 404 when the item does not exist or belongs to a different workflow. Return 500 with a clear error if items.data is not valid JSON (should not happen given the schema, but be defensive). The FeatureBoard infinite-loop fix has already landed in the blocking-fixes round, so this card is purely additive — it makes the existing fetch succeed instead of 404. Add tests/api/items-data.test.ts covering 200 with valid data, 404 unknown item, 404 cross-workflow, and 500 malformed-json paths. Add a real-backend Playwright spec that selects an item and asserts the JSON renders in the expandable section.",
+      "acceptance_criteria": [
+        "GET /api/workflows/:id/items/:itemId/data returns 200 with the parsed items.data JSON when both ids exist and the item belongs to the workflow",
+        "Returns 404 when the workflow does not exist, the item does not exist, or the item belongs to a different workflow",
+        "Returns 500 with a clear error body when items.data exists but cannot be parsed",
+        "tests/api/items-data.test.ts covers all four paths above using the writer pool to seed",
+        "src/web/e2e/real/feature-board-data.spec.ts asserts an item's data renders in the expandable panel"
+      ],
+      "review_criteria": [
+        "Cross-workflow access returns 404 (item not found), not 403 — do not leak existence",
+        "JSON.parse is wrapped in try/catch — a corrupt row returns 500, not crashes the route handler",
+        "The endpoint reuses the same db.reader() pattern as sibling endpoints — no new DbPool method needed"
+      ]
+    },
+    {
+      "id": "feat-workflow-rename",
+      "category": "api-feature",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Fix bug A1 — every workflow shows the name 'yoke' because src/server/scheduler/ingest.ts:99 inserts config.project.name as the workflow name, and every project's .yoke.yml has project.name: yoke. Append a unique suffix at ingest so workflows are distinguishable in the sidebar. Use the first 8 characters of the workflow's UUID — stable for the lifetime of the workflow, no extra entropy needed. Format: `${config.project.name}-${workflowId.slice(0, 8)}`. Update tests/scheduler/ingest.test.ts (or add it if missing) to assert that two consecutive ingests produce distinct names. The resume path (existingRow returned by the SELECT at line 66) keeps its original name — only fresh ingests get a new suffix. Optionally expose PATCH /api/workflows/:id with a JSON body { name: string } so users can rename workflows from the UI later — this is bonus scope, leave it out if unclear.",
+      "acceptance_criteria": [
+        "Two consecutive `yoke start` invocations against the same project produce workflows with distinct names",
+        "The suffix is stable for the lifetime of a single workflow — restarting yoke against the same workflow does not change the name",
+        "tests/scheduler/ingest.test.ts asserts the suffix format and uniqueness",
+        "Workflow list in the UI shows distinct names for distinct runs"
+      ],
+      "review_criteria": [
+        "Suffix length is 8 characters — long enough to be unique in practice, short enough to fit in the sidebar",
+        "The resume path does not regenerate the name — verified by a test that runs ingestWorkflow twice with the same project name + configDir and asserts the name is unchanged",
+        "No PATCH endpoint shipped unless it has tests + UI wiring — partial features get cut"
+      ]
+    },
+    {
+      "id": "feat-workflow-archive",
+      "category": "api-feature",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Fix bug A4 — the WorkflowList sidebar has a 'Show archived' checkbox but no way to actually archive a workflow. Three pieces: (1) Migration src/server/storage/migrations/0003_workflow_archive.sql adds `archived_at TEXT` column to workflows, plus a partial index on (archived_at IS NULL) for the default list query. (2) New endpoint POST /api/workflows/:id/archive sets archived_at to datetime('now') and returns 200. POST /api/workflows/:id/unarchive sets it to NULL. Both delegate writes to an injected callback (RC-3 — no writes in API layer), matching the pattern already used by ackAttention and retryItems. The /api/workflows GET handler is updated to exclude rows with archived_at IS NOT NULL by default; ?archived=true (already accepted by the UI but currently ignored) flips this to include them. (3) UI: a small archive icon button on workflow row hover that POSTs to the archive endpoint, and the existing 'Show archived' checkbox now actually does something. Reject archiving a workflow that is in_progress with a 409 — use the existing WorkflowStatus union to determine what's archivable. Add tests/api/workflows-archive.test.ts covering archive, unarchive, hidden-by-default, included-with-flag, and the 409-on-active path. Add a real-backend Playwright spec.",
+      "acceptance_criteria": [
+        "Migration 0003_workflow_archive.sql adds archived_at column with appropriate index",
+        "POST /api/workflows/:id/archive sets archived_at and returns 200; POST /unarchive clears it",
+        "GET /api/workflows excludes archived rows by default and includes them when ?archived=true",
+        "Attempting to archive an in_progress workflow returns 409 with a clear error message",
+        "UI shows an archive button on row hover and the Show archived checkbox toggles visibility",
+        "tests/api/workflows-archive.test.ts covers all five paths",
+        "src/web/e2e/real/workflow-archive.spec.ts asserts the round-trip via real backend"
+      ],
+      "review_criteria": [
+        "Migration is forward-only — does not require any data migration on existing workflows",
+        "The write callbacks follow the same injection pattern as ackAttention / retryItems — no new SQLite writes in the API layer",
+        "The 409 response includes the current workflow status in the error body so the UI can show a useful message",
+        "Archived workflows are still queryable via WS subscribe — archive is a list-filter concern, not an access-control concern"
+      ]
+    },
+    {
+      "id": "feat-stage-history",
+      "category": "ui-feature",
+      "priority": 2,
+      "depends_on": ["test-real-backend-fixture", "feat-item-data-endpoint"],
+      "description": "Fix bug A6 — clicking a stage in the FeatureBoard does not show any historical logs from past sessions of that stage. Today the stream pane (LiveStreamPane) only renders content when activeSessionId is set; past completed sessions are invisible. Two pieces: (1) Add GET /api/items/:id/sessions which returns the past sessions for an item ordered by started_at DESC, including session id, phase, status, started_at, ended_at, exit_code. (2) Add a History tab to the right-hand pane next to the live stream view. The tab is enabled only when the selected item has at least one past session. Selecting a past session in the History tab loads its log via the existing GET /api/sessions/:id/log endpoint (paged) and renders it in LiveStreamPane in read-only mode. Re-use the existing renderer; do not fork a separate UI for historical viewing. Switching back to Live keeps the live subscription intact (don't unsubscribe when entering History). Add tests/api/item-sessions.test.ts. Add a real-backend Playwright spec that seeds an item with a completed session, opens History, picks the session, and asserts the log frames render.",
+      "acceptance_criteria": [
+        "GET /api/items/:id/sessions returns past sessions ordered by started_at DESC with session id, phase, status, started_at, ended_at, exit_code",
+        "History tab in the right-hand pane is disabled when the selected item has no past sessions",
+        "Selecting a past session renders its full log via the existing /api/sessions/:id/log paged endpoint",
+        "LiveStreamPane is reused for historical rendering (no parallel implementation)",
+        "Switching from History back to Live restores the live subscription without dropping frames",
+        "tests/api/item-sessions.test.ts covers the new endpoint",
+        "src/web/e2e/real/stage-history.spec.ts asserts the round-trip"
+      ],
+      "review_criteria": [
+        "The History tab is implemented as a tab/segmented-control inside the existing pane, not a separate route — no URL change needed to flip between live and history",
+        "The live WS subscription is not torn down when entering History — switching back is instant",
+        "Pagination of /api/sessions/:id/log uses the existing sinceSeq/limit contract — no new pagination scheme invented"
+      ]
+    },
+    {
+      "id": "test-state-machine-coverage",
+      "category": "test-coverage",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Add two test files that catch state-machine drift: (1) tests/state-machine/exhaustiveness.test.ts walks every (State, Event) pair from the State and Event unions in src/server/state-machine/states.ts and asserts that the TRANSITIONS table in transitions.ts either defines a transition or explicitly marks the pair as ignored (some sentinel like IGNORED). Today TRANSITIONS is typed as `{ [S in State]: ... }` so adding a new State fails compilation, but adding a new Event without updating every State entry slips through. (2) tests/state-machine/cancel-from-every-state.test.ts asserts user_cancel from each non-terminal state produces 'abandoned' with the documented side-effects (cascade-cancel, SIGTERM, run teardown). Use the union types directly so the test is automatically updated when new states or events are added. These tests are foundational for test-pipeline-hooks-and-retries which depends on the state machine being well-covered.",
+      "acceptance_criteria": [
+        "tests/state-machine/exhaustiveness.test.ts asserts every (State, Event) pair is either a transition or an explicit ignored marker",
+        "tests/state-machine/cancel-from-every-state.test.ts asserts user_cancel produces abandoned with documented side-effects from every non-terminal state",
+        "Both tests iterate the State and Event unions directly — no hard-coded lists",
+        "Adding a new State or Event without updating TRANSITIONS causes one of the tests to fail"
+      ],
+      "review_criteria": [
+        "Side-effect assertions match the strings in transitions.ts exactly (cascade-cancel dependents, SIGTERM process group, run teardown, remove worktree) — not paraphrased",
+        "The exhaustiveness test reports the missing (State, Event) pair clearly when it fails — not a generic 'expected truthy' failure",
+        "Tests are pure functions of the TRANSITIONS table — no SQLite, no scheduler, no async"
+      ]
+    },
+    {
+      "id": "test-pipeline-hooks-and-retries",
+      "category": "test-coverage",
+      "priority": 2,
+      "depends_on": ["test-state-machine-coverage"],
+      "description": "Add four integration tests against the real pipeline engine + scheduler with injected fakes for processManager and prepostRunner. (1) tests/pipeline/hooks-lifecycle.test.ts — pre/post commands fire in the documented order; pre_command_failed routes through retry; post_command_action: abort routes to terminal abandon; post failure after session success matches the recent commit bdff7ec contract. (2) tests/pipeline/retry-ladder-e2e.test.ts — drive a fake spawn that fails N times, assert the ladder steps (continue → fresh_with_failure_summary → awaiting_user) are taken in order and the retry counter increments, with backoff timing controlled by an injected clock so the test is fast. (3) tests/pipeline/goto-and-advance.test.ts — phase_advance moves to the next phase; stage_complete moves to the next stage; conditional goto from a post-command action routes back to the previous phase with the handoff injected. (4) tests/pipeline/cancel-cascade.test.ts — cancelling a stage-N item cascades to dependents per the cascade-cancel side-effect declared in transitions.ts:128. All four tests use real SQLite with migrations, matching the pattern in existing tests/pipeline/engine.test.ts. The clock is injected — no real-time waits.",
+      "acceptance_criteria": [
+        "tests/pipeline/hooks-lifecycle.test.ts covers pre order, pre_command_failed retry, post_command_action: abort, and post failure after session success",
+        "tests/pipeline/retry-ladder-e2e.test.ts exercises continue → fresh_with_failure_summary → awaiting_user with an injected clock and asserts retry_count increments correctly",
+        "tests/pipeline/goto-and-advance.test.ts covers phase_advance, stage_complete, and conditional goto from a post-command action",
+        "tests/pipeline/cancel-cascade.test.ts asserts user_cancel on a stage-N item cancels stage-(N+k) dependents",
+        "All four tests use real SQLite + migrations, matching tests/pipeline/engine.test.ts"
+      ],
+      "review_criteria": [
+        "Tests use injected clock (passed via Scheduler constructor or factory) — no setTimeout, no real backoff waits",
+        "ProcessManager and PrePostRunnerFn are fakes that record calls — not real spawns",
+        "Each test asserts both the SQLite state (items + sessions tables) AND the broadcast frames — not just one or the other",
+        "No flakiness — tests must pass 10/10 runs locally before review"
+      ]
+    },
+    {
+      "id": "test-api-control-and-attention",
+      "category": "test-coverage",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Two integration test files: (1) tests/api/control-idempotency.test.ts — covers both the HTTP path (POST /api/workflows/:id/control) and the WS path (control frame). Same commandId twice produces single execution, identical response from cache. Different actions with same commandId — second is rejected (commandId is global, not per-action). Idempotency cache spans HTTP and WS paths (same store). The control executor injection added by the cancel fix in the blocking-fixes round must be exercised by both transports. (2) tests/notifications/attention-roundtrip.test.ts — a requires_attention notice frame creates a pending_attention row; the ack endpoint clears it; subsequent GET /api/workflows/:id reflects the change; a workflow.update broadcast frame is emitted with the new count. Both tests run against a real Fastify instance + real SQLite, similar to the existing tests/api/fastify-http.test.ts.",
+      "acceptance_criteria": [
+        "tests/api/control-idempotency.test.ts asserts same commandId via HTTP twice → single execution, cached response on second call",
+        "Same test asserts same commandId via WS twice → cached response on second call",
+        "Same test asserts cross-transport idempotency: HTTP first, WS second with same commandId returns cached HTTP response",
+        "tests/notifications/attention-roundtrip.test.ts asserts notice → row → ack → cleared with workflow.update broadcast"
+      ],
+      "review_criteria": [
+        "Tests boot a real Fastify + real SQLite — no mocking of the API layer or DB",
+        "WS test uses a real ws client connection, not a stubbed sender",
+        "Idempotency cache assertions test the response payload byte-for-byte equality, not just status codes"
+      ]
+    },
+    {
+      "id": "infra-contract-script",
+      "category": "test-infra",
+      "priority": 2,
+      "depends_on": ["fix-camelcase-api", "feat-item-data-endpoint", "feat-workflow-archive"],
+      "description": "Add scripts/check-api-contract.js that boots startServer({ port: 0, noScheduler: true }) against a temp .yoke/, fetches every documented HTTP endpoint, validates each response against a JSON schema in docs/design/schemas/, and exits non-zero on shape drift. Extend docs/design/schemas/ with a new api-responses.schema.json containing $defs for each endpoint's response shape. Add `pnpm test:contract` script in the root package.json that runs the contract script. Wire it as a separate CI job. The script reads the same WorkflowRow / WorkflowStatus types from src/shared/types/ via tsx so the schema and the TypeScript type cannot drift apart — generate the schema from the types using ts-json-schema-generator (already in the dep tree? if not, add it), or hand-write the schema and add a test that asserts the type matches.",
+      "acceptance_criteria": [
+        "scripts/check-api-contract.js boots the server on a random port and fetches every documented endpoint",
+        "docs/design/schemas/api-responses.schema.json contains $defs for every endpoint's response shape",
+        "`pnpm test:contract` exits 0 when shapes match, non-zero on drift",
+        "Script tears down the server and temp dir on exit (including on signal)",
+        "Schema covers: GET /api/workflows, /api/workflows/:id/timeline, /api/workflows/:id/usage, /api/workflows/:id/items/:itemId/data, /api/items/:id/sessions, /api/sessions/:id/log"
+      ],
+      "review_criteria": [
+        "Schema and TypeScript types stay in sync — either generated from types or with a test asserting equivalence",
+        "Script runs in under 30 seconds against a clean DB",
+        "Failure output points at the specific endpoint and field that drifted — not a generic 'schema validation failed'"
+      ]
+    },
+    {
+      "id": "test-e2e-full-suite",
+      "category": "test-coverage",
+      "priority": 3,
+      "depends_on": [
+        "test-real-backend-fixture",
+        "fix-camelcase-api",
+        "fix-status-vocabulary",
+        "fix-workflow-switch-reset",
+        "feat-item-data-endpoint",
+        "feat-workflow-archive",
+        "feat-stage-history"
+      ],
+      "description": "Add the full real-backend Playwright e2e suite under src/web/e2e/real/. One spec per high-level user-facing flow, each asserting at least one specific bug regression: (1) workflow-list.spec.ts — names unique (A1), timestamps render correctly (A2), status filter shows correct subsets (A3), URL ?status= round-trips. (2) workflow-switch.spec.ts — clicking workflow B replaces workflow A's stages without reload (B3). (3) feature-board.spec.ts — clicking an item triggers exactly one fetch, no flashing (A5), data renders when present, 'no data' when absent. (4) stream-pane.spec.ts — system notices of every severity render without crashing (B1); error boundary catches a deliberately corrupt frame; cancel button on an active workflow stops it (A7). (5) stage-history.spec.ts — selecting a completed stage shows past logs (A6). (6) control-roundtrip.spec.ts — cancel + retry + ack-attention via the UI all reflect in the DB and in subsequent workflow.update frames. (7) error-boundary.spec.ts — force a render-time exception in LiveStream and assert the route's errorElement shows while the sidebar stays navigable. Each spec is small and focused — no spec exceeds 100 lines or asserts more than one bug regression.",
+      "acceptance_criteria": [
+        "Seven spec files exist under src/web/e2e/real/ matching the names above",
+        "Each spec uses the realBackend fixture and asserts at least one specific bug regression",
+        "All seven specs pass in CI on Chromium",
+        "Each spec is under 100 lines of test code (helpers excluded)",
+        "Specs cover every fixed bug above (A1, A2, A3, A4 partial, A5, A6, A7, B1, B3)"
+      ],
+      "review_criteria": [
+        "Each test asserts a specific bug regression, not just happy-path rendering",
+        "No spec uses page.waitForTimeout(N) for arbitrary delays — use proper Playwright wait conditions",
+        "Specs are independent — running them in any order or in parallel produces the same result",
+        "No spec depends on another spec's seeded state — each test seeds its own"
+      ]
+    },
+    {
+      "id": "infra-coverage-gate",
+      "category": "test-infra",
+      "priority": 3,
+      "depends_on": ["test-pipeline-hooks-and-retries", "test-api-control-and-attention", "test-e2e-full-suite"],
+      "description": "Add `pnpm test:coverage` that runs `vitest --coverage` with c8/istanbul and configures thresholds in vitest.config.ts: 90% lines / 85% branches for src/server/state-machine, src/server/pipeline, src/server/scheduler, src/server/api; 70% for src/web/src. Wire as a CI job that fails on threshold regression. Document in README a one-line note about how to view the HTML coverage report locally. Do not gate Playwright (e2e) coverage — only Vitest. The coverage gate exists to prevent silent regression after this round; thresholds are calibrated to the post-round state, not aspirational. If a tier is below threshold at the time of writing this card, lower the threshold to current + 1% rather than failing CI on day one.",
+      "acceptance_criteria": [
+        "`pnpm test:coverage` produces an HTML report and prints a summary table",
+        "vitest.config.ts declares per-directory thresholds for state-machine, pipeline, scheduler, api, and src/web/src",
+        "CI runs the coverage gate as a separate job and fails on regression",
+        "README has a one-line pointer to the coverage command and report location"
+      ],
+      "review_criteria": [
+        "Thresholds are calibrated to the actual post-round coverage — not aspirational numbers that fail CI on day one",
+        "The gate runs in under 2 minutes",
+        "Coverage report is generated to a path that's gitignored"
+      ]
+    }
+  ]
+}
