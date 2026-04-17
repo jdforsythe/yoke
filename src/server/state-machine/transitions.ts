@@ -159,6 +159,8 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
       'bootstrap_failed',
       ['insert pending_attention{kind=bootstrap_failed}'],
     ),
+    // Worktree may be partially created; teardown cleans up the partial state.
+    user_cancel: direct('abandoned', ['run teardown', 'remove worktree']),
   },
 
   // -------------------------------------------------------------------------

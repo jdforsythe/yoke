@@ -60,6 +60,7 @@ const DOCUMENTED_NON_ABANDONED_PAIRS: ReadonlyArray<readonly [State, Event]> = [
   // bootstrapping
   ['bootstrapping', 'bootstrap_ok'],
   ['bootstrapping', 'bootstrap_fail'],
+  ['bootstrapping', 'user_cancel'],
   // bootstrap_failed
   ['bootstrap_failed', 'user_retry'],
   ['bootstrap_failed', 'user_cancel'],
@@ -111,11 +112,8 @@ function allSideEffects(result: TransitionResult): readonly string[] {
 }
 
 // Non-terminal states that have a documented user_cancel row.
-// Note: bootstrapping is intentionally absent — (bootstrapping, user_cancel)
-// is not listed in state-machine-transitions.md (documented gap in handoff.json
-// for feat-state-machine).
 const NON_TERMINAL_STATES_WITH_USER_CANCEL: readonly State[] = [
-  'pending', 'ready', 'in_progress', 'awaiting_retry',
+  'pending', 'ready', 'bootstrapping', 'in_progress', 'awaiting_retry',
   'rate_limited', 'awaiting_user', 'blocked',
 ];
 
@@ -557,12 +555,6 @@ describe('assertion-13: user_cancel from every non-terminal state → abandoned'
         `${s} + user_cancel must target abandoned`,
       ).toBe(true);
     }
-  });
-
-  it('bootstrapping is missing user_cancel (known spec gap — update test if spec adds it)', () => {
-    // If state-machine-transitions.md adds (bootstrapping, user_cancel), remove
-    // this test and add bootstrapping to NON_TERMINAL_STATES_WITH_USER_CANCEL.
-    expect(transition('bootstrapping', 'user_cancel')).toBeUndefined();
   });
 
   it('user_cancel from abandoned is a no-op (already terminal)', () => {
