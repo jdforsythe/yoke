@@ -42,6 +42,18 @@ Each entry should answer: **what** is deferred, **where** in the codebase it liv
 
 ---
 
+## Item cards show UUID instead of stable id when `displayTitle` is missing
+
+**What.** When an item's `displayTitle` is null (e.g. the placeholder row a per-item stage starts with, or any item whose manifest lacks the configured `items_display.title` JSONPath), FeatureBoard renders the opaque row UUID. The user-facing identifier should be the stable `items_id` extracted from the manifest (e.g. `fix-camelcase-api`), not a UUID.
+
+**Where.** `src/web/src/components/FeatureBoard/FeatureBoard.tsx:286` — `{item.displayTitle ?? item.id}`. The `item.id` is the SQLite row UUID.
+
+**Why deferred.** Shown up while running the fixes-round-1 workflow — the placeholder item displayed a UUID before seeding completed. Fixing properly means surfacing the manifest's stable id (items_id result) as a separate field on `ItemProjection` so the UI has something meaningful to fall back to; right now the stable id isn't threaded through to the projection.
+
+**Fix sketch.** Add `stableId: string | null` to `ItemProjection` (shared type), populate it from the seeder when items are created, and update FeatureBoard fallback chain to `item.displayTitle ?? item.stableId ?? item.id`. For placeholder rows before seeding, render a neutral label like "Seeding…" or the stage id rather than a UUID.
+
+---
+
 ## Flaky ControlMatrix e2e test
 
 **What.** During the A5-loop fix verification, the full e2e suite failed on first run with one failure in `control-matrix.spec.ts`; passed on re-run and in isolation. Unrelated to the A5 changes.

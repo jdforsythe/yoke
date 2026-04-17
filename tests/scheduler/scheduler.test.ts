@@ -372,29 +372,25 @@ describe('AC-3: state machine end-to-end', () => {
     await scheduler.stop();
   });
 
-  it('bootstrap_fail → item enters bootstrap_failed or awaiting_user', async () => {
-    const config = makeConfig();
+  it('bootstrap_fail → scheduler.start() rejects with the failed command in the message', async () => {
+    // Worktree bootstrap now runs in Scheduler.start() via _ensureWorktree,
+    // before the tick loop begins. A bootstrap failure therefore surfaces as
+    // a rejection from start() (caller exits non-zero), not an item-level
+    // bootstrap_failed state. The workflow row still exists — the user
+    // repairs whatever failed and restarts.
+    const config = makeConfig({
+      worktrees: { base_dir: '.worktrees', bootstrap: { commands: ['setup.sh'] } },
+    });
     const wm = makeWorktreeManager({ bootstrapEvent: { type: 'bootstrap_fail', failedCommand: 'setup.sh', exitCode: 1, stderr: 'oops' } });
     const { scheduler } = buildScheduler({ config, worktreeManager: wm });
 
-    await scheduler.start();
-    const workflowId = scheduler.workflowId!;
+    await expect(scheduler.start()).rejects.toThrow(/setup\.sh/);
 
-    const [item] = db.reader()
-      .prepare('SELECT id FROM items WHERE workflow_id = ?')
-      .all(workflowId) as { id: string }[];
-
-    await pollUntil(() => {
-      const row = db.reader()
-        .prepare('SELECT status FROM items WHERE id = ?')
-        .get(item.id) as { status: string };
-      return ['bootstrap_failed', 'awaiting_user'].includes(row.status);
-    }, { timeoutMs: 10_000 });
-
-    const row = db.reader()
-      .prepare('SELECT status FROM items WHERE id = ?')
-      .get(item.id) as { status: string };
-    expect(['bootstrap_failed', 'awaiting_user']).toContain(row.status);
+    // Workflow row still exists so the user can resume after fixing the issue.
+    const wf = db.reader()
+      .prepare('SELECT id FROM workflows WHERE id = ?')
+      .get(scheduler.workflowId!) as { id: string } | undefined;
+    expect(wf).toBeDefined();
 
     await scheduler.stop();
   });

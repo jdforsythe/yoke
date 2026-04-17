@@ -233,35 +233,14 @@ function readRunningSessionCount(workflowId: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// AC-2: bootstrap_ok fault injection triggers bootstrap_fail recovery path
+// AC-2: bootstrap_ok fault injection
+//
+// Removed: the bootstrap_ok fault checkpoint lived inside _doBootstrapThenSpawn,
+// which is no longer on the hot path. Worktree creation + bootstrap run
+// deterministically in Scheduler.start() via _ensureWorktree — a bootstrap
+// failure there surfaces as a rejection from start() (see scheduler.test.ts
+// "bootstrap_fail → scheduler.start() rejects …"), not an item-level state.
 // ---------------------------------------------------------------------------
-
-describe('AC-2: bootstrap_ok fault injection', () => {
-  it('item transitions to bootstrap_failed when fault fires at bootstrap_ok checkpoint', async () => {
-    const config = makeConfig({
-      // Include worktrees config so _doBootstrapThenSpawn follows the bootstrap path.
-      worktrees: { base_dir: '.worktrees', bootstrap: { commands: ['echo bootstrap'] } },
-    });
-    const fi = new ActiveFaultInjector(['bootstrap_ok']);
-    const scheduler = buildScheduler({ config, faultInjector: fi });
-
-    await scheduler.start();
-
-    const { workflowId } = ingestWorkflow(db, config);
-    const items = readAllItems(workflowId);
-
-    // Wait for item to leave 'bootstrapping' and enter 'bootstrap_failed'.
-    // The fault injector causes FaultInjectionError after runBootstrap() but
-    // before applyItemTransition('bootstrap_ok'), and the catch block fires
-    // 'bootstrap_fail' to put the item in the bootstrap_fail recovery path.
-    await pollUntil(() => {
-      const status = readItemStatus(items[0].id);
-      return status === 'bootstrap_failed';
-    });
-
-    expect(readItemStatus(items[0].id)).toBe('bootstrap_failed');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // AC-3 / AC-4a / AC-4b: session_ok fault injection + crash recovery restart

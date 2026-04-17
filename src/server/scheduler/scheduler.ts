@@ -44,6 +44,7 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { JSONPath } from 'jsonpath-plus';
 import type { DbPool } from '../storage/db.js';
@@ -387,7 +388,17 @@ export class Scheduler {
     this.workflowId = workflowId;
     console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
 
-    // Step 2: Crash recovery — detect stale sessions from a previous run (RC-4).
+    // Step 2: Ensure a worktree exists before the tick loop. This guarantees
+    // per-item stages (which read items_from from the worktree) can seed on
+    // the first tick, regardless of whether a preceding stage would have
+    // bootstrapped one. On resume, an existing worktree is reused if the
+    // directory still exists on disk; otherwise it is recreated.
+    //
+    // Bootstrap commands run iff we just created the worktree. If bootstrap
+    // fails, start() throws — the caller surfaces the error to the user.
+    await this._ensureWorktree(workflowId);
+
+    // Step 3: Crash recovery — detect stale sessions from a previous run (RC-4).
     const recoveryInfos = buildCrashRecovery(this.db);
     for (const info of recoveryInfos) {
       // Transition stale in_progress items to awaiting_retry or awaiting_user
@@ -1193,31 +1204,44 @@ export class Scheduler {
     // on the next start). The tick loop's in_progress fallback would then
     // respawn a bare session with no retry_count bump, no failure-summary
     // injection, and no record that the prior attempt was interrupted.
+    //
+    // All DB writes in this block are wrapped: stop() may have been followed
+    // by db.close() before this path executes (the drain only awaits
+    // handle.cancel(), not _runSession). If the writer is closed, fall back
+    // to buildCrashRecovery on the next start — it detects stale sessions
+    // and fires session_fail the same way this block would.
     if (this.stopped) {
-      const result = this._applyTransition({
-        db: this.db,
-        workflowId: wf.id,
-        itemId: item.id,
-        sessionId,
-        stage: item.stage_id,
-        phase: phaseKey,
-        attempt,
-        event: 'session_fail',
-        guardCtx: { classifierResult: 'transient' },
-      });
-      this._armRetryTimer(item.id, attempt, result);
-      this._broadcastItemState(wf.id, item.id, item.stage_id, result);
-      fixtureWriter?.close(exitCode);
-      if (fixtureWriter) clearRecordMarker(this.config.configDir);
-      this.broadcastFn(wf.id, sessionId, 'session.ended', {
-        sessionId,
-        endedAt: new Date().toISOString(),
-        exitCode,
-        statusFlags: { parseErrors },
-        reason: 'fail' as const,
-      });
-      await logWriter.close();
-      endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+      try {
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: item.id,
+          sessionId,
+          stage: item.stage_id,
+          phase: phaseKey,
+          attempt,
+          event: 'session_fail',
+          guardCtx: { classifierResult: 'transient' },
+        });
+        this._armRetryTimer(item.id, attempt, result);
+        this._broadcastItemState(wf.id, item.id, item.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+      } catch (err) {
+        // DB likely already closed during shutdown — crash recovery picks up
+        // on next start. Item remains in_progress, session row stays 'running';
+        // buildCrashRecovery transitions them correctly on the next start().
+        console.warn('[scheduler] stopped-guard DB write failed (likely shutdown race):', err);
+      }
       this.inFlight.delete(item.id);
       return;
     }
@@ -1591,6 +1615,72 @@ export class Scheduler {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Ensure a worktree exists for the given workflow before the tick loop
+   * begins. Called from start() once, after ingestWorkflow.
+   *
+   *   - worktree_path null:    create worktree + run bootstrap commands.
+   *   - worktree_path set and directory present on disk: reuse as-is.
+   *   - worktree_path set but directory missing (user deleted .worktrees/,
+   *     or a prior crash left the DB ahead of the filesystem): recreate +
+   *     rebootstrap, persisting the new path via applyWorktreeCreated.
+   *
+   * Bootstrap commands run only when we create a worktree here — on reuse
+   * they are assumed to have succeeded in the prior run (the state machine
+   * sets worktree_path only after applyWorktreeCreated, which follows a
+   * successful createWorktree; bootstrap failures do not overwrite it).
+   *
+   * Throws on createWorktree or bootstrap failure. Caller (start.ts)
+   * surfaces the error to the user and exits non-zero.
+   */
+  private async _ensureWorktree(workflowId: string): Promise<void> {
+    const wf = this._readWorkflow(workflowId);
+    if (!wf) throw new Error(`Workflow not found after ingest: ${workflowId}`);
+
+    // Reuse path — on-disk check guards against DB/filesystem divergence.
+    if (wf.worktree_path && fs.existsSync(wf.worktree_path)) {
+      console.log(`[scheduler] reusing existing worktree: ${wf.worktree_path}`);
+      return;
+    }
+
+    const baseDir = this.config.worktrees?.base_dir
+      ? path.resolve(this.config.configDir, this.config.worktrees.base_dir)
+      : path.join(this.config.configDir, '.worktrees');
+
+    console.log(`[scheduler] creating worktree for ${wf.name} in ${baseDir}`);
+    const wtInfo = await this.worktreeManager.createWorktree({
+      workflowId: wf.id,
+      workflowName: wf.name,
+      baseDir,
+      branchPrefix: this.config.worktrees?.branch_prefix ?? 'yoke/',
+    });
+    console.log(`[scheduler] worktree created: ${wtInfo.worktreePath} (${wtInfo.branchName})`);
+
+    // Persist via engine function (RC-2: no direct writer calls from scheduler).
+    applyWorktreeCreated({
+      db: this.db,
+      workflowId,
+      branchName: wtInfo.branchName,
+      worktreePath: wtInfo.worktreePath,
+    });
+
+    const commands = this.config.worktrees?.bootstrap?.commands ?? [];
+    if (commands.length > 0) {
+      console.log(`[scheduler] running ${commands.length} bootstrap command(s)`);
+      const event = await this.worktreeManager.runBootstrap({
+        worktreePath: wtInfo.worktreePath,
+        commands,
+      });
+      if (event.type === 'bootstrap_fail') {
+        throw new Error(
+          `Bootstrap failed for workflow ${workflowId}: command '${event.failedCommand}' ` +
+          `exited ${event.exitCode}\n${event.stderr}`,
+        );
+      }
+      console.log(`[scheduler] bootstrap ok`);
+    }
+  }
 
   private _readWorkflow(workflowId: string): WorkflowDbRow | null {
     return (this.db.reader()
