@@ -27,6 +27,10 @@ import {
   createWsHandler,
 } from './ws.js';
 import { IdempotencyStore } from './idempotency.js';
+import type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
+
+// Re-export so consumers can import from a single server entry point.
+export type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -44,7 +48,8 @@ function notFound(reply: FastifyReply, message = 'not found'): FastifyReply {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
-interface WorkflowRow {
+/** Raw row shape as returned by SQLite (snake_case column names). */
+interface DbWorkflowRow {
   id: string;
   name: string;
   status: string;
@@ -52,6 +57,19 @@ interface WorkflowRow {
   created_at: string;
   updated_at: string;
   active_sessions: number;
+}
+
+function mapWorkflowRow(row: DbWorkflowRow): WorkflowRow {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status as WorkflowStatus,
+    currentStage: row.current_stage,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    activeSessions: row.active_sessions,
+    unreadEvents: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,14 +235,14 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       }
       sql += ` ORDER BY w.created_at DESC LIMIT ${limit + 1}`;
 
-      const rows = db.reader().prepare(sql).all(...params) as WorkflowRow[];
+      const rows = db.reader().prepare(sql).all(...params) as DbWorkflowRow[];
       const hasMore = rows.length > limit;
-      const workflows = hasMore ? rows.slice(0, limit) : rows;
+      const workflows = (hasMore ? rows.slice(0, limit) : rows).map(mapWorkflowRow);
 
       return reply.send({
         workflows,
         hasMore,
-        nextBefore: hasMore ? workflows[workflows.length - 1].created_at : null,
+        nextBefore: hasMore ? workflows[workflows.length - 1]!.createdAt : null,
       });
     },
   );
@@ -504,6 +522,39 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const result = callbacks.ackAttention(id, attId);
       if (result.status === 'not_found') return notFound(reply, 'attention item not found');
       return reply.send(result);
+    },
+  );
+
+  // GET /api/workflows/:id/items/:itemId/data
+  // Returns the parsed items.data JSON for the given item.
+  // 404 when workflow or item is not found, or item belongs to a different workflow.
+  // 500 when items.data exists but cannot be parsed as JSON (defensive — schema guarantees valid JSON).
+  fastify.get(
+    '/api/workflows/:id/items/:itemId/data',
+    async (
+      req: FastifyRequest<{ Params: { id: string; itemId: string } }>,
+      reply: FastifyReply,
+    ) => {
+      const { id, itemId } = req.params;
+      const reader = db.reader();
+
+      const wf = reader.prepare('SELECT id FROM workflows WHERE id = ?').get(id) as { id: string } | undefined;
+      if (!wf) return notFound(reply, 'workflow not found');
+
+      const item = reader
+        .prepare('SELECT data FROM items WHERE id = ? AND workflow_id = ?')
+        .get(itemId, id) as { data: string } | undefined;
+      // Cross-workflow access returns 404 (item not found) — do not leak existence.
+      if (!item) return notFound(reply, 'item not found');
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(item.data);
+      } catch {
+        return reply.status(500).send({ error: 'item data is not valid JSON' });
+      }
+
+      return reply.send(parsed);
     },
   );
 
