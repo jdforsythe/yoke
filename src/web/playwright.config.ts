@@ -21,8 +21,18 @@ export default defineConfig({
   },
   projects: [
     {
+      // Mocked suite — all specs outside e2e/real/ (no real backend required).
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: ['**/real/**'],
+    },
+    {
+      // Real-backend suite — specs under e2e/real/ use the realBackend fixture
+      // which boots a real Fastify + SQLite server per test on port 0.
+      // Run independently with: pnpm test:e2e --project real-backend
+      name: 'real-backend',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: ['**/real/**'],
     },
   ],
   webServer: {
