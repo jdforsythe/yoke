@@ -82,10 +82,14 @@ export const test = base.extend<{ backend: BackendHandle }>({
       await page.route('**/api/**', async (route) => {
         const originalUrl = new URL(route.request().url());
         const proxyUrl = backendUrl + originalUrl.pathname + originalUrl.search;
+        // Drop the `host` header so the proxied request carries the backend's host,
+        // not the vite server's host. Other headers (cookies, content-type, etc.) pass through.
+        const { host: _host, ...forwardHeaders } = route.request().headers();
         try {
-          const response = await route.fetch(proxyUrl, {
+          const response = await route.fetch({
+            url: proxyUrl,
             method: route.request().method(),
-            headers: route.request().headers(),
+            headers: forwardHeaders,
             postData: route.request().postData() ?? undefined,
           });
           await route.fulfill({ response });
