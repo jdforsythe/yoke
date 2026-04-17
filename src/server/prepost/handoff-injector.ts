@@ -28,6 +28,8 @@ export interface HookFailureEntry {
   phase: string;
   /** 1-based attempt number of the session whose hook failed. */
   attempt: number;
+  /** Session whose post-command failed. Required by handoff.schema.json. */
+  sessionId: string;
   /** Name of the post-command that failed, e.g. "run-typecheck". */
   command: string;
   /** Exit code of the failed command, or null for timeout / spawn errors. */
@@ -81,6 +83,7 @@ export function injectHookFailure(
   entries.push({
     phase: `${entry.phase}:hook-failure`,
     attempt: entry.attempt,
+    session_id: entry.sessionId,
     ts: new Date().toISOString(),
     harness_injected: true,
     command: entry.command,

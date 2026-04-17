@@ -15,6 +15,11 @@
     "entries": {
       "type": "array",
       "items": { "$ref": "#/$defs/entry" }
+    },
+    "review_entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" },
+      "description": "Separate buffer for review-phase entries. Allowed but not required — some templates write review findings here instead of into entries[]."
     }
   },
   "$defs": {
@@ -74,6 +79,33 @@
         "failure_summary": {
           "type": ["string", "null"],
           "description": "Written by the harness when escalating to retry_mode=fresh_with_failure_summary (plan-draft3 §Retry)."
+        },
+        "harness_injected": {
+          "type": "boolean",
+          "description": "True for entries written by the harness (e.g. post-command failures injected via injectHookFailure). Agents should not set this."
+        },
+        "command": {
+          "type": "string",
+          "description": "Name of the failed pre/post command when harness_injected is true."
+        },
+        "exit_code": {
+          "type": ["integer", "null"],
+          "description": "Exit code of the failed command (null for timeout / spawn failure)."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["PASS", "FAIL"],
+          "description": "Written by review-phase agent entries. Mirrors the top-level verdict in review-verdict.json."
+        },
+        "blocking_issues": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Written by review entries and harness-injected hook-failure entries. Each string is one blocking issue with AC/RC reference."
+        },
+        "non_blocking": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Written by review entries: minor observations that do not block the feature from completing."
         }
       }
     },

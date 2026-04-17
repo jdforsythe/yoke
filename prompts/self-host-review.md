@@ -52,9 +52,11 @@ If there are any blocking issues:
 
 **2. `handoff.json`** — append a review entry so the next implement session has context.
 
-If verdict is FAIL, append to the `entries` array in `handoff.json` (create the file
-if absent):
-```json
+If verdict is FAIL, append a review entry using the typed writer — **do not edit
+handoff.json directly.** Free-form edits risk corrupting the JSON, which poisons
+every future session for this item. Pipe the entry as JSON into the helper:
+```bash
+cat <<'JSON' | node scripts/append-handoff-entry.js
 {
   "phase": "review",
   "attempt": <increment from prior entries, starting at 1>,
@@ -64,13 +66,17 @@ if absent):
   "blocking_issues": ["<copy from review-verdict.json>"],
   "non_blocking": ["<optional minor observations>"]
 }
+JSON
 ```
-If handoff.json does not exist, create it: `{"item_id": "{{item.id}}", "entries": [<entry>]}`.
+The script creates handoff.json with the correct `item_id` (from $YOKE_ITEM_ID)
+if it does not yet exist. A non-zero exit means the entry was rejected — fix
+the error reported on stderr and re-run before stopping.
 
 If verdict is PASS, no handoff.json entry is needed.
 
-**Do NOT modify `docs/idea/dashboard-features.json`.** The pipeline marks features
-complete automatically via a post-review script. Agents that write to this file will
-trip the diff checker and be sent to awaiting_user.
+**Do NOT modify `docs/idea/dashboard-features.json`.** It is the item manifest;
+SQLite owns completion state. The pipeline runs a diff check against this file
+after every session — any change trips `diff_check_fail` and sends you back to
+implement.
 
 Do not re-implement. Only report findings, then write the required output files. Stop.

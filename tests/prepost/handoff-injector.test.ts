@@ -34,6 +34,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'run-tests',
       exitCode: 1,
       output: 'FAIL src/foo.test.ts',
@@ -56,6 +57,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 2,
+      sessionId: "sess-test",
       command: 'run-typecheck',
       exitCode: 2,
       output: 'Type error in foo.ts',
@@ -77,6 +79,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'review',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'lint',
       exitCode: 1,
       output: 'lint failed',
@@ -93,6 +96,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'test',
       exitCode: 1,
       output: 'test failure',
@@ -109,6 +113,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'big-test',
       exitCode: 1,
       output: longOutput,
@@ -127,6 +132,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 3,
+      sessionId: "sess-test",
       command: 'run-typecheck',
       exitCode: 2,
       output: 'error TS2345: ...',
@@ -153,6 +159,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'slow-test',
       exitCode: null,
       output: 'timed out',
@@ -176,6 +183,7 @@ describe('injectHookFailure', () => {
     injectHookFailure(tmpDir, {
       phase: 'implement',
       attempt: 1,
+      sessionId: "sess-test",
       command: 'test',
       exitCode: 1,
       output: 'fail',

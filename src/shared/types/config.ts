@@ -115,8 +115,6 @@ export interface Stage {
   items_list?: string;
   items_id?: string;
   items_depends_on?: string;
-  /** JSONPath expression evaluated per item at seed time. Truthy result → seeded as 'complete'. */
-  items_complete?: string;
   items_display?: ItemsDisplay;
 }
 

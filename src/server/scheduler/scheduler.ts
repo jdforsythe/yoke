@@ -830,6 +830,13 @@ export class Scheduler {
     item: ItemRow,
     stage: Stage,
   ): Promise<void> {
+    // Early-bail stop guard: we haven't spawned or inserted a session yet, so
+    // there's nothing to fail — just drop the inFlight reservation. The item
+    // is already at status='in_progress' (from phase_start / resume); on the
+    // next start the tick-loop's in_progress case will respawn. No retry-
+    // ladder context was accrued because nothing ran, so a bare respawn is
+    // the correct recovery. This path intentionally does NO DB writes: the
+    // caller may have already closed the writer during shutdown.
     if (this.stopped) {
       this.inFlight.delete(item.id);
       return;
@@ -870,6 +877,10 @@ export class Scheduler {
     // Guard: if stop() was called while awaiting captureGitHead, bail before any
     // DB write. stop() skips 'pending' inFlight entries (no handle yet), so without
     // this check a dangling _runSession could call insertSession on a closed DB.
+    // Same rationale as the early-bail guard above: nothing spawned, no session
+    // row, no retry-ladder context to preserve. Item stays at in_progress; the
+    // next start respawns via the tick-loop in_progress case. DO NOT write to
+    // the DB here — it may already be closed during shutdown.
     if (this.stopped) {
       this.inFlight.delete(item.id);
       return;
@@ -951,7 +962,17 @@ export class Scheduler {
         itemBlockedReason: item.blocked_reason,
       });
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
+      // Surface the failure to the UI. No session.started has been broadcast
+      // yet (it fires after spawn), so a stream.system_notice would have no
+      // host session in the render model — use a workflow-scoped notice
+      // instead, which the AttentionBanner / notification handler can render.
+      this.broadcastFn(wf.id, null, 'notice', {
+        severity: 'requires_attention' as const,
+        kind: 'prompt_assembly_failed',
+        message: `Prompt assembly failed for ${item.stage_id}/${phaseKey}: ${errMsg}`,
+      });
       const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
@@ -1004,10 +1025,30 @@ export class Scheduler {
       return;
     }
 
-    // Guard: if stop() was called while we were spawning, cancel immediately.
+    // Guard: if stop() was called while we were spawning, cancel immediately
+    // and transition the item to awaiting_retry via session_fail (transient)
+    // so the retry ladder resumes cleanly on the next start. Without the
+    // transition, the item is stuck at status='in_progress' and the session
+    // row is orphaned at status='running' with pid IS NULL (so crash recovery
+    // skips it). The tick loop would then fallback-respawn without retry
+    // bookkeeping.
     if (this.stopped) {
       void handle.cancel();
+      const result = this._applyTransition({
+        db: this.db,
+        workflowId: wf.id,
+        itemId: item.id,
+        sessionId,
+        stage: item.stage_id,
+        phase: phaseKey,
+        attempt,
+        event: 'session_fail',
+        guardCtx: { classifierResult: 'transient' },
+      });
+      this._armRetryTimer(item.id, attempt, result);
+      this._broadcastItemState(wf.id, item.id, item.stage_id, result);
       await logWriter.close();
+      endSession(this.db, sessionId, { exitCode: null });
       this.inFlight.delete(item.id);
       return;
     }
@@ -1119,12 +1160,38 @@ export class Scheduler {
       console.error(`[scheduler] stderr (${stderr.length}b): ${stderr.slice(0, 300)}`);
     }
 
-    // Guard: if stop() was called while session ran, record the exit and bail.
+    // Guard: if stop() was called while session ran, fire session_fail
+    // (transient) so the item re-enters the retry ladder on the next start.
+    // Without this event, the item is left at status='in_progress' in SQLite
+    // AND the session row is marked 'failed' (so buildCrashRecovery skips it
+    // on the next start). The tick loop's in_progress fallback would then
+    // respawn a bare session with no retry_count bump, no failure-summary
+    // injection, and no record that the prior attempt was interrupted.
     if (this.stopped) {
-      endSession(this.db, sessionId, { exitCode });
+      const result = this._applyTransition({
+        db: this.db,
+        workflowId: wf.id,
+        itemId: item.id,
+        sessionId,
+        stage: item.stage_id,
+        phase: phaseKey,
+        attempt,
+        event: 'session_fail',
+        guardCtx: { classifierResult: 'transient' },
+      });
+      this._armRetryTimer(item.id, attempt, result);
+      this._broadcastItemState(wf.id, item.id, item.stage_id, result);
       fixtureWriter?.close(exitCode);
       if (fixtureWriter) clearRecordMarker(this.config.configDir);
+      this.broadcastFn(wf.id, sessionId, 'session.ended', {
+        sessionId,
+        endedAt: new Date().toISOString(),
+        exitCode,
+        statusFlags: { parseErrors },
+        reason: 'fail' as const,
+      });
       await logWriter.close();
+      endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
       this.inFlight.delete(item.id);
       return;
     }
@@ -1342,6 +1409,7 @@ export class Scheduler {
             injectHookFailure(worktreePath, {
               phase: phaseKey,
               attempt,
+              sessionId,
               command: failedRun.commandName,
               exitCode: failedRun.exitCode,
               output: failedRun.output,
@@ -1353,6 +1421,23 @@ export class Scheduler {
           console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+
+        // Explicit session.ended — the generic wrap-up below infers reason from
+        // the agent's exitCode (0 ⇒ 'ok'), which would mislabel this session as
+        // successful even though a post-command returned a non-continue action.
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'post_command_action' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
 
       } else {
         // timeout / spawn_failed / unhandled_exit → treat as session_fail.
@@ -1379,6 +1464,7 @@ export class Scheduler {
             injectHookFailure(worktreePath, {
               phase: phaseKey,
               attempt,
+              sessionId,
               command: failedRun.commandName,
               exitCode: failedRun.exitCode,
               output: failedRun.output,
@@ -1389,6 +1475,23 @@ export class Scheduler {
           console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+
+        // Explicit session.ended — same reason as the action branch above: the
+        // generic wrap-up would report reason: 'ok' because the agent exited 0,
+        // which hides the post-command timeout / spawn failure from the UI.
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'post_command_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
       }
 
     } else {
@@ -1415,6 +1518,7 @@ export class Scheduler {
           injectHookFailure(worktreePath, {
             phase: phaseKey,
             attempt,
+            sessionId,
             command: `${phaseKey}-agent`,
             exitCode: exitCode ?? null,
             output: failureOutput,

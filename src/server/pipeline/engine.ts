@@ -987,6 +987,42 @@ export function applyItemTransition(
         ? (`dependency ${params.itemId} ${currentState}`)
         : item.blocked_reason;
 
+    // No-op short-circuit: narrowly targets the tick-loop `deps_satisfied`
+    // poll on pending items (fires every 500 ms, resolves to pending→pending
+    // until a dep completes). Without this, the events table grows unboundedly
+    // and items.updated_at churns on every tick.
+    //
+    // Intentionally limited to (pending, deps_satisfied) only. Other same-state
+    // transitions are NOT short-circuited because they may still need to:
+    //   - re-run cascade-unblock on `complete` re-entry,
+    //   - re-probe stage-complete when sibling items changed,
+    //   - persist pending_attention rows bundled as side effects,
+    //   - emit an event that downstream consumers rely on even if the item's
+    //     own columns didn't change.
+    // The guard here only trusts the cheap, provably-safe case.
+    const isPendingPoll =
+      params.event === 'deps_satisfied' &&
+      currentState === 'pending' &&
+      newState === 'pending' &&
+      newPhase === item.current_phase &&
+      newRetryCount === item.retry_count &&
+      newBlockedReason === item.blocked_reason &&
+      selection.sideEffects.length === 0 &&
+      !ctx.prepostRuns?.length &&
+      !ctx.artifactWrites?.length;
+
+    if (isPendingPoll) {
+      return {
+        newState,
+        newPhase,
+        sideEffects: selection.sideEffects,
+        retryMode: selection.retryMode,
+        cascadeBlocked: false,
+        stageComplete: false,
+        pendingAttentionRowId: null,
+      };
+    }
+
     // Persist item changes.
     db.prepare(`
       UPDATE items

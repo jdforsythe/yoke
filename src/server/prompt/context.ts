@@ -298,7 +298,16 @@ function readHandoffEntries(filePath: string): string {
   if (raw === '') {
     return '';
   }
-  const parsed = JSON.parse(raw) as HandoffFile;
+  let parsed: HandoffFile;
+  try {
+    parsed = JSON.parse(raw) as HandoffFile;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Re-throw with the file path so the scheduler's catch can surface an
+    // actionable message to the UI (a prior agent session likely wrote
+    // syntactically-invalid JSON to handoff.json).
+    throw new Error(`handoff.json at ${filePath} is not valid JSON: ${msg}`);
+  }
   const entries = parsed.entries ?? [];
   return JSON.stringify(entries, null, 2);
 }

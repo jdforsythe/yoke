@@ -101,10 +101,6 @@
           "type": "string",
           "description": "Optional JSONPath expression evaluated per item to extract an array of dependency item IDs for topological ordering (D08). If omitted, items are processed in manifest order with no dependency constraints."
         },
-        "items_complete": {
-          "type": "string",
-          "description": "Optional JSONPath expression evaluated per item at seed time. If the expression returns a truthy value (non-null, non-false, non-empty string), the item is seeded with status 'complete' and skipped by the scheduler. Use this to bootstrap a workflow where some items were already implemented outside Yoke (e.g. prior manual work), or when the manifest is the authoritative source of completion state. Example: '$.status' where done items carry status:'complete' in the manifest. This is separate from SQLite resumption (isResume), which handles continuation of items already tracked in SQLite — items_complete handles the bootstrapping case where the manifest knows about completion but SQLite does not."
-        },
         "items_display": { "$ref": "#/$defs/itemsDisplay" }
       },
       "allOf": [
