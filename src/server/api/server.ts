@@ -57,6 +57,7 @@ interface DbWorkflowRow {
   created_at: string;
   updated_at: string;
   active_sessions: number;
+  archived_at: string | null;
 }
 
 function mapWorkflowRow(row: DbWorkflowRow): WorkflowRow {
@@ -133,6 +134,12 @@ export type {
   ControlExecutorFn,
 } from '../pipeline/control-executor.js';
 
+// Re-export archive types so the CLI can import from a single place.
+export type {
+  ArchiveWorkflowResult,
+  ArchiveWorkflowFn,
+} from '../pipeline/archive-workflow.js';
+
 /**
  * Optional callbacks injected into the server at creation time.
  * These allow the API layer to delegate writes to the pipeline engine layer
@@ -159,6 +166,12 @@ export interface ServerCallbacks {
    * working.
    */
   controlExecutor?: import('../pipeline/control-executor.js').ControlExecutorFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/archive or
+   * POST /api/workflows/:id/unarchive.
+   * If omitted, those endpoints return 501 Not Implemented.
+   */
+  archiveWorkflow?: import('../pipeline/archive-workflow.js').ArchiveWorkflowFn;
 }
 
 /**
@@ -216,10 +229,17 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const limit = Math.min(limitRaw, 100);
 
       let sql =
-        'SELECT w.id, w.name, w.status, w.current_stage, w.created_at, w.updated_at,' +
+        'SELECT w.id, w.name, w.status, w.current_stage, w.created_at, w.updated_at, w.archived_at,' +
         ' (SELECT COUNT(*) FROM sessions s WHERE s.workflow_id = w.id AND s.ended_at IS NULL) AS active_sessions' +
         ' FROM workflows w WHERE 1=1';
       const params: unknown[] = [];
+
+      // Exclude archived rows by default; include them only when ?archived=true.
+      if (qs.archived === 'true') {
+        sql += ' AND w.archived_at IS NOT NULL';
+      } else {
+        sql += ' AND w.archived_at IS NULL';
+      }
 
       if (qs.status) {
         sql += ' AND w.status = ?';
@@ -557,6 +577,33 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       return reply.send(parsed);
     },
   );
+
+  // POST /api/workflows/:id/archive and POST /api/workflows/:id/unarchive
+  // Soft-archive or restore a workflow.
+  // The write is delegated to callbacks.archiveWorkflow (RC-3 — no writes in API layer).
+  // Archiving an in_progress workflow returns 409 with the current status.
+  const handleArchive = (action: 'archive' | 'unarchive') =>
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+
+      if (!callbacks.archiveWorkflow) {
+        return reply.status(501).send({ error: 'archive not configured' });
+      }
+
+      const result = callbacks.archiveWorkflow(id, action);
+
+      if (result.status === 'workflow_not_found') return notFound(reply, 'workflow not found');
+      if (result.status === 'conflict') {
+        return reply.status(409).send({
+          error: `cannot archive a workflow with status '${result.currentStatus}'`,
+          currentStatus: result.currentStatus,
+        });
+      }
+      return reply.status(200).send(result);
+    };
+
+  fastify.post('/api/workflows/:id/archive', handleArchive('archive'));
+  fastify.post('/api/workflows/:id/unarchive', handleArchive('unarchive'));
 
   // POST /api/workflows/:id/retry
   // Transition all awaiting_user items in the workflow back to in_progress.

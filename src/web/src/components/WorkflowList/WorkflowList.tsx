@@ -5,6 +5,19 @@ import type { WorkflowIndexUpdatePayload, ServerFrame } from '@/ws/types';
 import type { WorkflowRow } from '@shared/types/workflow';
 
 // ---------------------------------------------------------------------------
+// Archive helper
+// ---------------------------------------------------------------------------
+
+async function postArchive(workflowId: string, action: 'archive' | 'unarchive'): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/workflows/${workflowId}/${action}`, { method: 'POST' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -252,47 +265,81 @@ export function WorkflowList() {
         )}
 
         {rows.map((row) => (
-          <button
+          <div
             key={row.id}
             role="listitem"
-            onClick={() => {
-              getClient().subscribe(row.id);
-              navigate(`/workflow/${row.id}`);
-            }}
             className={[
-              'w-full text-left px-3 py-2.5 border-b border-gray-700/40',
+              'group relative w-full border-b border-gray-700/40',
               'hover:bg-gray-700/40 transition-colors',
               activeId === row.id
                 ? 'bg-gray-700/60 border-l-2 border-l-blue-500'
                 : '',
             ].join(' ')}
-            aria-current={activeId === row.id ? 'page' : undefined}
           >
-            <div className="flex items-start justify-between gap-1.5">
-              <span className="text-gray-100 text-xs font-medium truncate flex-1">
-                {row.name}
-              </span>
-              {row.unreadEvents > 0 && (
-                <span
-                  className="shrink-0 bg-blue-500 text-white text-[10px] rounded-full px-1.5 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center"
-                  aria-label={`${row.unreadEvents} unread events`}
-                >
-                  {row.unreadEvents > 99 ? '99+' : row.unreadEvents}
+            <button
+              className="w-full text-left px-3 py-2.5"
+              onClick={() => {
+                getClient().subscribe(row.id);
+                navigate(`/workflow/${row.id}`);
+              }}
+              aria-current={activeId === row.id ? 'page' : undefined}
+            >
+              <div className="flex items-start justify-between gap-1.5">
+                <span className="text-gray-100 text-xs font-medium truncate flex-1">
+                  {row.name}
                 </span>
+                {row.unreadEvents > 0 && (
+                  <span
+                    className="shrink-0 bg-blue-500 text-white text-[10px] rounded-full px-1.5 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center"
+                    aria-label={`${row.unreadEvents} unread events`}
+                  >
+                    {row.unreadEvents > 99 ? '99+' : row.unreadEvents}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${statusChipClass(row.status)}`}
+                >
+                  {row.status}
+                </span>
+                {/* Re-renders every 60 s via tick, not on every WS frame */}
+                <span key={tick} className="text-[10px] text-gray-500">
+                  {relativeTime(row.updatedAt)}
+                </span>
+              </div>
+            </button>
+
+            {/* Archive / unarchive button — visible on row hover only */}
+            <button
+              aria-label={showArchived ? 'Unarchive workflow' : 'Archive workflow'}
+              title={showArchived ? 'Unarchive' : 'Archive'}
+              className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-600/60"
+              onClick={async (e) => {
+                e.stopPropagation();
+                const action = showArchived ? 'unarchive' : 'archive';
+                const ok = await postArchive(row.id, action);
+                if (ok) {
+                  // Optimistically remove the row from the current view since
+                  // archiving from normal view makes it disappear, and
+                  // unarchiving from archived view also removes it.
+                  setRows((prev) => prev.filter((r) => r.id !== row.id));
+                }
+              }}
+            >
+              {showArchived ? (
+                /* Unarchive icon: inbox-arrow-down */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+              ) : (
+                /* Archive icon: archive-box */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8" />
+                </svg>
               )}
-            </div>
-            <div className="flex items-center gap-1.5 mt-1">
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${statusChipClass(row.status)}`}
-              >
-                {row.status}
-              </span>
-              {/* Re-renders every 60 s via tick, not on every WS frame */}
-              <span key={tick} className="text-[10px] text-gray-500">
-                {relativeTime(row.updatedAt)}
-              </span>
-            </div>
-          </button>
+            </button>
+          </div>
         ))}
 
         {/* Infinite-scroll sentinel */}
