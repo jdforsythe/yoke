@@ -96,8 +96,8 @@ describe('GET /api/workflows — camelCase response shape', () => {
     expect(row.updatedAt.length).toBeGreaterThan(0);
 
     // snake_case fields must NOT appear.
-    expect((row as Record<string, unknown>)['created_at']).toBeUndefined();
-    expect((row as Record<string, unknown>)['updated_at']).toBeUndefined();
+    expect((row as unknown as Record<string, unknown>)['created_at']).toBeUndefined();
+    expect((row as unknown as Record<string, unknown>)['updated_at']).toBeUndefined();
   });
 
   it('createdAt and updatedAt are valid ISO date strings', async () => {
