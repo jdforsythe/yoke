@@ -268,6 +268,7 @@ export function WorkflowList() {
           <div
             key={row.id}
             role="listitem"
+            aria-current={activeId === row.id ? 'page' : undefined}
             className={[
               'group relative w-full border-b border-gray-700/40',
               'hover:bg-gray-700/40 transition-colors',
@@ -282,7 +283,6 @@ export function WorkflowList() {
                 getClient().subscribe(row.id);
                 navigate(`/workflow/${row.id}`);
               }}
-              aria-current={activeId === row.id ? 'page' : undefined}
             >
               <div className="flex items-start justify-between gap-1.5">
                 <span className="text-gray-100 text-xs font-medium truncate flex-1">

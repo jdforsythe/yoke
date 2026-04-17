@@ -137,7 +137,7 @@ export interface WorkflowSnapshotPayload {
 export interface WorkflowIndexUpdatePayload {
   id: string;
   name: string;
-  status: string;
+  status: import('@shared/types/workflow').WorkflowStatus;
   updatedAt: string;
   unreadEvents: number;
 }
