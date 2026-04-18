@@ -245,5 +245,29 @@ export function loadEarlierFrames(sessionId: string, frames: ServerFrame[]): voi
   prependSessionBlocks(sessionId, newBlocks);
 }
 
+/**
+ * Load all frames for a historical (completed) session into the store in one
+ * atomic operation.  Uses a temporary state to avoid mutating live sessions,
+ * then copies just the target session into the live store and notifies once.
+ *
+ * Safe to call multiple times for the same sessionId: subsequent calls
+ * replace the earlier snapshot (the frames are deterministic).
+ */
+export function loadHistoricalSession(sessionId: string, frames: ServerFrame[]): void {
+  if (frames.length === 0) return;
+  let tempState = createInitialState();
+  for (const frame of frames) {
+    tempState = applyFrame(tempState, frame);
+  }
+  const session = tempState.sessions.get(sessionId);
+  if (!session) return;
+  const sessions = new Map(_state.sessions);
+  sessions.set(sessionId, session);
+  _state = { sessions };
+  _updateUsageSnapshot();
+  _sessionBlocksCache.delete(sessionId);
+  _notify();
+}
+
 // Re-export pure accessors so consumers don't need to import from reducer.
 export { getTotalUsage, getSessionBlocks, getSessionUsage };
