@@ -91,6 +91,13 @@ function getItem(id: string) {
     .get(id) as { id: string; status: string; current_phase: string | null; retry_count: number } | undefined;
 }
 
+function countSessions(wfId: string): number {
+  const row = pool.writer
+    .prepare('SELECT COUNT(*) AS n FROM sessions WHERE workflow_id = ?')
+    .get(wfId) as { n: number };
+  return row.n;
+}
+
 function getWorkflow(id: string) {
   return pool.writer
     .prepare('SELECT * FROM workflows WHERE id = ?')
@@ -182,6 +189,8 @@ describe('goto-and-advance — phase_advance', () => {
     expect(frames[0].frameType).toBe('item.state');
     expect((frames[0].payload as any).state.status).toBe('in_progress');
     expect((frames[0].payload as any).state.currentPhase).toBe('review');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });
 
@@ -195,6 +204,8 @@ describe('goto-and-advance — stage_complete', () => {
     const itemId = makeItemId();
     insertWorkflow(wfId);
     insertItem(itemId, wfId, 'stage1', { status: 'in_progress', phase: 'implement' });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     const result = applyItemTransition({
       db: pool,
@@ -213,12 +224,19 @@ describe('goto-and-advance — stage_complete', () => {
       },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(result.newState).toBe('complete');
     expect(result.stageComplete).toBe(true);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('complete');
 
     // Drive stage advance
     applyStageAdvance(pool, wfId, 'stage2');
     expect(getWorkflow(wfId)?.current_stage).toBe('stage2');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('stageComplete=false when other items are still pending', () => {
@@ -228,6 +246,8 @@ describe('goto-and-advance — stage_complete', () => {
     insertWorkflow(wfId);
     insertItem(itemA, wfId, 'stage1', { status: 'in_progress', phase: 'implement' });
     insertItem(itemB, wfId, 'stage1', { status: 'pending', phase: 'implement' });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     const result = applyItemTransition({
       db: pool,
@@ -241,8 +261,17 @@ describe('goto-and-advance — stage_complete', () => {
       guardCtx: { morePhases: false, allPostCommandsOk: true, validatorsOk: true, diffCheckOk: true },
     });
 
+    simulateBroadcast(wfId, itemA, 'stage1', result);
+
     expect(result.newState).toBe('complete');
     expect(result.stageComplete).toBe(false);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('complete');
+
+    // itemB is still pending — no sessions started yet
+    expect(getItem(itemB)?.status).toBe('pending');
+    expect(countSessions(wfId)).toBe(0);
   });
 });
 
@@ -282,6 +311,8 @@ describe('goto-and-advance — goto from post_command_action', () => {
 
     expect((frames[0].payload as any).state.status).toBe('in_progress');
     expect((frames[0].payload as any).state.currentPhase).toBe('implement');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('goto inserts prepost.revisit event into events table', () => {
@@ -290,7 +321,9 @@ describe('goto-and-advance — goto from post_command_action', () => {
     insertWorkflow(wfId);
     insertItem(itemId, wfId, 'stage1', { status: 'in_progress', phase: 'review' });
 
-    applyItemTransition({
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
+
+    const result = applyItemTransition({
       db: pool,
       workflowId: wfId,
       itemId,
@@ -304,7 +337,15 @@ describe('goto-and-advance — goto from post_command_action', () => {
       },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(countEvents(wfId, 'prepost.revisit')).toBe(1);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('in_progress');
+    expect((frames[0].payload as any).state.currentPhase).toBe('implement');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('goto exceeding maxRevisits → awaiting_user', () => {
@@ -326,6 +367,8 @@ describe('goto-and-advance — goto from post_command_action', () => {
         .run(wfId, itemId, i);
     }
 
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
+
     const result = applyItemTransition({
       db: pool,
       workflowId: wfId,
@@ -340,7 +383,14 @@ describe('goto-and-advance — goto from post_command_action', () => {
       },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(result.newState).toBe('awaiting_user');
     expect(getItem(itemId)?.status).toBe('awaiting_user');
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('awaiting_user');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });

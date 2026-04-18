@@ -83,6 +83,13 @@ function getItem(id: string) {
     .get(id) as { id: string; status: string; current_phase: string | null; retry_count: number } | undefined;
 }
 
+function countSessions(wfId: string): number {
+  const row = pool.writer
+    .prepare('SELECT COUNT(*) AS n FROM sessions WHERE workflow_id = ?')
+    .get(wfId) as { n: number };
+  return row.n;
+}
+
 // ---------------------------------------------------------------------------
 // Drain helper: waits for all in-flight sessions to complete
 // ---------------------------------------------------------------------------
@@ -256,11 +263,20 @@ describe('retry-ladder-e2e — injected clock drives full ladder', () => {
     const cycle3Frames = broadcastFrames.filter(f => f.frameType === 'item.state');
     const lastFrame3 = cycle3Frames[cycle3Frames.length - 1];
     expect((lastFrame3.payload as any).state.status).toBe('awaiting_user');
+
+    // Each retry attempt inserts a session row (insertSession is called before the
+    // pre-command runner fires); 3 cycles = 3 session rows, each ended with pre_failed exit
+    expect(countSessions(wfId)).toBe(3);
   });
 
   it('retry_count increments on each ladder step', async () => {
     let fakeNow = 0;
     const clockFn = () => fakeNow;
+
+    const broadcastFrames: { frameType: string; payload: unknown }[] = [];
+    const broadcastFn: BroadcastFn = (_wfId, _sessId, frameType, payload) => {
+      broadcastFrames.push({ frameType, payload });
+    };
 
     const wfId = 'wf-e2e-2';
     const itemId = 'item-e2e-2';
@@ -274,28 +290,44 @@ describe('retry-ladder-e2e — injected clock drives full ladder', () => {
       worktreeManager: fakeWorktreeManager,
       prepostRunner: failingPreRunner,
       assemblePrompt: async () => 'fake prompt',
-      broadcast: () => {},
+      broadcast: broadcastFn,
       artifactValidator: async () => ({ kind: 'validators_ok' as const }),
       now: clockFn,
     });
 
     const tick = () => (scheduler as any)._processWorkflows() as Promise<void>;
 
-    // Step 1
+    // Step 1: ready → in_progress → pre fails → awaiting_retry (retry_count=1)
     await tick(); await drain(scheduler);
     expect(getItem(itemId)?.retry_count).toBe(1);
+    expect(getItem(itemId)?.status).toBe('awaiting_retry');
+    const step1Frames = broadcastFrames.filter(f => f.frameType === 'item.state');
+    expect(step1Frames.length).toBeGreaterThanOrEqual(1);
+    expect((step1Frames[step1Frames.length - 1].payload as any).state.retryCount).toBe(1);
 
-    // Step 2
+    // Step 2: backoff elapsed → in_progress → pre fails → awaiting_retry (retry_count=2)
     fakeNow = 20_000;
     await tick();
+    broadcastFrames.length = 0;
     await tick(); await drain(scheduler);
     expect(getItem(itemId)?.retry_count).toBe(2);
+    expect(getItem(itemId)?.status).toBe('awaiting_retry');
+    const step2Frames = broadcastFrames.filter(f => f.frameType === 'item.state');
+    expect(step2Frames.length).toBeGreaterThanOrEqual(1);
+    expect((step2Frames[step2Frames.length - 1].payload as any).state.retryCount).toBe(2);
 
-    // Step 3 (exhaustion — retry_count stays at 2)
+    // Step 3 (exhaustion — retry_count stays at 2, status → awaiting_user)
     fakeNow = 100_000;
     await tick();
+    broadcastFrames.length = 0;
     await tick(); await drain(scheduler);
     expect(getItem(itemId)?.retry_count).toBe(2);
     expect(getItem(itemId)?.status).toBe('awaiting_user');
+    const step3Frames = broadcastFrames.filter(f => f.frameType === 'item.state');
+    expect(step3Frames.length).toBeGreaterThanOrEqual(1);
+    expect((step3Frames[step3Frames.length - 1].payload as any).state.status).toBe('awaiting_user');
+
+    // Each retry attempt inserts a session row before the pre runner fires; 3 cycles = 3 rows
+    expect(countSessions(wfId)).toBe(3);
   });
 });

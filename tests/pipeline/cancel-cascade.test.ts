@@ -105,6 +105,13 @@ function countCascadeEvents(wfId: string): number {
   return row.n;
 }
 
+function countSessions(wfId: string): number {
+  const row = pool.writer
+    .prepare('SELECT COUNT(*) AS n FROM sessions WHERE workflow_id = ?')
+    .get(wfId) as { n: number };
+  return row.n;
+}
+
 // ---------------------------------------------------------------------------
 // Broadcast capture helper
 // ---------------------------------------------------------------------------
@@ -186,6 +193,8 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
     const frame = frames[0];
     expect(frame.frameType).toBe('item.state');
     expect((frame.payload as any).state.status).toBe('abandoned');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('transitive cross-stage: A(stage1) → B(stage2) → C(stage3) all cascaded', () => {
@@ -199,6 +208,8 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
     insertItem(itemB, wfId, 'stage2', { status: 'pending', dependsOn: [itemA] });
     insertItem(itemC, wfId, 'stage3', { status: 'pending', dependsOn: [itemB] });
 
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
+
     const result = applyItemTransition({
       db: pool,
       workflowId: wfId,
@@ -210,12 +221,19 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
       event: 'user_cancel',
     });
 
+    simulateBroadcast(wfId, itemA, 'stage1', result);
+
     expect(result.cascadeBlocked).toBe(true);
     expect(getItem(itemB)?.status).toBe('blocked');
     expect(getItem(itemC)?.status).toBe('blocked');
 
     // Two cascade_block events (one per blocked descendant)
     expect(countCascadeEvents(wfId)).toBe(2);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('abandoned');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('multiple stage2 dependents all blocked when stage1 item is cancelled', () => {
@@ -229,6 +247,8 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
     insertItem(itemB, wfId, 'stage2', { status: 'pending', dependsOn: [itemA] });
     insertItem(itemC, wfId, 'stage2', { status: 'pending', dependsOn: [itemA] });
 
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
+
     const result = applyItemTransition({
       db: pool,
       workflowId: wfId,
@@ -240,10 +260,17 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
       event: 'user_cancel',
     });
 
+    simulateBroadcast(wfId, itemA, 'stage1', result);
+
     expect(result.cascadeBlocked).toBe(true);
     expect(getItem(itemB)?.status).toBe('blocked');
     expect(getItem(itemC)?.status).toBe('blocked');
     expect(countCascadeEvents(wfId)).toBe(2);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('abandoned');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('cascade does NOT touch already-terminal items in later stages', () => {
@@ -255,7 +282,9 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
     insertItem(itemA, wfId, 'stage1', { status: 'in_progress' });
     insertItem(itemB, wfId, 'stage2', { status: 'complete', dependsOn: [itemA] });
 
-    applyItemTransition({
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
+
+    const result = applyItemTransition({
       db: pool,
       workflowId: wfId,
       itemId: itemA,
@@ -266,9 +295,16 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
       event: 'user_cancel',
     });
 
+    simulateBroadcast(wfId, itemA, 'stage1', result);
+
     // Complete item must remain untouched
     expect(getItem(itemB)?.status).toBe('complete');
     expect(countCascadeEvents(wfId)).toBe(0);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('abandoned');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('awaiting_user on stage-N item also cascades to stage-(N+k) dependents', () => {
@@ -279,6 +315,8 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
     insertWorkflow(wfId);
     insertItem(itemA, wfId, 'stage1', { status: 'in_progress' });
     insertItem(itemB, wfId, 'stage2', { status: 'pending', dependsOn: [itemA] });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     // session_fail with policy → awaiting_user
     const result = applyItemTransition({
@@ -293,9 +331,16 @@ describe('cancel-cascade — user_cancel cross-stage', () => {
       guardCtx: { classifierResult: 'policy' },
     });
 
+    simulateBroadcast(wfId, itemA, 'stage1', result);
+
     expect(result.newState).toBe('awaiting_user');
     expect(result.cascadeBlocked).toBe(true);
     expect(getItem(itemB)?.status).toBe('blocked');
     expect(countCascadeEvents(wfId)).toBe(1);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('awaiting_user');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });

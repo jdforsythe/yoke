@@ -91,6 +91,13 @@ function getItem(id: string) {
     .get(id) as { id: string; status: string; current_phase: string | null; retry_count: number } | undefined;
 }
 
+function countSessions(wfId: string): number {
+  const row = pool.writer
+    .prepare('SELECT COUNT(*) AS n FROM sessions WHERE workflow_id = ?')
+    .get(wfId) as { n: number };
+  return row.n;
+}
+
 // ---------------------------------------------------------------------------
 // Broadcast capture helper (replicates Scheduler._broadcastItemState logic)
 // ---------------------------------------------------------------------------
@@ -165,6 +172,9 @@ describe('hooks-lifecycle — pre_command_failed + action=fail', () => {
     expect(frame.frameType).toBe('item.state');
     expect((frame.payload as any).state.status).toBe('awaiting_retry');
     expect((frame.payload as any).state.retryCount).toBe(1);
+
+    // No session rows — pre command failed before any session was spawned
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('retry_count=1 → awaiting_retry with mode=fresh_with_failure_summary, retry_count=2', () => {
@@ -172,6 +182,8 @@ describe('hooks-lifecycle — pre_command_failed + action=fail', () => {
     const itemId = makeItemId();
     insertWorkflow(wfId);
     insertItem(itemId, wfId, 'stage1', { status: 'in_progress', phase: 'implement', retryCount: 1 });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     const result = applyItemTransition({
       db: pool,
@@ -185,9 +197,18 @@ describe('hooks-lifecycle — pre_command_failed + action=fail', () => {
       guardCtx: { preCommandAction: 'fail' },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(result.newState).toBe('awaiting_retry');
     expect(result.retryMode).toBe('fresh_with_failure_summary');
     expect(getItem(itemId)?.retry_count).toBe(2);
+    expect(getItem(itemId)?.status).toBe('awaiting_retry');
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('awaiting_retry');
+    expect((frames[0].payload as any).state.retryCount).toBe(2);
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('retry_count=2 → awaiting_user (ladder exhausted at awaiting_user sentinel)', () => {
@@ -195,6 +216,8 @@ describe('hooks-lifecycle — pre_command_failed + action=fail', () => {
     const itemId = makeItemId();
     insertWorkflow(wfId);
     insertItem(itemId, wfId, 'stage1', { status: 'in_progress', phase: 'implement', retryCount: 2 });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     const result = applyItemTransition({
       db: pool,
@@ -208,8 +231,15 @@ describe('hooks-lifecycle — pre_command_failed + action=fail', () => {
       guardCtx: { preCommandAction: 'fail' },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(result.newState).toBe('awaiting_user');
     expect(getItem(itemId)?.status).toBe('awaiting_user');
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('awaiting_user');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });
 
@@ -247,6 +277,8 @@ describe('hooks-lifecycle — pre_command_failed + action=stop-and-ask', () => {
 
     expect((frames[0].payload as any).state.status).toBe('awaiting_user');
     expect((frames[0].payload as any).state.retryCount).toBe(0);
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });
 
@@ -282,6 +314,8 @@ describe('hooks-lifecycle — post_command_action=stop → abandoned', () => {
     expect(getItem(itemId)?.retry_count).toBe(0);
 
     expect((frames[0].payload as any).state.status).toBe('abandoned');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });
 
@@ -319,6 +353,8 @@ describe('hooks-lifecycle — session_fail after prior success', () => {
 
     expect((frames[0].payload as any).state.status).toBe('awaiting_retry');
     expect((frames[0].payload as any).state.currentPhase).toBe('implement');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 
   it('session_fail (policy) → awaiting_user, current_phase unchanged', () => {
@@ -326,6 +362,8 @@ describe('hooks-lifecycle — session_fail after prior success', () => {
     const itemId = makeItemId();
     insertWorkflow(wfId);
     insertItem(itemId, wfId, 'stage1', { status: 'in_progress', phase: 'implement', retryCount: 0 });
+
+    const { frames, simulateBroadcast } = makeBroadcastCapture();
 
     const result = applyItemTransition({
       db: pool,
@@ -339,8 +377,16 @@ describe('hooks-lifecycle — session_fail after prior success', () => {
       guardCtx: { classifierResult: 'policy' },
     });
 
+    simulateBroadcast(wfId, itemId, 'stage1', result);
+
     expect(result.newState).toBe('awaiting_user');
     expect(getItem(itemId)?.current_phase).toBe('implement');
     expect(getItem(itemId)?.retry_count).toBe(0);
+
+    expect(frames).toHaveLength(1);
+    expect((frames[0].payload as any).state.status).toBe('awaiting_user');
+    expect((frames[0].payload as any).state.currentPhase).toBe('implement');
+
+    expect(countSessions(wfId)).toBe(0);
   });
 });
