@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:contract": "tsx scripts/check-api-contract.js",
     "typecheck": "tsc --noEmit && pnpm --filter web typecheck",
     "lint": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
