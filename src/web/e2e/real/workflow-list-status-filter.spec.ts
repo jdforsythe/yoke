@@ -49,18 +49,19 @@ test.describe('fix-status-vocabulary — status filter real backend', () => {
     // Verify "All" shows every seeded workflow.
     await expect(page.getByLabel('Filter by status')).toHaveValue('all');
     for (const status of WORKFLOW_STATUS_VALUES) {
-      await expect(page.getByText(`Status-${status}`)).toBeVisible();
+      // exact:true prevents 'Status-pending' from matching 'Status-pending_stage_approval'.
+      await expect(page.getByText(`Status-${status}`, { exact: true })).toBeVisible();
     }
 
     // For each status, select the filter and assert only the matching row appears.
     for (const status of WORKFLOW_STATUS_VALUES) {
       await page.getByLabel('Filter by status').selectOption(status);
-      await expect(page.getByText(`Status-${status}`)).toBeVisible();
+      await expect(page.getByText(`Status-${status}`, { exact: true })).toBeVisible();
 
       // All other status rows must not be visible.
       for (const other of WORKFLOW_STATUS_VALUES) {
         if (other !== status) {
-          await expect(page.getByText(`Status-${other}`)).not.toBeVisible();
+          await expect(page.getByText(`Status-${other}`, { exact: true })).not.toBeVisible();
         }
       }
     }
@@ -68,7 +69,7 @@ test.describe('fix-status-vocabulary — status filter real backend', () => {
     // Return to "All" and all rows are visible again.
     await page.getByLabel('Filter by status').selectOption('all');
     for (const status of WORKFLOW_STATUS_VALUES) {
-      await expect(page.getByText(`Status-${status}`)).toBeVisible();
+      await expect(page.getByText(`Status-${status}`, { exact: true })).toBeVisible();
     }
   });
 
