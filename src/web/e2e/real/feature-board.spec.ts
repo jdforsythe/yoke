@@ -77,8 +77,9 @@ test.describe('feature-board regressions — real backend', () => {
     // "Show data" button confirms the fetch succeeded and data is cached.
     await expect(page.getByRole('button', { name: /show data/i })).toBeVisible({ timeout: 3000 });
 
-    // Give any rogue re-renders a moment to fire additional fetches.
-    await page.waitForTimeout(500);
+    // Wait for the network to settle — no new connections for 500ms confirms
+    // no rogue re-renders triggered a second fetch.
+    await page.waitForLoadState('networkidle');
 
     expect(dataFetchCount).toBe(1);
   });
