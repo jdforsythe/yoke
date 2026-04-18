@@ -280,7 +280,6 @@ export function WorkflowList() {
             <button
               className="w-full text-left px-3 py-2.5"
               onClick={() => {
-                getClient().subscribe(row.id);
                 navigate(`/workflow/${row.id}`);
               }}
             >

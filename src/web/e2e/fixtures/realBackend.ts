@@ -31,6 +31,8 @@ import type { DbPool } from '../../../server/storage/db.js';
 export interface BackendHandle {
   /** Base URL of the vite preview server (for page.goto('/')). */
   baseURL: string;
+  /** URL of the real Fastify backend (http://127.0.0.1:PORT). */
+  backendUrl: string;
   /** Writer DbPool — use db.writer to seed rows before page.goto(). */
   db: DbPool;
 }
@@ -98,13 +100,25 @@ export const test = base.extend<{ backend: BackendHandle }>({
         }
       });
 
-      // Proxy the WebSocket /stream connection to the real backend.
-      // connectToServer() sets up bidirectional forwarding automatically.
-      await page.routeWebSocket('**/stream', (ws) => {
-        ws.connectToServer(`${wsBackendUrl}/stream`);
-      });
+      // Redirect the frontend's WebSocket /stream connection to the real backend.
+      // page.routeWebSocket + connectToServer doesn't reliably reach our in-process
+      // Fastify server in Playwright 1.59 (the vite preview server's proxy intercepts
+      // first). Instead, override the WebSocket constructor in the browser so that any
+      // connection to a /stream URL goes directly to the real backend port.
+      const wsTarget = `${wsBackendUrl}/stream`;
+      await page.addInitScript((target: string) => {
+        const OrigWS = globalThis.WebSocket;
+        class OverrideWS extends OrigWS {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            const urlStr = url.toString();
+            const resolved = urlStr.includes('/stream') ? target : urlStr;
+            super(resolved, protocols);
+          }
+        }
+        globalThis.WebSocket = OverrideWS as typeof WebSocket;
+      }, wsTarget);
 
-      await use({ baseURL: 'http://localhost:4173', db: handle.db });
+      await use({ baseURL: 'http://localhost:4173', backendUrl: backendUrl, db: handle.db });
     } finally {
       // Always clean up — even if the test threw. Order matters:
       // close() stops the scheduler (noop here) and fastify, then closes the pool.
