@@ -145,6 +145,26 @@ function mapUsageRow(row: DbUsageRow) {
   };
 }
 
+interface DbTimeseriesRow {
+  bucket: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  session_count: number;
+}
+
+function mapTimeseriesRow(row: DbTimeseriesRow) {
+  return {
+    bucket: row.bucket,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens,
+    cacheReadInputTokens: row.cache_read_input_tokens,
+    sessionCount: row.session_count,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -481,7 +501,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         )
         .all(id);
 
-      return reply.send({ workflowId: id, bucket, rows });
+      return reply.send({ workflowId: id, bucket, rows: (rows as DbTimeseriesRow[]).map(mapTimeseriesRow) });
     },
   );
 
