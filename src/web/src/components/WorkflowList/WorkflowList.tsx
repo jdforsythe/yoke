@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import type { WorkflowIndexUpdatePayload, ServerFrame } from '@/ws/types';
 import type { WorkflowRow } from '@shared/types/workflow';
+import { WORKFLOW_STATUS_VALUES, WORKFLOW_STATUS_LABELS } from '@shared/types/workflow';
 
 // ---------------------------------------------------------------------------
 // Archive helper
@@ -30,30 +31,24 @@ interface WorkflowsApiResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const STATUS_OPTIONS = [
-  'all',
-  'active',
-  'paused',
-  'complete',
-  'failed',
-  'cancelled',
-] as const;
+const STATUS_OPTIONS = ['all', ...WORKFLOW_STATUS_VALUES] as const;
+
+const STATUS_CHIP_CLASS: Record<string, string> = {
+  pending: 'bg-gray-500/20 text-gray-400',
+  in_progress: 'bg-blue-500/20 text-blue-300',
+  pending_stage_approval: 'bg-yellow-500/20 text-yellow-300',
+  completed: 'bg-green-500/20 text-green-300',
+  completed_with_blocked: 'bg-orange-500/20 text-orange-300',
+  abandoned: 'bg-red-500/20 text-red-300',
+};
 
 function statusChipClass(status: string): string {
-  switch (status) {
-    case 'active':
-    case 'in_progress':
-      return 'bg-blue-500/20 text-blue-300';
-    case 'paused':
-      return 'bg-yellow-500/20 text-yellow-300';
-    case 'complete':
-      return 'bg-green-500/20 text-green-300';
-    case 'failed':
-      return 'bg-red-500/20 text-red-300';
-    case 'cancelled':
-    default:
-      return 'bg-gray-500/20 text-gray-400';
-  }
+  return STATUS_CHIP_CLASS[status] ?? 'bg-gray-500/20 text-gray-400';
+}
+
+function statusLabel(status: string): string {
+  if (status === 'all') return 'All';
+  return WORKFLOW_STATUS_LABELS[status as keyof typeof WORKFLOW_STATUS_LABELS] ?? status;
 }
 
 function relativeTime(iso: string): string {
@@ -238,7 +233,7 @@ export function WorkflowList() {
         >
           {STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {s.charAt(0).toUpperCase() + s.slice(1)}
+              {statusLabel(s)}
             </option>
           ))}
         </select>

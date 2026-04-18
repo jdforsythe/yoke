@@ -14,6 +14,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type ServerHandle } from '../../src/server/api/server.js';
 import type { WorkflowRow } from '../../src/shared/types/workflow.js';
+import { WORKFLOW_STATUS_VALUES } from '../../src/shared/types/workflow.js';
 import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 
@@ -135,6 +136,16 @@ describe('GET /api/workflows — camelCase response shape', () => {
     expect(row.unreadEvents).toBe(0);
   });
 
+  it('status field value matches the WorkflowStatus union', async () => {
+    for (const status of WORKFLOW_STATUS_VALUES) {
+      insertWorkflow({ name: `shape-${status}`, status });
+      const { body } = await getWorkflows(`?status=${status}`);
+      const rows = (body as { workflows: WorkflowRow[] }).workflows;
+      expect(rows.length).toBeGreaterThanOrEqual(1);
+      expect(rows[rows.length - 1]!.status).toBe(status);
+    }
+  });
+
   it('nextBefore cursor uses camelCase createdAt value (keyset pagination)', async () => {
     // Insert 3 workflows with distinct timestamps.
     const t0 = '2024-01-01T00:00:00';
@@ -157,5 +168,43 @@ describe('GET /api/workflows — camelCase response shape', () => {
     const page2 = await getWorkflows(`?limit=2&before=${encodeURIComponent(typed.nextBefore!)}`);
     const page2Rows = (page2.body as { workflows: WorkflowRow[] }).workflows;
     expect(page2Rows.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Status filter — every WorkflowStatus value (regression for fix-status-vocabulary)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/workflows — status filter coverage', () => {
+  it('covers every WorkflowStatus value: each filter returns only matching rows', async () => {
+    // Seed exactly one workflow per status.
+    for (const status of WORKFLOW_STATUS_VALUES) {
+      insertWorkflow({ name: `wf-${status}`, status });
+    }
+
+    for (const status of WORKFLOW_STATUS_VALUES) {
+      const { statusCode, body } = await getWorkflows(`?status=${status}`);
+      expect(statusCode).toBe(200);
+      const rows = (body as { workflows: WorkflowRow[] }).workflows;
+      // Every returned row must have the requested status.
+      for (const row of rows) {
+        expect(row.status).toBe(status);
+      }
+      // At least one matching row must exist.
+      expect(rows.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('no ?status param returns all statuses', async () => {
+    for (const status of WORKFLOW_STATUS_VALUES) {
+      insertWorkflow({ name: `all-${status}`, status });
+    }
+
+    const { body } = await getWorkflows();
+    const rows = (body as { workflows: WorkflowRow[] }).workflows;
+    const returnedStatuses = new Set(rows.map((r) => r.status));
+    for (const status of WORKFLOW_STATUS_VALUES) {
+      expect(returnedStatuses.has(status)).toBe(true);
+    }
   });
 });
