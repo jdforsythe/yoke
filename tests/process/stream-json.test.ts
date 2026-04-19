@@ -119,8 +119,8 @@ describe('Default mode — capture-default-mode.jsonl (AC-5)', () => {
     expect(thinking.length).toBeGreaterThanOrEqual(1);
     const t = thinking[0];
     expect(t.final).toBe(true);
-    expect(typeof t.thinkingDelta).toBe('string');
-    expect(t.thinkingDelta.length).toBeGreaterThan(0);
+    expect(typeof t.textDelta).toBe('string');
+    expect(t.textDelta.length).toBeGreaterThan(0);
     expect(typeof t.blockId).toBe('number');
   });
 
@@ -507,11 +507,11 @@ describe('Streaming mode — block type tracking', () => {
     );
     const thinking = events.filter((e): e is StreamThinkingEvent => e.type === 'stream.thinking');
     expect(thinking.length).toBe(3); // 2 deltas + 1 final
-    expect(thinking[0].thinkingDelta).toBe('first thought');
+    expect(thinking[0].textDelta).toBe('first thought');
     expect(thinking[0].final).toBe(false);
-    expect(thinking[1].thinkingDelta).toBe('second thought');
+    expect(thinking[1].textDelta).toBe('second thought');
     expect(thinking[1].final).toBe(false);
-    expect(thinking[2].thinkingDelta).toBe('');
+    expect(thinking[2].textDelta).toBe('');
     expect(thinking[2].final).toBe(true);
   });
 
@@ -532,7 +532,7 @@ describe('Streaming mode — block type tracking', () => {
     );
     expect(texts[0].textDelta).toBe('Hello');
     expect(texts[0].blockId).toBe(1);
-    expect(thinkings[0].thinkingDelta).toBe('I think...');
+    expect(thinkings[0].textDelta).toBe('I think...');
     expect(thinkings[0].blockId).toBe(0);
     // Final events
     expect(texts[texts.length - 1].final).toBe(true);

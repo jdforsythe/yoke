@@ -52,7 +52,7 @@ export interface StreamTextEvent {
 export interface StreamThinkingEvent {
   type: 'stream.thinking';
   blockId: number;
-  thinkingDelta: string;
+  textDelta: string;
   final: boolean;
 }
 
@@ -331,7 +331,7 @@ export class StreamJsonParser extends EventEmitter {
         const ev: StreamThinkingEvent = {
           type: 'stream.thinking',
           blockId: this._nextBlockId++,
-          thinkingDelta: typeof b['thinking'] === 'string' ? b['thinking'] : '',
+          textDelta: typeof b['thinking'] === 'string' ? b['thinking'] : '',
           final: true,
         };
         this.emit('stream.thinking', ev);
@@ -417,7 +417,7 @@ export class StreamJsonParser extends EventEmitter {
           const thinkEv: StreamThinkingEvent = {
             type: 'stream.thinking',
             blockId: index,
-            thinkingDelta: typeof d['thinking'] === 'string' ? d['thinking'] : '',
+            textDelta: typeof d['thinking'] === 'string' ? d['thinking'] : '',
             final: false,
           };
           this.emit('stream.thinking', thinkEv);
@@ -445,7 +445,7 @@ export class StreamJsonParser extends EventEmitter {
           const finalEv: StreamThinkingEvent = {
             type: 'stream.thinking',
             blockId: index,
-            thinkingDelta: '',
+            textDelta: '',
             final: true,
           };
           this.emit('stream.thinking', finalEv);

@@ -1,0 +1,170 @@
+version: "1"
+
+project:
+  name: yoke
+
+# ---------------------------------------------------------------------------
+# Pipeline — ε self-hosting: drive the dashboard via the v1 harness.
+#
+# dashboard-features.json is a pure spec: feature id, description, AC/RC,
+# dependencies. It does NOT carry completion state. SQLite is the sole
+# source of truth for item status. If you need to retry or discard work,
+# do it via the DB (or delete feature entries from the manifest if you
+# want them dropped from the workflow entirely).
+# ---------------------------------------------------------------------------
+
+pipeline:
+  stages:
+    - id: plan
+      run: once
+      phases:
+        - planner
+
+    - id: dashboard-features
+      run: per-item
+      items_from: docs/idea/dashboard-features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
+      phases:
+        - implement
+        - review
+
+# ---------------------------------------------------------------------------
+# Phase definitions
+# ---------------------------------------------------------------------------
+
+phases:
+  planner:
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-opus-4-6"
+    prompt_template: prompts/plan-dashboard.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-features
+        run: ["node", "scripts/check-features-json.js", "docs/idea/dashboard-features.json"]
+        timeout_s: 15
+        actions:
+          "0": continue
+          "*":
+            goto: planner
+            max_revisits: 3
+
+  implement:
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/self-host-implement.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      # check-handoff runs first: it's cheap (<1s) and catches corrupted
+      # handoff.json output from the agent before the expensive test suite,
+      # ensuring a tainted session fails fast with the agent's context intact.
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+      - name: run-tests
+        run: ["pnpm", "test"]
+        timeout_s: 300
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+      - name: run-typecheck
+        run: ["pnpm", "typecheck"]
+        timeout_s: 60
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  review:
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/self-host-review.md
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+      - name: check-verdict
+        run: ["node", "scripts/check-review-verdict.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "1":
+            goto: implement
+            max_revisits: 3
+          "*": continue
+
+# ---------------------------------------------------------------------------
+# Worktrees
+#
+# Bootstrap runs pnpm install in the worktree so each worktree gets its own
+# isolated node_modules. This avoids cross-contamination between the main
+# workspace and the worktree (e.g. missing direct deps not in the worktree's
+# package.json still being resolvable via the main workspace's store).
+# ---------------------------------------------------------------------------
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: yoke/
+  bootstrap:
+    commands:
+      - "pnpm install"
+
+# ---------------------------------------------------------------------------
+# Runtime / operational
+# ---------------------------------------------------------------------------
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

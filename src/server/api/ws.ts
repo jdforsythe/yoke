@@ -417,7 +417,8 @@ function handleSubscribe(
   // Load snapshot from read-only SQLite connection (RC: no writes from API).
   const snapshot = buildSnapshot(ctx.db, workflowId);
   if (!snapshot) {
-    send(socket, makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found`));
+    process.stdout.write(`[MAIN_REPO_WS] NOT_FOUND for ${workflowId}\n`);
+    send(socket, makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found [MAIN_REPO]`));
     return;
   }
 
