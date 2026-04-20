@@ -1,3 +1,7 @@
+// Approach: scoped include (Option 2 from r3-01 spec).
+// src/web is built independently via `pnpm --filter web build` (Vite + web tsconfig with jsx/DOM).
+// Including src/web here would require JSX and DOM lib settings incompatible with the server build.
+// Scoping include to server/cli/shared avoids that conflict without needing an exclude workaround.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -5,6 +9,6 @@
     "outDir": "dist",
     "declaration": false
   },
-  "include": ["src/**/*"],
-  "exclude": ["tests/**/*", "vitest.config.ts", "src/web"]
+  "include": ["src/server/**/*", "src/cli/**/*", "src/shared/**/*"],
+  "exclude": ["tests/**/*", "vitest.config.ts"]
 }
