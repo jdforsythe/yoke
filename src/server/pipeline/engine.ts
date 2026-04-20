@@ -288,6 +288,9 @@ const PENDING_ATTENTION_LABELS: Record<string, string> = {
   'insert pending_attention{kind=seed_failed}': 'seed_failed',
 };
 
+/** All attention kinds the engine can emit. Exported for UI classification tests. */
+export const KIND_MAP: ReadonlySet<string> = new Set(Object.values(PENDING_ATTENTION_LABELS));
+
 function pendingAttentionKindFromEffects(
   sideEffects: readonly string[],
 ): string | null {
@@ -865,8 +868,8 @@ function applyPendingSideEffects(
 ): number | null {
   const kind = pendingAttentionKindFromEffects(sideEffects);
   if (kind) {
-    const payload = customPayload !== undefined
-      ? customPayload
+    const payload: Record<string, unknown> = customPayload !== undefined
+      ? (customPayload as Record<string, unknown>)
       : { item_id: itemId, stage, phase };
     return writePendingAttention(db, workflowId, kind, payload, now);
   }
