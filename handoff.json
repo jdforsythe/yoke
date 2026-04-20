@@ -1210,6 +1210,36 @@
         "The new test calls ingestWorkflow twice (once with deps, once without) against the same config — the second call is a resume path because the first left a live workflow. This is intentional: it exercises both the idle-state path and the resume path with the full github config.",
         ".yoke.yml and .yoke-round-3.yml were already correct in the worktree — they were modified in a prior session (not this one). If a future session resets those files, the ACs will break."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "r3-01-tsconfig-fix",
+      "ts": "2026-04-20T22:00:00Z",
+      "note": "Implemented r3-01 (tsconfig.build.json fix). Chose Option 2: scoped include. Changed tsconfig.build.json from include:['src/**/*'] + exclude:[...'src/web'] to include:['src/server/**/*','src/cli/**/*','src/shared/**/*'] with exclude limited to tests and vitest config. Added a four-line top-of-file comment documenting the decision and rationale (JSX/DOM incompatibility between web and server builds). All three required commands pass: `pnpm build` (tsc -p tsconfig.build.json exits 0), `pnpm --filter web build` (vite build exits 0), and `pnpm typecheck` (root tsc + web tsc both exit 0). No regressions. Single-file commit.",
+      "intended_files": [
+        "tsconfig.build.json"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "If a new top-level directory is added under src/ (e.g. src/workers/) that should be included in the server build, it must be explicitly added to tsconfig.build.json include. The old src/**/* pattern would have caught it automatically.",
+        "The JSON comment lines at the top of tsconfig.build.json are technically not valid JSON. TypeScript's tsconfig parser accepts JavaScript-style comments (JSONC), but tools that parse the file as strict JSON (e.g. some editors or lint tools) may warn. This is a known TypeScript convention and acceptable."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "fffdfd42-3615-4aef-9fd8-5fc2f9f93e8f",
+      "ts": "2026-04-20T16:30:00Z",
+      "note": "Implemented r3-02 by choosing the 'document' path (workflow-scoped retry, no per-item endpoint added). Added a 9-line inline comment in ControlMatrix.tsx near the Retry button ACTION_META entry explaining that POST /api/workflows/:id/retry is intentionally workflow-scoped, that per-item retry was deliberately omitted during r3-02, and what it would take to add per-item retry in the future (new endpoint + requiresItemId: true). Created tests/api/workflows-retry.test.ts with 4 tests covering the chosen path end-to-end: 404 for unknown workflow, 200 none_awaiting when no awaiting_user items exist, 200 retried with correct item list and DB state, and only awaiting_user items are transitioned (other statuses untouched). Uses real Fastify + real SQLite + makeRetryItemsFn factory. All 1504 Vitest tests pass; typecheck exits 0.",
+      "intended_files": [
+        "src/web/src/components/ControlMatrix/ControlMatrix.tsx",
+        "tests/api/workflows-retry.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The comment references the per-item retry endpoint path (/api/workflows/:id/items/:itemId/retry) as a future extension point. If a future implementer adds this endpoint, they should remove the 'deliberately not implemented' note and update the comment to reflect both options coexisting."
+      ]
     }
   ]
 }
