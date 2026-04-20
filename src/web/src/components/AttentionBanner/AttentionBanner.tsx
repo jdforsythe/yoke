@@ -5,15 +5,20 @@
  * cleared when the server sends a workflow.update removing them from
  * pendingAttention. Acknowledgement uses POST /api/workflows/:id/attention/:aid/ack.
  *
- * Optimistic removal: item is hidden immediately; if the POST fails it
- * reappears. Badge count in the AppShell bell is kept in sync by the
- * AppShell's own notice listener (separate concern).
+ * For retryable kinds the button is labelled 'Resume': ack fires first,
+ * then a fire-and-forget POST /api/workflows/:id/retry unblocks the item.
+ * For non-retryable kinds the button is labelled 'Dismiss'.
+ *
+ * Optimistic removal: item is hidden on ack success (not retry success).
+ * Retry returning none_awaiting is silently ignored.
  *
  * Renders below CrashRecoveryBanner via layout order (no z-index tricks).
  */
 
 import { useState, useEffect, useRef } from 'react';
 import type { PendingAttention } from '@/ws/types';
+export { RETRYABLE_KINDS } from './attentionKinds.js';
+import { RETRYABLE_KINDS } from './attentionKinds.js';
 
 interface Props {
   workflowId: string;
@@ -69,19 +74,25 @@ export function AttentionBanner({ workflowId, items, deepLinkedAttentionId }: Pr
 
   if (visible.length === 0) return null;
 
-  async function acknowledge(item: PendingAttention) {
-    // Show spinner on button while POST is in-flight.
+  async function handleClick(item: PendingAttention) {
+    const isRetryable = RETRYABLE_KINDS.has(item.kind);
     setPendingAck((prev) => new Set([...prev, item.id]));
     try {
-      const res = await fetch(
+      const ackRes = await fetch(
         `/api/workflows/${encodeURIComponent(workflowId)}/attention/${item.id}/ack`,
         { method: 'POST' },
       );
-      if (res.ok) {
-        // Optimistic removal: hide item without waiting for WS workflow.update.
-        setOptimisticHidden((prev) => new Set([...prev, item.id]));
+      if (!ackRes.ok) return; // ack failed — skip retry, item stays visible
+
+      // Optimistic removal on ack success (not retry success).
+      setOptimisticHidden((prev) => new Set([...prev, item.id]));
+
+      if (isRetryable) {
+        // Fire-and-forget: none_awaiting and other non-2xx responses are ignored.
+        void fetch(`/api/workflows/${encodeURIComponent(workflowId)}/retry`, {
+          method: 'POST',
+        });
       }
-      // On !res.ok: remove from pendingAck (finally), item stays visible (reappears).
     } catch {
       // Network failure — spinner removed, item stays visible.
     } finally {
@@ -99,38 +110,45 @@ export function AttentionBanner({ workflowId, items, deepLinkedAttentionId }: Pr
       aria-label="Attention required"
       className="shrink-0 border-b border-amber-800/50"
     >
-      {visible.map((item) => (
-        <div
-          key={item.id}
-          id={`attention-item-${item.id}`}
-          data-highlight={highlightedIds.has(item.id) ? 'true' : 'false'}
-          className="flex items-start gap-3 px-4 py-2.5 bg-amber-950/40 border-b border-amber-900/30 last:border-b-0 data-[highlight=true]:animate-pulse"
-        >
-          <span className="text-amber-400 shrink-0" aria-hidden>
-            🔔
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-amber-200">{item.kind}</p>
-            {item.payload !== null && item.payload !== undefined && (
-              <p className="text-xs text-amber-300/70 mt-0.5 truncate">
-                {typeof item.payload === 'string'
-                  ? item.payload
-                  : JSON.stringify(item.payload)}
-              </p>
-            )}
-            <p className="text-[10px] text-amber-500 mt-0.5">
-              {new Date(item.createdAt).toLocaleString()}
-            </p>
-          </div>
-          <button
-            onClick={() => void acknowledge(item)}
-            disabled={pendingAck.has(item.id)}
-            className="shrink-0 px-2.5 py-1 text-xs font-medium bg-amber-700 hover:bg-amber-600 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded transition-colors"
+      {visible.map((item) => {
+        const isRetryable = RETRYABLE_KINDS.has(item.kind);
+        const isPending = pendingAck.has(item.id);
+        const label = isPending
+          ? isRetryable ? 'Resuming…' : 'Dismissing…'
+          : isRetryable ? 'Resume' : 'Dismiss';
+        return (
+          <div
+            key={item.id}
+            id={`attention-item-${item.id}`}
+            data-highlight={highlightedIds.has(item.id) ? 'true' : 'false'}
+            className="flex items-start gap-3 px-4 py-2.5 bg-amber-950/40 border-b border-amber-900/30 last:border-b-0 data-[highlight=true]:animate-pulse"
           >
-            {pendingAck.has(item.id) ? 'Acknowledging…' : 'Acknowledge'}
-          </button>
-        </div>
-      ))}
+            <span className="text-amber-400 shrink-0" aria-hidden>
+              🔔
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-amber-200">{item.kind}</p>
+              {item.payload !== null && item.payload !== undefined && (
+                <p className="text-xs text-amber-300/70 mt-0.5 truncate">
+                  {typeof item.payload === 'string'
+                    ? item.payload
+                    : JSON.stringify(item.payload)}
+                </p>
+              )}
+              <p className="text-[10px] text-amber-500 mt-0.5">
+                {new Date(item.createdAt).toLocaleString()}
+              </p>
+            </div>
+            <button
+              onClick={() => void handleClick(item)}
+              disabled={isPending}
+              className="shrink-0 px-2.5 py-1 text-xs font-medium bg-amber-700 hover:bg-amber-600 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded transition-colors"
+            >
+              {label}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
