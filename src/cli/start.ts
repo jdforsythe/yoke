@@ -40,6 +40,7 @@ import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
 import { makeRetryItemsFn } from '../server/pipeline/retry-items.js';
 import { makeControlExecutor } from '../server/pipeline/control-executor.js';
 import { makeArchiveWorkflowFn } from '../server/pipeline/archive-workflow.js';
+import { makeCreatePrExecutorFn } from '../server/pipeline/create-pr-executor.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
@@ -298,6 +299,127 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     (wfId, frameType, payload) =>
       state.registry.broadcast(wfId, null, frameType, payload),
     (wfId) => scheduler.scheduleIndexUpdate(wfId),
+  );
+
+  // Wire the createPr executor: POST /api/workflows/:id/github/create-pr.
+  // The production createPrFn mirrors the scheduler's _triggerAutoPr path:
+  // read workflow → push branch → create PR via service.ts.
+  callbacks.createPrExecutor = makeCreatePrExecutorFn(
+    db.writer,
+    async (workflowId: string) => {
+      const wf = db.writer
+        .prepare('SELECT name, branch_name, worktree_path FROM workflows WHERE id = ?')
+        .get(workflowId) as
+        | { name: string; branch_name: string | null; worktree_path: string | null }
+        | undefined;
+      if (!wf?.branch_name || !wf?.worktree_path) {
+        throw new Error(`workflow ${workflowId}: missing branch_name or worktree_path`);
+      }
+
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execAsync = promisify(execFile);
+
+      // Resolve owner/repo from the remote URL.
+      let ownerRepo: { owner: string; repo: string } | null = null;
+      try {
+        const { stdout } = await execAsync(
+          'git',
+          ['-C', wf.worktree_path, 'remote', 'get-url', 'origin'],
+          { timeout: 10_000 },
+        );
+        const { parseGitRemoteUrl } = await import('../server/github/remote-parse.js');
+        ownerRepo = parseGitRemoteUrl(stdout.trim());
+      } catch {
+        // falls through to error below
+      }
+      if (!ownerRepo) {
+        throw new Error(`workflow ${workflowId}: could not resolve owner/repo from remote`);
+      }
+
+      // Build PR body.
+      let recentCommits: string[] = [];
+      try {
+        const { stdout } = await execAsync(
+          'git',
+          ['-C', wf.worktree_path, 'log', '--format=%s', '-10'],
+          { timeout: 10_000 },
+        );
+        recentCommits = stdout.trim().split('\n').filter(Boolean).slice(0, 10);
+      } catch {
+        // ignore
+      }
+      let lastHandoffNote: string | null = null;
+      try {
+        const handoffPath = path.join(config.configDir, 'handoff.json');
+        if (fs.existsSync(handoffPath)) {
+          const raw = fs.readFileSync(handoffPath, 'utf8');
+          const data = JSON.parse(raw) as { entries?: unknown[] };
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          const last = [...entries].reverse().find((e: unknown) => {
+            return typeof e === 'object' && e !== null && !(e as Record<string, unknown>)['harness_injected'];
+          });
+          if (last) {
+            const note = (last as Record<string, unknown>)['note'];
+            lastHandoffNote = typeof note === 'string' ? note : null;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      const { buildPrBody } = await import('../server/github/pr-body.js');
+      const body = buildPrBody({ workflowName: wf.name, recentCommits, lastHandoffNote });
+
+      // Push branch.
+      const { pushBranch, makeProductionPushDeps } = await import('../server/github/push.js');
+      const pushDeps = makeProductionPushDeps();
+      const pushResult = await pushBranch(wf.branch_name, wf.worktree_path, pushDeps);
+      if (!pushResult.ok) {
+        const { writeGithubState } = await import('../server/github/service.js');
+        writeGithubState(
+          db,
+          workflowId,
+          'failed',
+          { error: { kind: 'api_failed', message: `git push failed: ${pushResult.rawStderr}` } },
+          (wfId, frameType, payload) => state.registry.broadcast(wfId, null, frameType, payload),
+        );
+        throw new Error(`git push failed: ${pushResult.rawStderr}`);
+      }
+
+      // Create PR.
+      const { createPr } = await import('../server/github/service.js');
+      const { makeProductionAuthDeps } = await import('../server/github/auth.js');
+      const { makeOctokitAdapter, makeGhCliAdapter } = await import('../server/github/pr.js');
+      const ghBroadcast = (wfId: string, frameType: 'workflow.update', payload: unknown) =>
+        state.registry.broadcast(wfId, null, frameType, payload);
+      const result = await createPr(
+        {
+          workflowId,
+          branchName: wf.branch_name,
+          owner: ownerRepo.owner,
+          repo: ownerRepo.repo,
+          base: config.github?.pr_target_branch ?? 'main',
+          title: wf.name,
+          body,
+        },
+        {
+          db,
+          authDeps: makeProductionAuthDeps(),
+          pushGuardDeps: { execGit: pushDeps.execGit },
+          octokitAdapter: makeOctokitAdapter(),
+          ghCliAdapter: makeGhCliAdapter(),
+          broadcast: ghBroadcast,
+        },
+      );
+      if (!result.ok) {
+        throw new Error(
+          result.error.kind === 'api_failed'
+            ? result.error.message
+            : result.error.attempts.map((a) => `${a.source}: ${a.reason}`).join('; '),
+        );
+      }
+      return { prNumber: result.prNumber, prUrl: result.prUrl, usedPath: result.usedPath };
+    },
   );
 
   if (!opts.noScheduler) {

@@ -4,16 +4,24 @@
  * All six status values are handled exhaustively:
  *   disabled    → hidden (returns null)
  *   unconfigured → greyed out with setup hint tooltip
- *   idle        → "GitHub" ready indicator
- *   creating    → spinner
+ *   idle        → "GitHub" indicator; "Create PR" button when workflow is terminal
+ *   creating    → spinner ("Creating PR…")
  *   created     → clickable PR link with state badge
- *   failed      → error text (truncated with tooltip)
+ *   failed      → error text; "Create PR" retry button when workflow is terminal
  *
- * State updates arrive via workflow.update frames; this component is
- * read-only and makes no HTTP requests.
+ * State updates arrive via workflow.update frames; the button POST triggers
+ * the executor which writes github_state='creating' and broadcasts the update.
+ *
+ * Re-exports shouldShowCreatePrButton for unit tests (pure function of
+ * {workflowStatus, githubState.status} with no React dependency).
  */
 
+import { useState } from 'react';
 import type { GithubState } from '@/ws/types';
+import { shouldShowCreatePrButton } from './githubButtonRules';
+
+// Re-export so callers and tests can import from a single place.
+export { shouldShowCreatePrButton } from './githubButtonRules';
 
 function relativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -27,6 +35,10 @@ function relativeTime(iso: string): string {
 }
 
 interface Props {
+  /** Workflow UUID — needed to POST create-pr. */
+  workflowId: string;
+  /** Current workflow status — gates 'Create PR' button visibility. */
+  workflowStatus: string;
   githubState: GithubState | null;
 }
 
@@ -43,8 +55,27 @@ function prStateChip(prState: GithubState['prState']) {
   }
 }
 
-export function GithubButton({ githubState }: Props) {
+export function GithubButton({ workflowId, workflowStatus, githubState }: Props) {
+  const [inFlight, setInFlight] = useState(false);
+
   if (!githubState) return null;
+
+  async function handleCreatePr() {
+    if (inFlight) return;
+    setInFlight(true);
+    try {
+      await fetch(
+        `/api/workflows/${encodeURIComponent(workflowId)}/github/create-pr`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ commandId: crypto.randomUUID() }),
+        },
+      );
+    } finally {
+      setInFlight(false);
+    }
+  }
 
   switch (githubState.status) {
     case 'disabled':
@@ -61,6 +92,17 @@ export function GithubButton({ githubState }: Props) {
       );
 
     case 'idle':
+      if (shouldShowCreatePrButton(workflowStatus, 'idle')) {
+        return (
+          <button
+            onClick={() => void handleCreatePr()}
+            disabled={inFlight}
+            className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-60 disabled:cursor-not-allowed border border-blue-700/50 px-2 py-0.5 rounded transition-colors"
+          >
+            {inFlight ? 'Creating…' : 'Create PR'}
+          </button>
+        );
+      }
       return (
         <span className="text-xs text-gray-400 border border-gray-700 px-2 py-0.5 rounded">
           GitHub
@@ -94,6 +136,18 @@ export function GithubButton({ githubState }: Props) {
       );
 
     case 'failed':
+      if (shouldShowCreatePrButton(workflowStatus, 'failed')) {
+        return (
+          <button
+            onClick={() => void handleCreatePr()}
+            disabled={inFlight}
+            title={githubState.error ?? 'GitHub PR creation failed — click to retry'}
+            className="text-xs text-red-400 hover:text-red-300 disabled:opacity-60 disabled:cursor-not-allowed border border-red-800/50 px-2 py-0.5 rounded max-w-[160px] truncate transition-colors"
+          >
+            {inFlight ? 'Creating…' : 'Create PR'}
+          </button>
+        );
+      }
       return (
         <span
           title={githubState.error ?? 'GitHub PR creation failed'}
