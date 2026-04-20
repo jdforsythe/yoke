@@ -150,14 +150,33 @@ function insertWorkflow(id = 'wf-1', name = 'Test Workflow'): string {
   return id;
 }
 
-function insertSession(workflowId: string, sessionId = 'ses-1'): string {
+function insertSession(workflowId: string, sessionId = 'ses-1', itemId?: string): string {
+  if (itemId) {
+    db.writer
+      .prepare(
+        `INSERT INTO sessions (id, workflow_id, item_id, stage, phase, agent_profile, started_at, status)
+         VALUES (?, ?, ?, 'stage-1', 'phase-1', 'default', datetime('now'), 'running')`,
+      )
+      .run(sessionId, workflowId, itemId);
+  } else {
+    db.writer
+      .prepare(
+        `INSERT INTO sessions (id, workflow_id, stage, phase, agent_profile, started_at, status)
+         VALUES (?, ?, 'stage-1', 'phase-1', 'default', datetime('now'), 'running')`,
+      )
+      .run(sessionId, workflowId);
+  }
+  return sessionId;
+}
+
+function insertItem(workflowId: string, itemId = 'item-1'): string {
   db.writer
     .prepare(
-      `INSERT INTO sessions (id, workflow_id, stage, phase, agent_profile, started_at, status)
-       VALUES (?, ?, 'stage-1', 'phase-1', 'default', datetime('now'), 'running')`,
+      `INSERT INTO items (id, workflow_id, stage_id, data, status, updated_at)
+       VALUES (?, ?, 'stage-1', '{}', 'in_progress', datetime('now'))`,
     )
-    .run(sessionId, workflowId);
-  return sessionId;
+    .run(itemId, workflowId);
+  return itemId;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +284,32 @@ describe('subscribe → workflow.snapshot (AC-2)', () => {
 
     const sessions = (snap.payload as any).activeSessions as Array<{ sessionId: string }>;
     expect(sessions.some((x) => x.sessionId === 'ses-a')).toBe(true);
+  });
+
+  it('activeSessions entries carry itemId (null for sessions without item, string for item-scoped sessions)', async () => {
+    insertWorkflow('wf-3b');
+    const itemId = insertItem('wf-3b', 'item-x');
+    insertSession('wf-3b', 'ses-no-item');       // no item_id
+    insertSession('wf-3b', 'ses-with-item', itemId); // item_id = item-x
+
+    const s = await connectWs();
+    await s.next(); // hello
+
+    s.send({ v: 1, type: 'subscribe', id: 'sub-2b', payload: { workflowId: 'wf-3b' } });
+    const snap = await s.next();
+    s.close();
+
+    type SessionEntry = { sessionId: string; itemId: string | null };
+    const sessions = (snap.payload as any).activeSessions as SessionEntry[];
+
+    const noItem = sessions.find((x) => x.sessionId === 'ses-no-item');
+    const withItem = sessions.find((x) => x.sessionId === 'ses-with-item');
+
+    expect(noItem).toBeDefined();
+    expect(noItem!.itemId).toBeNull();
+
+    expect(withItem).toBeDefined();
+    expect(withItem!.itemId).toBe(itemId);
   });
 
   it('subscribe with sinceSeq and empty backfill buffer yields no extra frames', async () => {
