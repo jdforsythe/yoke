@@ -309,35 +309,28 @@ describe('auto-PR on workflow complete', () => {
   // AC-4: Abandoned workflow → no PR attempt
   // -------------------------------------------------------------------------
 
-  it('AC-4: item with status=abandoned → finalStatus=completed_with_blocked triggers PR; item with status=abandoned is still counted as blocked', async () => {
-    // When the only item has status='abandoned', hasBlocked=true → finalStatus=completed_with_blocked
-    // The spec says completed_with_blocked DOES trigger (AC-5), but "abandoned workflows" in AC-4
-    // means workflow.status='abandoned' (user-cancelled). _handleStageComplete is only called when
-    // items complete (stageComplete=true), so a user-cancelled workflow never reaches this path.
-    // We test the abandoned-item case: the item is abandoned → completed_with_blocked → PR IS triggered.
+  it('AC-4: workflow.status=abandoned → push and createPr are never called', () => {
+    // A user-cancelled (abandoned) workflow must never trigger auto-PR.
+    // _handleStageComplete reads the current workflow status before overriding it;
+    // if status is already 'abandoned', it returns early.
     const wfId = mkWf();
     const itemId = mkItem();
-    insertWorkflow(wfId, { branchName: 'yoke/br', worktreePath: tmpDir });
-    insertItem(itemId, wfId, { status: 'abandoned' });
+    insertWorkflow(wfId, { status: 'abandoned', branchName: 'yoke/br', worktreePath: tmpDir });
+    insertItem(itemId, wfId, { status: 'complete' });
 
-    const pushSpy = vi.fn().mockResolvedValue({ ok: true } as PushResult);
-    const createPrSpy = vi.fn().mockImplementation(async (input: CreatePrInput) => {
-      pool.writer.prepare(`UPDATE workflows SET github_state='created', github_pr_number=1 WHERE id=?`).run(input.workflowId);
-      return { ok: true, prNumber: 1, prUrl: 'https://github.com/t/r/pull/1', usedPath: 'gh_cli' } as CreatePrResult;
-    });
+    const pushSpy = vi.fn();
+    const createPrSpy = vi.fn();
 
-    const { scheduler, waitForAutoPr } = makeScheduler(
+    const { scheduler } = makeScheduler(
       makeConfig({ githubEnabled: true, autoPr: true }),
       { push: pushSpy, createPr: createPrSpy },
     );
 
     handleStageComplete(scheduler, wfId, 'stage1');
-    await waitForAutoPr();
 
-    // completed_with_blocked → PR IS triggered (AC-5 tested here as well)
-    expect(pushSpy).toHaveBeenCalledOnce();
-    expect(createPrSpy).toHaveBeenCalledOnce();
-  }, 10_000);
+    expect(pushSpy).not.toHaveBeenCalled();
+    expect(createPrSpy).not.toHaveBeenCalled();
+  });
 
   // -------------------------------------------------------------------------
   // AC-5: completed_with_blocked → PR IS attempted

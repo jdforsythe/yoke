@@ -2068,6 +2068,11 @@ export class Scheduler {
       applyStageAdvance(this.db, workflowId, nextStage.id);
     } else {
       // Last stage completed — determine final workflow status.
+      // Guard: if the workflow was user-cancelled (abandoned) before the last
+      // stage finished, do not override the abandoned status or trigger auto-PR.
+      const currentWf = this._readWorkflow(workflowId);
+      if (currentWf?.status === 'abandoned') return;
+
       const BLOCKED_STATUSES = ['blocked', 'abandoned'];
       const allItems = this._readWorkflowItems(workflowId);
       const hasBlocked = allItems.some((item) => BLOCKED_STATUSES.includes(item.status));
