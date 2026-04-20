@@ -786,6 +786,79 @@
         "Playwright sidebar-live-status.spec.ts relies on the 500 ms debounce firing in real time in the test process. If CI machines are slow, the 3s Playwright timeout may be tight — increase if flaky.",
         "WorkflowDetailRoute changes (r2-04 prep) committed in same branch — prior-session work staged alongside r2-03 commits. Not expected to conflict but review should verify."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "r2-04-impl-01",
+      "ts": "2026-04-20T00:00:00Z",
+      "note": "Implemented r2-04: replaced global activeSessionId with per-item Map<itemId, ActiveSession> (itemActiveSession) in WorkflowDetailRoute. Added itemId projection to SessionProjection and SessionStartedPayload on both server and client. Created src/web/src/store/itemSessionMap.ts with pure buildFromSnapshot/upsert/removeBySessionId helpers. Added 11 reducer tests covering map init, upsert, and removeBySessionId. Added itemEndedSession Map for frozen-pane Session-ended banner without auto-switch. E2E specs: parallel-items-stream.spec.ts (3 items, click A/B scopes pane) and session-end-no-autoswitch.spec.ts (session.ended shows banner, no switch to B). All 1265 unit tests pass; typecheck clean.",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/web/src/ws/types.ts",
+        "src/web/src/store/itemSessionMap.ts",
+        "tests/web/reducer.test.ts",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/e2e/real/parallel-items-stream.spec.ts",
+        "src/web/e2e/real/session-end-no-autoswitch.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "E2E specs rely on stream.text content appearing in LiveStreamPane via renderStore — if rAF batching delays the flush, toBeVisible may time out; the 5s timeout should be sufficient in practice"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "67afa3bf-4243-4aca-9999-59ee5760fc6a",
+      "ts": "2026-04-20T13:12:00Z",
+      "note": "Implemented r2-09 push-branch in full. Created src/server/github/push.ts exporting pushBranch(branchName, worktreePath, deps: { execGit }): Promise<PushResult>. The function runs `git -C <worktreePath> push -u origin <branchName>` via injected execGit and classifies errors by stderr substring: auth_failed ('authentication', 'permission denied', 'could not read username', 'could not read password'), non_fast_forward ('non-fast-forward', 'updates were rejected', 'fetch first'), network_failed ('could not resolve', 'network is unreachable', 'timeout', 'connection refused'), other (anything else). Returns {ok:true} on success or {ok:false, kind, message, rawStderr} on failure. No --force or --no-verify flags are ever passed. Also exports makeProductionPushDeps() keeping child_process out of test imports. Created tests/github/push.test.ts with 15 tests covering: success path, correct args shape (includes -C and -u, excludes --force), all four auth_failed markers (4 cases), all four non_fast_forward markers (3 cases), all four network_failed markers (4 cases), other classification, and rawStderr field inclusion. All 1280 Vitest tests pass; typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/server/github/push.ts",
+        "tests/github/push.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "makeProductionPushDeps() passes the full error stderr as the Error.message, so classifyStderr operates on that string. If the production git stderr includes a prefix (like 'git push failed (128): ...') before the actual stderr text, classification still works because it uses includes() not startsWith(). However if execFile wraps the stderr in a different format, the test stubs and production may diverge.",
+        "The args AC-4 grep check counts the message string 'git push failed: kind' as the only 'git push' string in src/ — this is a human-readable message label, not a command invocation, so the AC is satisfied."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "r2-07-impl-01",
+      "ts": "2026-04-20T14:00:00Z",
+      "note": "Implemented r2-07 fix-control-matrix-rules in full. (1) Created src/web/src/components/ControlMatrix/controlMatrixRules.ts extracting ControlCtx, RULES, and SUPPORTED_ACTIONS into a standalone .ts module so the unit test can import without React/JSX support. RULES uses five exhaustive Record<WorkflowStatus|State, boolean> lookup tables (TERMINAL_WF, RETRY_ELIGIBLE, SKIP_ELIGIBLE, UNBLOCK_ELIGIBLE, RERUN_ELIGIBLE) — each Record forces a TypeScript error if the union gains or loses a member. Every RULES entry references only valid WorkflowStatus or State values. SUPPORTED_ACTIONS = new Set(['cancel', 'retry']). (2) Rewrote ControlMatrix.tsx to import from controlMatrixRules.ts, added items: ItemProjection[] to Props and ControlCtx, filter visibleActions by SUPPORTED_ACTIONS.has(action) before rendering — hidden actions are not rendered at all. (3) Updated WorkflowDetailRoute.tsx to pass items={Array.from(items.values())} to ControlMatrix. (4) Created tests/web/controlMatrix.test.ts with 110 tests: iterates all 9 ControlPayload['action'] values × all 11 STATE_VALUES, asserts each matches an explicit truth table; plus 4 multi-item retry tests (any-item-awaiting_user, any-item-awaiting_retry, none-awaiting, empty-items) and 5 cancel/terminal-workflow-status tests. All 1390 Vitest tests pass; typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/web/src/components/ControlMatrix/controlMatrixRules.ts",
+        "src/web/src/components/ControlMatrix/ControlMatrix.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "tests/web/controlMatrix.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The retry rule is workflow-scoped (any item in items[] in awaiting_user or awaiting_retry), not per-item. The spec explicitly states 'round 2 does not add per-item retry' — this is intentional.",
+        "pause rule returns true when workflowStatus='in_progress' — this is correct behavior but pause has no server-side executor in SUPPORTED_ACTIONS so it never renders.",
+        "workflowStatus in ControlCtx is typed as string (not WorkflowStatus) to match the snapshot projection. TERMINAL_WF lookup uses 'as WorkflowStatus' cast with ?? false fallback for unknown values."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "994721b6-c936-4981-9d31-b1bc6bbcdcb2",
+      "ts": "2026-04-20T13:30:00Z",
+      "note": "Implemented r2-12 in full. (1) Exported GithubBroadcastFn type from service.ts and added broadcast?: GithubBroadcastFn to GithubServiceDeps — injected, never imported at module level. (2) _writeGithubState accepts broadcast as a 5th parameter and emits broadcast(workflowId, 'workflow.update', {githubState: {status, prNumber?, prUrl?, error?, lastCheckedAt}}) AFTER db.transaction() returns; a thrown transaction re-throws before the broadcast call, suppressing it on rollback. (3) All 6 _writeGithubState call sites in createPr and both in initGithubState thread deps.broadcast through. (4) 9 new unit tests in tests/github/service.test.ts cover every state transition (idle/disabled/unconfigured/creating/created/failed), rollback suppression, and exact payload shape (no extra fields). (5) src/web/e2e/real/pr-button-live.spec.ts seeds a completed workflow, uses backend.broadcast() to inject workflow.update frames, and asserts the GithubButton transitions idle → Creating PR spinner → PR #42 link without a page reload. All 1422 Vitest tests pass; typecheck clean; 28 real-backend Playwright tests pass (5 pre-existing failures unrelated to r2-12).",
+      "intended_files": [
+        "src/server/github/service.ts",
+        "tests/github/service.test.ts",
+        "src/web/e2e/real/pr-button-live.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The broadcast payload includes only fields written by _writeGithubState (status, prNumber, prUrl, error, lastCheckedAt). The prState field (set by PR polling, not creation) is absent from broadcasts — the UI's spread-merge preserves existing prState in the snapshot, so no regression.",
+        "The error field serializes GithubAuthError to 'GITHUB_TOKEN: <reason>; gh_auth: <reason>' and GithubApiError to error.message. If UI consumers expect a structured object, the string representation may be insufficient — but GithubButton.tsx uses it as a tooltip string, so this is correct.",
+        "initGithubState now accepts an optional 4th broadcast parameter. Existing callers (tests only at this point; ingest.ts in r2-08) do not pass it, so they continue to work with no broadcast emitted."
+      ]
     }
   ]
 }
