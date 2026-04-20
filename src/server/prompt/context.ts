@@ -2,7 +2,7 @@
  * PromptContext builder — assembles the context object fed to assemblePrompt().
  *
  * Responsibilities (feat-prompt-asm, prompt-template-spec.md §4):
- *   1. Read architecture.md and progress.md from the worktree (or "" if absent).
+ *   1. Read architecture.md from the worktree (or "" if absent).
  *   2. Parse item.data as an opaque JSON blob (AC-4: no named field access).
  *   3. Project item_state from harness-state columns (status, current_phase,
  *      retry_count, blocked_reason).
@@ -17,8 +17,8 @@
  *   - Does NOT spawn processes.
  *   - Does NOT write to SQLite.
  *
- * I/O lives here (RC-1): fs.readFileSync calls for architecture.md, progress.md,
- * and handoff.json are in this file, not in assembler.ts.
+ * I/O lives here (RC-1): fs.readFileSync calls for architecture.md and handoff.json
+ * are in this file, not in assembler.ts.
  *
  * Review criteria compliance:
  *   RC-3  item.data is parsed as an opaque blob; no harness-level field names
@@ -150,11 +150,6 @@ export interface PromptContextInputs {
    */
   architectureMdPath?: string;
   /**
-   * Absolute path to progress.md.
-   * Defaults to <worktreePath>/progress.md if not provided.
-   */
-  progressMdPath?: string;
-  /**
    * Absolute path to handoff.json.
    * Defaults to <worktreePath>/handoff.json if not provided.
    */
@@ -242,10 +237,6 @@ export async function buildPromptContext(inputs: PromptContextInputs): Promise<P
       blocked_reason: item.blocked_reason,
     };
 
-    // Read progress.md (or "")
-    const progressPath = inputs.progressMdPath ?? path.join(worktreePath, 'progress.md');
-    const progress_md = readFileOrEmpty(progressPath);
-
     // Read handoff.json and serialize entries (AC-6: {{handoff}})
     const handoffPath = inputs.handoffPath ?? path.join(worktreePath, 'handoff.json');
     const handoff = readHandoffEntries(handoffPath);
@@ -261,7 +252,6 @@ export async function buildPromptContext(inputs: PromptContextInputs): Promise<P
       item_id: item.id,
       item: parsedItemData,
       item_state: item_state as unknown as Record<string, unknown>,
-      progress_md,
       handoff,
       recent_diff,
     });
@@ -308,7 +298,16 @@ function readHandoffEntries(filePath: string): string {
   if (raw === '') {
     return '';
   }
-  const parsed = JSON.parse(raw) as HandoffFile;
+  let parsed: HandoffFile;
+  try {
+    parsed = JSON.parse(raw) as HandoffFile;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Re-throw with the file path so the scheduler's catch can surface an
+    // actionable message to the UI (a prior agent session likely wrote
+    // syntactically-invalid JSON to handoff.json).
+    throw new Error(`handoff.json at ${filePath} is not valid JSON: ${msg}`);
+  }
   const entries = parsed.entries ?? [];
   return JSON.stringify(entries, null, 2);
 }

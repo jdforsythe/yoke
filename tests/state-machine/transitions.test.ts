@@ -32,11 +32,9 @@ const ALL_EVENTS: readonly Event[] = [
 
 const TERMINAL_STATES = new Set<State>(['complete', 'abandoned', 'bootstrap_failed']);
 
-// bootstrapping is NOT in TERMINAL_STATES but it also does not have a
-// user_cancel row in state-machine-transitions.md (only bootstrap_failed does).
-// This set tracks states where the table explicitly lists user_cancel.
+// All non-terminal states that have a documented user_cancel row.
 const STATES_WITH_USER_CANCEL = new Set<State>([
-  'pending', 'ready', 'in_progress', 'awaiting_retry',
+  'pending', 'ready', 'bootstrapping', 'in_progress', 'awaiting_retry',
   'rate_limited', 'awaiting_user', 'blocked', 'abandoned',
 ]);
 
@@ -166,6 +164,14 @@ describe('bootstrapping transitions', () => {
     const r = transition('bootstrapping', 'bootstrap_fail') as DirectTransitionResult;
     expect(r.kind).toBe('direct');
     expect(r.to).toBe('bootstrap_failed');
+  });
+
+  it('user_cancel → abandoned (with teardown side effects)', () => {
+    const r = transition('bootstrapping', 'user_cancel') as DirectTransitionResult;
+    expect(r.kind).toBe('direct');
+    expect(r.to).toBe('abandoned');
+    expect(r.sideEffects).toContain('run teardown');
+    expect(r.sideEffects).toContain('remove worktree');
   });
 });
 
@@ -398,10 +404,7 @@ describe('abandoned transitions', () => {
 // ---------------------------------------------------------------------------
 
 describe('user_cancel universally reachable', () => {
-  it('user_cancel from every state with a listed user_cancel row routes to abandoned', () => {
-    // bootstrapping is intentionally excluded: state-machine-transitions.md
-    // does not list (bootstrapping, user_cancel).  All other non-terminal
-    // states have the row.
+  it('user_cancel from every non-terminal state routes to abandoned', () => {
     for (const s of STATES_WITH_USER_CANCEL) {
       const r = transition(s, 'user_cancel');
       expect(r, `${s} + user_cancel should be defined`).toBeDefined();
@@ -411,12 +414,6 @@ describe('user_cancel universally reachable', () => {
         `${s} + user_cancel should include abandoned, got ${targets}`,
       ).toBe(true);
     }
-  });
-
-  it('bootstrapping does NOT have a user_cancel row (not in transitions doc)', () => {
-    // If the transitions doc adds it, this test should be removed and
-    // bootstrapping added to STATES_WITH_USER_CANCEL.
-    expect(transition('bootstrapping', 'user_cancel')).toBeUndefined();
   });
 });
 

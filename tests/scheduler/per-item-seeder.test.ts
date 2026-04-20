@@ -3,11 +3,10 @@
  *
  * Coverage:
  *   RC-1  Empty manifest seeds 0 rows; placeholder deleted.
- *   RC-2  All-complete manifest: every item seeded with status='complete'.
- *   RC-3  Partial completion: items_complete truthy → complete, falsy → pending.
  *   RC-4  Dependency ordering: items_depends_on resolved to SQLite row IDs.
  *   RC-5  Filter expression: '$.features[?(@.priority > 1)]' seeds only matching items.
- *   RC-6  Missing items_complete field: items seeded as pending.
+ *   RC-6  All items seeded as pending (SQLite is the sole source of truth
+ *         for completion; the manifest never carries status).
  *   RC-7  Downstream depends_on updated: next-stage item waits for all real items.
  *   RC-8  Idempotency: seeding after placeholder deleted is a no-op (no duplicate rows).
  *   RC-9  Error paths: missing manifest, invalid JSONPath, duplicate stable IDs.
@@ -192,15 +191,19 @@ describe('AC-1: 3 manifest entries → 3 SQLite item rows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// AC-2 / RC-2  —  all-complete manifest
+// RC-6  —  all items seeded as pending (SQLite is the sole source of truth)
 // ---------------------------------------------------------------------------
 
-describe('all-complete manifest (RC-2)', () => {
-  it('seeds all items with status complete when items_complete is truthy for all', () => {
+describe('all items seeded as pending (RC-6)', () => {
+  it('never pre-marks items complete from the manifest — status is DB-only', () => {
     writeManifest({
+      // A `done` or `status` field in the manifest must be IGNORED by the
+      // seeder: once the feature spec has been imported, SQLite owns the
+      // lifecycle. This guards against a regression where a JSONPath option
+      // like items_complete is reintroduced without reconsidering the tradeoff.
       features: [
-        { id: 'feat-a', done: true },
-        { id: 'feat-b', done: true },
+        { id: 'feat-a', done: true, status: 'complete' },
+        { id: 'feat-b' },
       ],
     });
     const { workflowId, placeholderItemId } = seedWorkflow({});
@@ -210,66 +213,7 @@ describe('all-complete manifest (RC-2)', () => {
       workflowId,
       placeholderItemId,
       worktreePath: tmpDir,
-      stage: makeStage({ items_complete: '$.done' }),
-    });
-
-    expect(result).toEqual({ kind: 'seeded', count: 2 });
-
-    const items = readItems(workflowId);
-    expect(items).toHaveLength(2);
-    expect(items.every((i) => i.status === 'complete')).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// AC-2 / RC-3  —  partial completion
-// ---------------------------------------------------------------------------
-
-describe('partial completion (RC-3)', () => {
-  it('seeds complete/pending based on items_complete truthiness', () => {
-    writeManifest({
-      features: [
-        { id: 'feat-a', done: true },
-        { id: 'feat-b', done: false },
-        { id: 'feat-c' }, // missing field → falsy
-      ],
-    });
-    const { workflowId, placeholderItemId } = seedWorkflow({});
-
-    const result = seedPerItemStage({
-      db,
-      workflowId,
-      placeholderItemId,
-      worktreePath: tmpDir,
-      stage: makeStage({ items_complete: '$.done' }),
-    });
-
-    expect(result).toEqual({ kind: 'seeded', count: 3 });
-
-    const items = readItems(workflowId);
-    const statuses = items.map((i) => i.status);
-    expect(statuses.filter((s) => s === 'complete')).toHaveLength(1);
-    expect(statuses.filter((s) => s === 'pending')).toHaveLength(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// RC-6  —  missing items_complete field
-// ---------------------------------------------------------------------------
-
-describe('missing items_complete field (RC-6)', () => {
-  it('seeds all items as pending when items_complete is not configured', () => {
-    writeManifest({
-      features: [{ id: 'feat-a' }, { id: 'feat-b' }],
-    });
-    const { workflowId, placeholderItemId } = seedWorkflow({});
-
-    const result = seedPerItemStage({
-      db,
-      workflowId,
-      placeholderItemId,
-      worktreePath: tmpDir,
-      stage: makeStage(), // no items_complete
+      stage: makeStage(),
     });
 
     expect(result).toEqual({ kind: 'seeded', count: 2 });

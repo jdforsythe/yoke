@@ -241,43 +241,6 @@ describe('buildPromptContext — per-item phase variables', () => {
     expect(itemState['status']).toBe('awaiting_retry');
   });
 
-  it('progress_md is "" when progress.md absent', async () => {
-    const ctx = await buildPromptContext({
-      workflow: WORKFLOW,
-      stage: STAGE_PER_ITEM,
-      item: ITEM_ROW,
-      worktreePath: tmpDir,
-      git: STUB_GIT,
-    });
-    expect(ctx['progress_md']).toBe('');
-  });
-
-  it('progress_md contains file contents when present', async () => {
-    fs.writeFileSync(path.join(tmpDir, 'progress.md'), '# Progress\n\n- step 1 done');
-    const ctx = await buildPromptContext({
-      workflow: WORKFLOW,
-      stage: STAGE_PER_ITEM,
-      item: ITEM_ROW,
-      worktreePath: tmpDir,
-      git: STUB_GIT,
-    });
-    expect(ctx['progress_md']).toBe('# Progress\n\n- step 1 done');
-  });
-
-  it('progressMdPath override is used instead of default path', async () => {
-    const overridePath = path.join(tmpDir, 'custom-progress.md');
-    fs.writeFileSync(overridePath, 'custom progress content');
-    const ctx = await buildPromptContext({
-      workflow: WORKFLOW,
-      stage: STAGE_PER_ITEM,
-      item: ITEM_ROW,
-      worktreePath: tmpDir,
-      progressMdPath: overridePath,
-      git: STUB_GIT,
-    });
-    expect(ctx['progress_md']).toBe('custom progress content');
-  });
-
   it('recent_diff is "" when diffFrom is not provided', async () => {
     const ctx = await buildPromptContext({
       workflow: WORKFLOW,
@@ -490,7 +453,7 @@ describe('buildPromptContext — AC-4/RC-3 opaque blob handling', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildPromptContext — once-stage excludes per-item variables', () => {
-  it('item, item_id, item_state, progress_md, handoff, recent_diff absent for once-stage', async () => {
+  it('item, item_id, item_state, handoff, recent_diff absent for once-stage', async () => {
     const ctx = await buildPromptContext({
       workflow: WORKFLOW,
       stage: STAGE_ONCE,
@@ -500,7 +463,6 @@ describe('buildPromptContext — once-stage excludes per-item variables', () => 
     expect('item' in ctx).toBe(false);
     expect('item_id' in ctx).toBe(false);
     expect('item_state' in ctx).toBe(false);
-    expect('progress_md' in ctx).toBe(false);
     expect('handoff' in ctx).toBe(false);
     expect('recent_diff' in ctx).toBe(false);
   });
@@ -542,7 +504,6 @@ describe('buildPromptContext + assemblePrompt — end-to-end', () => {
     const { assemblePrompt } = await import('../../src/server/prompt/assembler.js');
 
     fs.writeFileSync(path.join(tmpDir, 'architecture.md'), '# Architecture\n\nmodules here');
-    fs.writeFileSync(path.join(tmpDir, 'progress.md'), '# Progress\n\n- done first step');
     const entries = [{ phase: 'implement', attempt: 0, ts: '2026-04-13T00:00:00Z' }];
     fs.writeFileSync(
       path.join(tmpDir, 'handoff.json'),
@@ -566,7 +527,6 @@ Item: {{item_id}}
 Description: {{item.description}}
 Status: {{item_state.status}}
 Architecture: {{architecture_md}}
-Progress: {{progress_md}}
 Handoff: {{handoff}}
 Git log: {{git_log_recent}}
 Diff: {{recent_diff}}
@@ -580,7 +540,6 @@ User context: {{user_injected_context}}`;
     expect(result).toContain('Description: User can log in with email and password');
     expect(result).toContain('Status: in_progress');
     expect(result).toContain('# Architecture');
-    expect(result).toContain('# Progress');
     expect(result).toContain('"phase": "implement"');
     expect(result).toContain('abc123 initial commit');
     expect(result).toContain('diff --git');

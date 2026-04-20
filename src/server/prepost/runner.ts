@@ -58,6 +58,13 @@ export interface PrePostRunRecord {
   exitCode: number | null;
   /** The resolved ActionValue, or null if no action matched (unhandled exit, timeout, error). */
   actionTaken: ActionValue | null;
+  /**
+   * Combined stdout+stderr captured during execution, truncated to
+   * OUTPUT_CAPTURE_LIMIT bytes.  Used by the scheduler to inject failure
+   * context into handoff.json for fresh_with_failure_summary retries.
+   * NOT persisted to SQLite — writePrepostRun() in the engine ignores this field.
+   */
+  output: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +73,13 @@ export interface PrePostRunRecord {
 
 /** Default per-command wall-clock timeout (plan-draft3 §Phase Pre/Post Commands). */
 export const DEFAULT_TIMEOUT_S = 15 * 60;
+
+/**
+ * Maximum bytes of combined stdout+stderr to capture per command.
+ * Used by the scheduler to inject failure context into handoff.json for
+ * fresh_with_failure_summary retries; NOT stored in SQLite.
+ */
+export const OUTPUT_CAPTURE_LIMIT = 32_768;
 
 /**
  * Grace period between SIGTERM and SIGKILL when the timeout fires.
@@ -179,6 +193,10 @@ async function _runOneCommand(
   const startTs = Date.now();
   const startedAt = new Date(startTs).toISOString();
 
+  // Bounded combined output capture (stdout+stderr interleaved as emitted).
+  // Populated throughout the promise below; read after await to build the record.
+  let outputBuf = '';
+
   // Serialised write queue — ensures frames arrive in emission order.
   let _writeQueue: Promise<void> = Promise.resolve();
   const writeFrame = (frame: Record<string, unknown>): void => {
@@ -207,6 +225,7 @@ async function _runOneCommand(
         endedAt: new Date().toISOString(),
         exitCode: null,
         actionTaken: null,
+        output: '',
       },
     };
   }
@@ -244,6 +263,7 @@ async function _runOneCommand(
         endedAt: new Date().toISOString(),
         exitCode: null,
         actionTaken: null,
+        output: '',
       },
     };
   }
@@ -291,6 +311,8 @@ async function _runOneCommand(
     const rl = createReadline({ input: child.stdout!, crlfDelay: Infinity });
     rl.on('line', (line) => {
       writeFrame({ type: 'prepost.command.stdout', name: cmd.name, when, text: line });
+      console.log(`[prepost:${cmd.name}] ${line}`);
+      if (outputBuf.length < OUTPUT_CAPTURE_LIMIT) outputBuf += line + '\n';
     });
 
     // stderr: buffered by line for cleaner frames; remainder flushed on close.
@@ -301,11 +323,15 @@ async function _runOneCommand(
       stderrBuf = lines.pop() ?? '';
       for (const line of lines) {
         writeFrame({ type: 'prepost.command.stderr', name: cmd.name, when, text: line });
+        console.error(`[prepost:${cmd.name}] ${line}`);
+        if (outputBuf.length < OUTPUT_CAPTURE_LIMIT) outputBuf += line + '\n';
       }
     });
     child.stderr!.on('close', () => {
       if (stderrBuf) {
         writeFrame({ type: 'prepost.command.stderr', name: cmd.name, when, text: stderrBuf });
+        console.error(`[prepost:${cmd.name}] ${stderrBuf}`);
+        if (outputBuf.length < OUTPUT_CAPTURE_LIMIT) outputBuf += stderrBuf + '\n';
         stderrBuf = '';
       }
     });
@@ -340,6 +366,7 @@ async function _runOneCommand(
         endedAt: new Date().toISOString(),
         exitCode: null,
         actionTaken: null,
+        output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
       },
     };
   }
@@ -368,6 +395,7 @@ async function _runOneCommand(
         endedAt,
         exitCode: null,
         actionTaken: null,
+        output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
       },
     };
   }
@@ -397,6 +425,7 @@ async function _runOneCommand(
         endedAt,
         exitCode,
         actionTaken: null,
+        output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
       },
     };
   }
@@ -409,6 +438,7 @@ async function _runOneCommand(
     endedAt,
     exitCode,
     actionTaken: action,
+    output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
   };
 
   if (isContinue(action)) {

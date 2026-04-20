@@ -220,6 +220,14 @@ export interface WsHandlerContext {
   backfillBuffer: BackfillBuffer;
   /** Optional client registry for broadcast. Added when the scheduler is running. */
   registry?: WsClientRegistry;
+  /**
+   * Lazy accessor for the workflow control executor.  Exposed as a function
+   * so server.ts can thread the callback through createServer without knowing
+   * about createWsHandler internals, and so start.ts can wire the executor
+   * after createServer returns (same pattern used for other callbacks via
+   * the mutable ServerCallbacks bag).
+   */
+  getControlExecutor?: () => import('../pipeline/control-executor.js').ControlExecutorFn | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +417,8 @@ function handleSubscribe(
   // Load snapshot from read-only SQLite connection (RC: no writes from API).
   const snapshot = buildSnapshot(ctx.db, workflowId);
   if (!snapshot) {
-    send(socket, makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found`));
+    process.stdout.write(`[MAIN_REPO_WS] NOT_FOUND for ${workflowId}\n`);
+    send(socket, makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found [MAIN_REPO]`));
     return;
   }
 
@@ -478,23 +487,74 @@ function handleControl(
   _ctx: WsHandlerContext,
 ): void {
   const commandId = frame.id;
+  const { workflowId, action } = frame.payload;
 
   // Idempotency check (AC-4): return cached response without re-executing.
+  // Shared with the HTTP endpoint's idempotency store so a commandId sent via
+  // either transport is deduped (the UI may retry through the other channel).
   const cached = _ctx.idempotency.get(commandId);
   if (cached !== undefined) {
     send(socket, cached as ServerFrame);
     return;
   }
 
-  // Record and cache the response. Actual execution deferred to pipeline engine.
+  const executor = _ctx.getControlExecutor?.();
+
+  if (executor) {
+    const result = executor(workflowId, action);
+
+    if (result.status === 'workflow_not_found') {
+      const err = makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found`, commandId);
+      _ctx.idempotency.set(commandId, err);
+      send(socket, err);
+      return;
+    }
+    if (result.status === 'invalid_action') {
+      const err = makeErrorFrame(
+        'INVALID_ACTION',
+        `Unsupported control action: ${result.action}`,
+        commandId,
+      );
+      _ctx.idempotency.set(commandId, err);
+      send(socket, err);
+      return;
+    }
+    if (result.status === 'already_terminal') {
+      const err = makeErrorFrame(
+        'ALREADY_TERMINAL',
+        'Workflow is already terminal',
+        commandId,
+      );
+      _ctx.idempotency.set(commandId, err);
+      send(socket, err);
+      return;
+    }
+
+    const ok = makeFrame(
+      'notice',
+      {
+        severity: 'info' as const,
+        kind: 'control_accepted',
+        message: `Control action '${action}' accepted (${result.cancelledItems} items cancelled)`,
+      },
+      { workflowId },
+    );
+    _ctx.idempotency.set(commandId, ok);
+    send(socket, ok);
+    return;
+  }
+
+  // No executor wired — fall back to the stub behaviour so existing tests
+  // (which exercise the protocol envelope but not the cancel side-effect)
+  // keep passing.  Record and cache the response. Actual execution deferred.
   const response = makeFrame(
     'notice',
     {
       severity: 'info' as const,
       kind: 'control_accepted',
-      message: `Control action '${frame.payload.action}' accepted`,
+      message: `Control action '${action}' accepted`,
     },
-    { workflowId: frame.payload.workflowId },
+    { workflowId },
   );
 
   _ctx.idempotency.set(commandId, response);

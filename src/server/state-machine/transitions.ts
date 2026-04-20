@@ -159,6 +159,8 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
       'bootstrap_failed',
       ['insert pending_attention{kind=bootstrap_failed}'],
     ),
+    // Worktree may be partially created; teardown cleans up the partial state.
+    user_cancel: direct('abandoned', ['run teardown', 'remove worktree']),
   },
 
   // -------------------------------------------------------------------------
@@ -279,6 +281,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'retry budget > 0',
         ['increment retry_count'],
       ),
+      outcome(
+        'awaiting_user',
+        'retry budget exhausted',
+        ['insert pending_attention'],
+      ),
     ]),
 
     diff_check_fail: conditional([
@@ -286,6 +293,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'awaiting_retry',
         'retry budget > 0, classifier=policy',
         ['log forbidden diff'],
+      ),
+      outcome(
+        'awaiting_user',
+        'retry budget exhausted',
+        ['insert pending_attention'],
       ),
     ]),
 
@@ -324,6 +336,11 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         'in_progress',
         'retry budget remaining',
         ['compute next retry_mode from ladder', 'assemble prompt'],
+      ),
+      outcome(
+        'awaiting_user',
+        'retry ladder exhausted',
+        ['insert pending_attention'],
       ),
     ]),
     retries_exhausted: direct('awaiting_user', ['insert pending_attention']),

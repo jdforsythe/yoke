@@ -58,9 +58,6 @@ You are an engineer implementing the task described below.
 ### Architecture
 {{architecture}}
 
-### Progress so far
-{{progress}}
-
 ### Handoff from previous phase
 {{handoff}}
 
@@ -68,7 +65,7 @@ You are an engineer implementing the task described below.
 - Implement the task completely.
 - Write tests for every new code path that can fail.
 - Do not modify files outside the scope of the task.
-- When done, update progress.md with a one-paragraph summary.
+- When done, append a handoff entry to handoff.json with a note, intended_files, deferred_criteria, and known_risks.
 `;
 
 const PLAN_MD = `# Plan
@@ -101,9 +98,6 @@ You are a reviewer checking an implementation for correctness and quality.
 ## Context
 ### Architecture
 {{architecture}}
-
-### Progress
-{{progress}}
 
 ### Handoff
 {{handoff}}

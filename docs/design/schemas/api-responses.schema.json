@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "api-responses.schema.json",
+  "title": "Yoke HTTP API Response Shapes",
+  "description": "JSON Schema $defs for every documented endpoint response shape. Used by scripts/check-api-contract.js and tests/api/contract-schema.test.ts to catch shape drift. Run `pnpm test:contract` to validate against a live server.",
+  "$defs": {
+    "WorkflowStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "pending_stage_approval",
+        "completed",
+        "completed_with_blocked",
+        "abandoned"
+      ]
+    },
+    "WorkflowRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "status",
+        "currentStage",
+        "createdAt",
+        "updatedAt",
+        "activeSessions",
+        "unreadEvents"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "$ref": "#/$defs/WorkflowStatus" },
+        "currentStage": { "type": ["string", "null"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "activeSessions": { "type": "integer", "minimum": 0 },
+        "unreadEvents": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "WorkflowsListResponse": {
+      "type": "object",
+      "required": ["workflows", "hasMore", "nextBefore"],
+      "additionalProperties": false,
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/WorkflowRow" }
+        },
+        "hasMore": { "type": "boolean" },
+        "nextBefore": { "type": ["string", "null"] }
+      }
+    },
+    "TimelineEvent": {
+      "type": "object",
+      "required": [
+        "id",
+        "ts",
+        "workflowId",
+        "itemId",
+        "sessionId",
+        "stage",
+        "phase",
+        "attempt",
+        "eventType",
+        "level",
+        "message"
+      ],
+      "properties": {
+        "id": { "type": "integer" },
+        "ts": { "type": "string" },
+        "workflowId": { "type": "string" },
+        "itemId": { "type": ["string", "null"] },
+        "sessionId": { "type": ["string", "null"] },
+        "stage": { "type": ["string", "null"] },
+        "phase": { "type": ["string", "null"] },
+        "attempt": { "type": ["integer", "null"] },
+        "eventType": { "type": "string" },
+        "level": { "type": "string" },
+        "message": { "type": "string" },
+        "extra": {}
+      }
+    },
+    "TimelineResponse": {
+      "type": "object",
+      "required": ["workflowId", "events"],
+      "additionalProperties": false,
+      "properties": {
+        "workflowId": { "type": "string" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TimelineEvent" }
+        }
+      }
+    },
+    "UsageRow": {
+      "type": "object",
+      "required": [
+        "dimension",
+        "inputTokens",
+        "outputTokens",
+        "cacheCreationInputTokens",
+        "cacheReadInputTokens",
+        "sessionCount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": { "type": ["string", "null"] },
+        "inputTokens": { "type": "integer" },
+        "outputTokens": { "type": "integer" },
+        "cacheCreationInputTokens": { "type": "integer" },
+        "cacheReadInputTokens": { "type": "integer" },
+        "sessionCount": { "type": "integer" }
+      }
+    },
+    "UsageResponse": {
+      "type": "object",
+      "required": ["workflowId", "groupBy", "rows"],
+      "additionalProperties": false,
+      "properties": {
+        "workflowId": { "type": "string" },
+        "groupBy": {
+          "type": "string",
+          "enum": ["feature", "phase", "profile", "session"]
+        },
+        "rows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/UsageRow" }
+        }
+      }
+    },
+    "TimeseriesRow": {
+      "type": "object",
+      "required": [
+        "bucket",
+        "inputTokens",
+        "outputTokens",
+        "cacheCreationInputTokens",
+        "cacheReadInputTokens",
+        "sessionCount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bucket": { "type": "string" },
+        "inputTokens": { "type": "integer" },
+        "outputTokens": { "type": "integer" },
+        "cacheCreationInputTokens": { "type": "integer" },
+        "cacheReadInputTokens": { "type": "integer" },
+        "sessionCount": { "type": "integer" }
+      }
+    },
+    "TimeseriesResponse": {
+      "type": "object",
+      "required": ["workflowId", "bucket", "rows"],
+      "additionalProperties": false,
+      "properties": {
+        "workflowId": { "type": "string" },
+        "bucket": { "type": "string", "enum": ["hour", "day"] },
+        "rows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TimeseriesRow" }
+        }
+      }
+    },
+    "ItemsDataResponse": {
+      "description": "Opaque JSON — the parsed contents of items.data. No fixed shape enforced; any valid JSON value is accepted."
+    },
+    "ItemSession": {
+      "type": "object",
+      "required": ["id", "phase", "status", "startedAt", "endedAt", "exitCode"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "phase": { "type": "string" },
+        "status": { "type": "string" },
+        "startedAt": { "type": "string" },
+        "endedAt": { "type": ["string", "null"] },
+        "exitCode": { "type": ["integer", "null"] }
+      }
+    },
+    "ItemSessionsResponse": {
+      "type": "object",
+      "required": ["sessions"],
+      "additionalProperties": false,
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ItemSession" }
+        }
+      }
+    },
+    "SessionLogResponse": {
+      "type": "object",
+      "required": ["entries", "nextSeq", "hasMore"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Raw JSONL lines from the session log file — each entry is an unparsed JSON string."
+        },
+        "nextSeq": { "type": "integer", "minimum": 0 },
+        "hasMore": { "type": "boolean" }
+      }
+    }
+  }
+}

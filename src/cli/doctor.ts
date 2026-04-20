@@ -76,9 +76,9 @@ export async function checkSqlite(): Promise<DoctorCheck> {
       message: `better-sqlite3 failed: ${(err as Error).message}`,
       remediation:
         `better-sqlite3 requires a native build for your platform.\n` +
-        `Run: npm rebuild better-sqlite3\n` +
+        `Run: pnpm rebuild better-sqlite3\n` +
         `If that fails, ensure your Node.js version (node --version) matches\n` +
-        `the version that was used when running npm install.`,
+        `the version that was used when running pnpm install.`,
     };
   }
 }

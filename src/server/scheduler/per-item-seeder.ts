@@ -8,10 +8,10 @@
  *   2. Apply items_list (JSONPath) to extract the item array.
  *   3. For each manifest entry:
  *      - Extract stable ID via items_id (JSONPath).
- *      - Evaluate items_complete (JSONPath) — truthy → seed as 'complete'.
  *      - Collect items_depends_on (JSONPath) — stable IDs → resolved to row IDs.
  *   4. All writes inside a single db.transaction():
- *      - Create real item rows (pending or complete).
+ *      - Create real item rows (all seeded as 'pending'; SQLite is the sole
+ *        source of truth for completion — the manifest never carries status).
  *      - Update downstream items whose depends_on referenced the placeholder
  *        to reference the full set of real item row IDs instead.
  *      - DELETE the placeholder row.
@@ -87,16 +87,6 @@ function evalScalar(expr: string, json: unknown): unknown {
 }
 
 // ---------------------------------------------------------------------------
-// isTruthy — for items_complete evaluation
-// ---------------------------------------------------------------------------
-
-function isTruthy(value: unknown): boolean {
-  if (value === null || value === undefined || value === false || value === '') return false;
-  if (Array.isArray(value) && value.length === 0) return false;
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // seedPerItemStage — public API
 // ---------------------------------------------------------------------------
 
@@ -153,14 +143,15 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 3 — build (stableId, rowId, data, status, rawDepsStableIds) per item
+  // Step 3 — build (stableId, rowId, data, rawDepsStableIds) per item.
+  // All real items are seeded as 'pending'; SQLite is the sole source of truth
+  // for completion.
   // ---------------------------------------------------------------------------
 
   type ItemRecord = {
     rowId: string;
     stableId: string;
     data: string;        // full manifest entry serialised as JSON
-    status: 'pending' | 'complete';
     rawDepsStableIds: string[];  // stable IDs from items_depends_on
   };
 
@@ -188,21 +179,6 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
       return { kind: 'error', message: `Duplicate stable ID '${stableId}' in manifest` };
     }
 
-    // Evaluate items_complete (if configured).
-    let status: 'pending' | 'complete' = 'pending';
-    if (stage.items_complete) {
-      try {
-        const completionVal = evalScalar(stage.items_complete, entry);
-        if (isTruthy(completionVal)) status = 'complete';
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          kind: 'error',
-          message: `items_complete JSONPath '${stage.items_complete}' failed: ${msg}`,
-        };
-      }
-    }
-
     // Collect items_depends_on stable IDs (within-stage deps).
     let rawDepsStableIds: string[] = [];
     if (stage.items_depends_on) {
@@ -224,7 +200,6 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
       rowId,
       stableId,
       data: JSON.stringify(entry),
-      status,
       rawDepsStableIds,
     });
   }
@@ -274,7 +249,7 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
         workflowId,
         stage.id,
         rec.data,
-        rec.status,
+        'pending',
         firstPhase,
         dependsOn,
         now,

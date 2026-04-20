@@ -99,6 +99,5 @@ Avoid: vague verbs like "handle", "manage", "deal with" — name the exact failu
 
 **End:**
 - Summarize: what was built, what tests cover it, what is still untested, any deferred items.
-- Update `progress.md` (if in a build workflow) with a one-paragraph narrative.
-- Append to `handoff.json`: intended files, deferred criteria, known risks.
+- Append to `handoff.json`: a prose `note`, intended files, deferred criteria, known risks.
 - Stop.

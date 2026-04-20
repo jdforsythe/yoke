@@ -17,7 +17,7 @@ Legend:
 ### Session hygiene
 
 - **New agent → new session, always.** Use `/clear` or spawn a fresh session between agents. Yoke's whole model is that agents communicate through files, not shared context. Carrying context between agents cheats the test.
-- **Same agent, next feature → new session, always.** Forces the implementer to re-read `features.json`, `handoff.json`, `progress.md` — which is exactly what v1 will do.
+- **Same agent, next feature → new session, always.** Forces the implementer to re-read `features.json`, `handoff.json` — which is exactly what v1 will do.
 - **Same agent, retry on failure within the same phase → use `-c`** (continuation). This is the one case where carrying context is correct. Cap at 3 `-c` attempts before falling back to a fresh session with handoff.json context.
 - **Between phases → new session, always.** No exceptions.
 
@@ -401,8 +401,7 @@ Scope of yoke-v0 (deliberately small):
 3. Template assembly: a small bash function (or a Python/Node helper — your choice, but keep dependencies minimal) that reads a template and substitutes variables from:
    - The feature spec (read from docs/idea/yoke-features.json — which will be created in Phase δ.1)
    - architecture.md / plan-draft3.md (cat inline)
-   - progress.md (cat or empty)
-   - handoff.json entries for this feature (grep by feature_id, or empty)
+   - handoff.json entries for this feature (grep by feature_id, or empty — each entry's `note` field carries the narrative)
    - git log -20 --oneline
    - recent diff (git diff HEAD~5..HEAD or empty)
 

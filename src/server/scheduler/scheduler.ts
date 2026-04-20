@@ -19,7 +19,7 @@
  *     - bootstrapping     → createWorktree + runBootstrap → bootstrap_ok | fail
  *     - in_progress (not  → spawn agent session (full async lifecycle)
  *       in inFlight)
- *     - awaiting_retry    → fire backoff_elapsed after RETRY_BACKOFF_MS
+ *     - awaiting_retry    → fire backoff_elapsed after exponential backoff (15 s → 30 s → 1 m → 2 m → …)
  *     - rate_limited      → fire rate_limit_window_elapsed after reset_at
  *
  * ## Concurrency
@@ -44,7 +44,9 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
+import { JSONPath } from 'jsonpath-plus';
 import type { DbPool } from '../storage/db.js';
 import type { ResolvedConfig } from '../../shared/types/config.js';
 import type { Stage, Phase } from '../../shared/types/config.js';
@@ -81,6 +83,7 @@ import { captureGitHead, scanArtifactWrites } from '../hook-contract/artifact-wr
 import type { ArtifactWriteRecord } from '../pipeline/engine.js';
 import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
 import { seedPerItemStage } from './per-item-seeder.js';
+import { injectHookFailure } from '../prepost/handoff-injector.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,9 +154,41 @@ export type NotifyFn = (opts: {
 const DEFAULT_MAX_PARALLEL = 4;
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_GRACE_PERIOD_MS = 10_000;
-/** Backoff before re-spawning an awaiting_retry item (ms). */
-const RETRY_BACKOFF_MS = 5_000;
+/** Initial backoff for the first transient-retry attempt (ms). */
+const RETRY_BACKOFF_INITIAL_MS = 15_000;
+/** Maximum backoff cap for transient retries (ms). */
+const RETRY_BACKOFF_MAX_MS = 3_600_000; // 1 hour
+
+/**
+ * Compute exponential backoff delay for an awaiting_retry item.
+ * Schedule: 15 s → 30 s → 1 m → 2 m → 4 m → … (capped at 1 h).
+ *
+ * @param retryCount  post-increment items.retry_count (1 for first retry).
+ */
+function computeRetryBackoffMs(retryCount: number): number {
+  return Math.min(
+    RETRY_BACKOFF_INITIAL_MS * Math.pow(2, Math.max(0, retryCount - 1)),
+    RETRY_BACKOFF_MAX_MS,
+  );
+}
 const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'];
+
+/**
+ * Extract the item's stable ID (the value identified by `items_id` JSONPath)
+ * from its serialised data, for use in log labels.  Falls back to the raw
+ * item UUID when the stage has no `items_id` or parsing fails.
+ */
+function itemLabel(itemId: string, data: string, stage: { items_id?: string }): string {
+  if (!stage.items_id) return itemId;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    const result = JSONPath({ path: stage.items_id, json: parsed as object }) as unknown[];
+    const val = result.length === 1 && Array.isArray(result[0]) ? (result[0] as unknown[])[0] : result[0];
+    return typeof val === 'string' && val !== '' ? val : itemId;
+  } catch {
+    return itemId;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -225,6 +260,11 @@ export interface SchedulerOpts {
    * If omitted, no notification dispatch occurs (safe for tests that don't need it).
    */
   notify?: NotifyFn;
+  /**
+   * Injectable clock function. Defaults to Date.now.
+   * Override in tests to control retry timer expiry without real waits.
+   */
+  now?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +282,7 @@ export class Scheduler {
   private readonly broadcastFn: BroadcastFn;
   private readonly faultInjector: FaultInjector;
   private readonly notifyFn?: NotifyFn;
+  private readonly clockNow: () => number;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -254,6 +295,14 @@ export class Scheduler {
 
   /** itemId → timestamp(ms) when the item may next be retried. */
   private readonly retryAfterAt = new Map<string, number>();
+
+  /**
+   * itemId → retry mode to pass back to the engine when backoff_elapsed fires.
+   * Set whenever an item enters awaiting_retry, so the engine can re-use the
+   * mode that was chosen at transition time (important for transient retries
+   * which always use 'fresh_with_failure_summary' regardless of the ladder).
+   */
+  private readonly retryModeFor = new Map<string, 'continue' | 'fresh_with_failure_summary' | 'fresh_with_diff'>();
 
   /** itemId → unix seconds when rate-limit window resets. */
   private readonly rateLimitResetAt = new Map<string, number>();
@@ -281,6 +330,7 @@ export class Scheduler {
     this.broadcastFn = opts.broadcast;
     this.faultInjector = opts.faultInjector ?? new NoopFaultInjector();
     this.notifyFn = opts.notify;
+    this.clockNow = opts.now ?? (() => Date.now());
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
@@ -310,6 +360,25 @@ export class Scheduler {
     return result;
   }
 
+  /**
+   * Arms the in-memory retry timer and mode for an item that just entered
+   * awaiting_retry.  Centralises the retryAfterAt / retryModeFor bookkeeping
+   * so every path into awaiting_retry (crash recovery, pre_command_failed,
+   * validator_fail, diff_check_fail, post_command_action, session_fail) uses
+   * the same logic.
+   *
+   * No-op when result.newState is not awaiting_retry.
+   */
+  private _armRetryTimer(
+    itemId: string,
+    retryCount: number,
+    result: ApplyItemTransitionResult,
+  ): void {
+    if (result.newState !== 'awaiting_retry') return;
+    this.retryAfterAt.set(itemId, this.clockNow() + computeRetryBackoffMs(retryCount));
+    if (result.retryMode) this.retryModeFor.set(itemId, result.retryMode);
+  }
+
   // -------------------------------------------------------------------------
   // start — AC-1
   // -------------------------------------------------------------------------
@@ -326,7 +395,17 @@ export class Scheduler {
     this.workflowId = workflowId;
     console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
 
-    // Step 2: Crash recovery — detect stale sessions from a previous run (RC-4).
+    // Step 2: Ensure a worktree exists before the tick loop. This guarantees
+    // per-item stages (which read items_from from the worktree) can seed on
+    // the first tick, regardless of whether a preceding stage would have
+    // bootstrapped one. On resume, an existing worktree is reused if the
+    // directory still exists on disk; otherwise it is recreated.
+    //
+    // Bootstrap commands run iff we just created the worktree. If bootstrap
+    // fails, start() throws — the caller surfaces the error to the user.
+    await this._ensureWorktree(workflowId);
+
+    // Step 3: Crash recovery — detect stale sessions from a previous run (RC-4).
     const recoveryInfos = buildCrashRecovery(this.db);
     for (const info of recoveryInfos) {
       // Transition stale in_progress items to awaiting_retry or awaiting_user
@@ -350,6 +429,11 @@ export class Scheduler {
           event: 'session_fail',
           guardCtx: { classifierResult: 'transient' },
         });
+        // End the stale session so it no longer counts against maxParallel.
+        // Without this, stale sessions with status='running' inflate the
+        // concurrency count and can prevent any new sessions from spawning.
+        endSession(this.db, stale.sessionId, { exitCode: null });
+        this._armRetryTimer(stale.itemId, item.retry_count + 1, recoveryResult);
         console.log(`[scheduler] crash recovery: ${item.stage_id} → ${recoveryResult.newState}`);
       }
     }
@@ -362,6 +446,32 @@ export class Scheduler {
   // -------------------------------------------------------------------------
   // stop — AC-8 (graceful drain)
   // -------------------------------------------------------------------------
+
+  /**
+   * Signal the process group for a single in-flight session (SIGTERM →
+   * SIGKILL escalation via SpawnHandle.cancel()).
+   *
+   * Called by the control executor when a workflow is user-cancelled.  The
+   * inFlight map is keyed by itemId, so we iterate to locate the entry with
+   * a matching sessionId.  Entries in the 'pending' placeholder state have
+   * no handle to signal — we skip them (the scheduler tick will drop the
+   * placeholder once the pending write resolves and the DB shows the item
+   * already in a terminal state).
+   *
+   * Fire-and-forget: we don't await cancel() so the caller (running inside
+   * a synchronous engine transaction boundary) doesn't block on kernel I/O.
+   * SpawnHandle.cancel() handles re-entrancy internally.
+   */
+  killSession(sessionId: string): void {
+    for (const [, entry] of this.inFlight) {
+      if (entry === 'pending') continue;
+      if (entry.sessionId === sessionId) {
+        void entry.handle.cancel();
+        return;
+      }
+    }
+    // sessionId not in inFlight → already exited or never started.  No-op.
+  }
 
   /**
    * Stops the poll loop and cancels all in-flight sessions.
@@ -495,8 +605,12 @@ export class Scheduler {
           // Per-item seeding: intercept before phase_start.
           // When a per-item stage's placeholder item is ready, seed real item
           // rows from the manifest instead of spawning a session.
+          //
+          // item.data === '{}' identifies the placeholder (created by ingest
+          // with no manifest data). Real seeded items have actual manifest
+          // data and must NOT be re-seeded — they fall through to phase_start.
           // ------------------------------------------------------------------
-          if (stage.run === 'per-item') {
+          if (stage.run === 'per-item' && item.data === '{}') {
             const worktreePath = wf.worktree_path;
             if (!worktreePath) {
               // Worktree not yet created — wait for the bootstrap phase of a
@@ -569,15 +683,15 @@ export class Scheduler {
         }
 
         // ------------------------------------------------------------------
-        // awaiting_retry → fire backoff_elapsed after RETRY_BACKOFF_MS
+        // awaiting_retry → fire backoff_elapsed after exponential backoff
         // ------------------------------------------------------------------
         case 'awaiting_retry': {
           // Arm a retry timer if not already set.
           if (!this.retryAfterAt.has(item.id)) {
-            this.retryAfterAt.set(item.id, Date.now() + RETRY_BACKOFF_MS);
+            this.retryAfterAt.set(item.id, this.clockNow() + computeRetryBackoffMs(item.retry_count));
           }
           const retryAt = this.retryAfterAt.get(item.id)!;
-          if (Date.now() < retryAt) break;
+          if (this.clockNow() < retryAt) break;
 
           const result = this._applyTransition({
             db: this.db,
@@ -588,9 +702,11 @@ export class Scheduler {
             phase: item.current_phase ?? '',
             attempt: item.retry_count + 1,
             event: 'backoff_elapsed',
+            guardCtx: { currentRetryMode: this.retryModeFor.get(item.id) },
           });
           this._broadcastItemState(wf.id, item.id, item.stage_id, result);
           this.retryAfterAt.delete(item.id);
+          this.retryModeFor.delete(item.id);
           break;
         }
 
@@ -758,6 +874,13 @@ export class Scheduler {
     item: ItemRow,
     stage: Stage,
   ): Promise<void> {
+    // Early-bail stop guard: we haven't spawned or inserted a session yet, so
+    // there's nothing to fail — just drop the inFlight reservation. The item
+    // is already at status='in_progress' (from phase_start / resume); on the
+    // next start the tick-loop's in_progress case will respawn. No retry-
+    // ladder context was accrued because nothing ran, so a bare respawn is
+    // the correct recovery. This path intentionally does NO DB writes: the
+    // caller may have already closed the writer during shutdown.
     if (this.stopped) {
       this.inFlight.delete(item.id);
       return;
@@ -798,6 +921,10 @@ export class Scheduler {
     // Guard: if stop() was called while awaiting captureGitHead, bail before any
     // DB write. stop() skips 'pending' inFlight entries (no handle yet), so without
     // this check a dangling _runSession could call insertSession on a closed DB.
+    // Same rationale as the early-bail guard above: nothing spawned, no session
+    // row, no retry-ladder context to preserve. Item stays at in_progress; the
+    // next start respawns via the tick-loop in_progress case. DO NOT write to
+    // the DB here — it may already be closed during shutdown.
     if (this.stopped) {
       this.inFlight.delete(item.id);
       return;
@@ -852,6 +979,7 @@ export class Scheduler {
           event: 'pre_command_failed',
           guardCtx: { preCommandAction: preAction, prepostRuns: preRuns },
         });
+        this._armRetryTimer(item.id, attempt, result);
         this._broadcastItemState(wf.id, item.id, item.stage_id, result);
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode: null });
@@ -878,7 +1006,17 @@ export class Scheduler {
         itemBlockedReason: item.blocked_reason,
       });
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
+      // Surface the failure to the UI. No session.started has been broadcast
+      // yet (it fires after spawn), so a stream.system_notice would have no
+      // host session in the render model — use a workflow-scoped notice
+      // instead, which the AttentionBanner / notification handler can render.
+      this.broadcastFn(wf.id, null, 'notice', {
+        severity: 'requires_attention' as const,
+        kind: 'prompt_assembly_failed',
+        message: `Prompt assembly failed for ${item.stage_id}/${phaseKey}: ${errMsg}`,
+      });
       const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
@@ -898,7 +1036,7 @@ export class Scheduler {
     }
 
     // --- Spawn session (RC-3: after in_progress transition is committed) ---
-    console.log(`[scheduler] spawning ${item.stage_id}/${phaseKey} attempt=${attempt} cwd=${worktreePath}`);
+    console.log(`[scheduler] spawning ${item.stage_id}/${itemLabel(item.id, item.data, stage)}/${phaseKey} attempt=${attempt} cwd=${worktreePath}`);
     console.log(`[scheduler]   cmd: ${phaseConfig.command} ${phaseConfig.args.join(' ')}`);
     let handle: SpawnHandle;
     try {
@@ -931,10 +1069,30 @@ export class Scheduler {
       return;
     }
 
-    // Guard: if stop() was called while we were spawning, cancel immediately.
+    // Guard: if stop() was called while we were spawning, cancel immediately
+    // and transition the item to awaiting_retry via session_fail (transient)
+    // so the retry ladder resumes cleanly on the next start. Without the
+    // transition, the item is stuck at status='in_progress' and the session
+    // row is orphaned at status='running' with pid IS NULL (so crash recovery
+    // skips it). The tick loop would then fallback-respawn without retry
+    // bookkeeping.
     if (this.stopped) {
       void handle.cancel();
+      const result = this._applyTransition({
+        db: this.db,
+        workflowId: wf.id,
+        itemId: item.id,
+        sessionId,
+        stage: item.stage_id,
+        phase: phaseKey,
+        attempt,
+        event: 'session_fail',
+        guardCtx: { classifierResult: 'transient' },
+      });
+      this._armRetryTimer(item.id, attempt, result);
+      this._broadcastItemState(wf.id, item.id, item.stage_id, result);
       await logWriter.close();
+      endSession(this.db, sessionId, { exitCode: null });
       this.inFlight.delete(item.id);
       return;
     }
@@ -1046,12 +1204,51 @@ export class Scheduler {
       console.error(`[scheduler] stderr (${stderr.length}b): ${stderr.slice(0, 300)}`);
     }
 
-    // Guard: if stop() was called while session ran, record the exit and bail.
+    // Guard: if stop() was called while session ran, fire session_fail
+    // (transient) so the item re-enters the retry ladder on the next start.
+    // Without this event, the item is left at status='in_progress' in SQLite
+    // AND the session row is marked 'failed' (so buildCrashRecovery skips it
+    // on the next start). The tick loop's in_progress fallback would then
+    // respawn a bare session with no retry_count bump, no failure-summary
+    // injection, and no record that the prior attempt was interrupted.
+    //
+    // All DB writes in this block are wrapped: stop() may have been followed
+    // by db.close() before this path executes (the drain only awaits
+    // handle.cancel(), not _runSession). If the writer is closed, fall back
+    // to buildCrashRecovery on the next start — it detects stale sessions
+    // and fires session_fail the same way this block would.
     if (this.stopped) {
-      endSession(this.db, sessionId, { exitCode });
-      fixtureWriter?.close(exitCode);
-      if (fixtureWriter) clearRecordMarker(this.config.configDir);
-      await logWriter.close();
+      try {
+        const result = this._applyTransition({
+          db: this.db,
+          workflowId: wf.id,
+          itemId: item.id,
+          sessionId,
+          stage: item.stage_id,
+          phase: phaseKey,
+          attempt,
+          event: 'session_fail',
+          guardCtx: { classifierResult: 'transient' },
+        });
+        this._armRetryTimer(item.id, attempt, result);
+        this._broadcastItemState(wf.id, item.id, item.stage_id, result);
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+      } catch (err) {
+        // DB likely already closed during shutdown — crash recovery picks up
+        // on next start. Item remains in_progress, session row stays 'running';
+        // buildCrashRecovery transitions them correctly on the next start().
+        console.warn('[scheduler] stopped-guard DB write failed (likely shutdown race):', err);
+      }
       this.inFlight.delete(item.id);
       return;
     }
@@ -1107,6 +1304,7 @@ export class Scheduler {
           event: 'validator_fail',
           guardCtx: { prepostRuns: preRuns },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
@@ -1164,6 +1362,7 @@ export class Scheduler {
           event: 'diff_check_fail',
           guardCtx: { prepostRuns: preRuns, artifactWrites },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
@@ -1248,11 +1447,54 @@ export class Scheduler {
           event: 'post_command_action',
           guardCtx: { postCommandAction: resolvedAction, morePhases, nextPhase, prepostRuns: allRuns, artifactWrites },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
         console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} post_command_action=${JSON.stringify(resolvedAction)} → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
+
+        // Inject the failed hook's output into handoff.json so the next agent
+        // spawn sees it via {{handoff}} or a direct Read of handoff.json.
+        // Covers two cases:
+        //   1. retry:fresh_with_failure_summary → awaiting_retry: the failure
+        //      context is in the file when the scheduler re-spawns after backoff.
+        //   2. goto → in_progress: the re-entered phase (e.g. implement) gets the
+        //      hook output (e.g. check-features JSON validation error) immediately.
+        const failedRun = postResult.runs.at(-1);
+        if (failedRun && failedRun.output) {
+          const shouldInject =
+            (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') ||
+            (resolvedAction.kind === 'goto' && result.newState === 'in_progress');
+          if (shouldInject) {
+            injectHookFailure(worktreePath, {
+              phase: phaseKey,
+              attempt,
+              sessionId,
+              command: failedRun.commandName,
+              exitCode: failedRun.exitCode,
+              output: failedRun.output,
+            });
+          }
+        }
+
         if (result.newState === 'awaiting_user') {
-          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+
+        // Explicit session.ended — the generic wrap-up below infers reason from
+        // the agent's exitCode (0 ⇒ 'ok'), which would mislabel this session as
+        // successful even though a post-command returned a non-continue action.
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'post_command_action' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
 
       } else {
         // timeout / spawn_failed / unhandled_exit → treat as session_fail.
@@ -1271,10 +1513,42 @@ export class Scheduler {
           event: 'session_fail',
           guardCtx: { classifierResult, prepostRuns: allRuns },
         });
+        this._armRetryTimer(freshItem.id, attempt, result);
+        // Inject partial output captured before the timeout/error.
+        if (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') {
+          const failedRun = postResult.runs.at(-1);
+          if (failedRun && failedRun.output) {
+            injectHookFailure(worktreePath, {
+              phase: phaseKey,
+              attempt,
+              sessionId,
+              command: failedRun.commandName,
+              exitCode: failedRun.exitCode,
+              output: failedRun.output,
+            });
+          }
+        }
         if (result.newState === 'awaiting_user') {
-          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+          console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
         }
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+
+        // Explicit session.ended — same reason as the action branch above: the
+        // generic wrap-up would report reason: 'ok' because the agent exited 0,
+        // which hides the post-command timeout / spawn failure from the UI.
+        fixtureWriter?.close(exitCode);
+        if (fixtureWriter) clearRecordMarker(this.config.configDir);
+        this.broadcastFn(wf.id, sessionId, 'session.ended', {
+          sessionId,
+          endedAt: new Date().toISOString(),
+          exitCode,
+          statusFlags: { parseErrors },
+          reason: 'post_command_fail' as const,
+        });
+        await logWriter.close();
+        endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
+        this.inFlight.delete(item.id);
+        return;
       }
 
     } else {
@@ -1293,13 +1567,24 @@ export class Scheduler {
         event: 'session_fail',
         guardCtx: { classifierResult, prepostRuns: preRuns },
       });
-      // Arm retry timer if item entered awaiting_retry.
-      if (result.newState === 'awaiting_retry') {
-        this.retryAfterAt.set(freshItem.id, Date.now() + RETRY_BACKOFF_MS);
+      this._armRetryTimer(freshItem.id, attempt, result);
+      // Inject agent stderr for fresh_with_failure_summary outer-ladder retries.
+      if (result.newState === 'awaiting_retry' && result.retryMode === 'fresh_with_failure_summary') {
+        const failureOutput = stderr.trim();
+        if (failureOutput) {
+          injectHookFailure(worktreePath, {
+            phase: phaseKey,
+            attempt,
+            sessionId,
+            command: `${phaseKey}-agent`,
+            exitCode: exitCode ?? null,
+            output: failureOutput,
+          });
+        }
       }
       console.log(`[scheduler] → ${result.newState}`);
       if (result.newState === 'awaiting_user') {
-        console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack <id>)`);
+        console.log(`[scheduler] ATTENTION NEEDED: ${freshItem.stage_id}/${freshItem.current_phase} requires user action (run: yoke ack ${wf.id})`);
       }
       this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
     }
@@ -1337,6 +1622,72 @@ export class Scheduler {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Ensure a worktree exists for the given workflow before the tick loop
+   * begins. Called from start() once, after ingestWorkflow.
+   *
+   *   - worktree_path null:    create worktree + run bootstrap commands.
+   *   - worktree_path set and directory present on disk: reuse as-is.
+   *   - worktree_path set but directory missing (user deleted .worktrees/,
+   *     or a prior crash left the DB ahead of the filesystem): recreate +
+   *     rebootstrap, persisting the new path via applyWorktreeCreated.
+   *
+   * Bootstrap commands run only when we create a worktree here — on reuse
+   * they are assumed to have succeeded in the prior run (the state machine
+   * sets worktree_path only after applyWorktreeCreated, which follows a
+   * successful createWorktree; bootstrap failures do not overwrite it).
+   *
+   * Throws on createWorktree or bootstrap failure. Caller (start.ts)
+   * surfaces the error to the user and exits non-zero.
+   */
+  private async _ensureWorktree(workflowId: string): Promise<void> {
+    const wf = this._readWorkflow(workflowId);
+    if (!wf) throw new Error(`Workflow not found after ingest: ${workflowId}`);
+
+    // Reuse path — on-disk check guards against DB/filesystem divergence.
+    if (wf.worktree_path && fs.existsSync(wf.worktree_path)) {
+      console.log(`[scheduler] reusing existing worktree: ${wf.worktree_path}`);
+      return;
+    }
+
+    const baseDir = this.config.worktrees?.base_dir
+      ? path.resolve(this.config.configDir, this.config.worktrees.base_dir)
+      : path.join(this.config.configDir, '.worktrees');
+
+    console.log(`[scheduler] creating worktree for ${wf.name} in ${baseDir}`);
+    const wtInfo = await this.worktreeManager.createWorktree({
+      workflowId: wf.id,
+      workflowName: wf.name,
+      baseDir,
+      branchPrefix: this.config.worktrees?.branch_prefix ?? 'yoke/',
+    });
+    console.log(`[scheduler] worktree created: ${wtInfo.worktreePath} (${wtInfo.branchName})`);
+
+    // Persist via engine function (RC-2: no direct writer calls from scheduler).
+    applyWorktreeCreated({
+      db: this.db,
+      workflowId,
+      branchName: wtInfo.branchName,
+      worktreePath: wtInfo.worktreePath,
+    });
+
+    const commands = this.config.worktrees?.bootstrap?.commands ?? [];
+    if (commands.length > 0) {
+      console.log(`[scheduler] running ${commands.length} bootstrap command(s)`);
+      const event = await this.worktreeManager.runBootstrap({
+        worktreePath: wtInfo.worktreePath,
+        commands,
+      });
+      if (event.type === 'bootstrap_fail') {
+        throw new Error(
+          `Bootstrap failed for workflow ${workflowId}: command '${event.failedCommand}' ` +
+          `exited ${event.exitCode}\n${event.stderr}`,
+        );
+      }
+      console.log(`[scheduler] bootstrap ok`);
+    }
+  }
 
   private _readWorkflow(workflowId: string): WorkflowDbRow | null {
     return (this.db.reader()

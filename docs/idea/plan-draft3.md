@@ -86,7 +86,7 @@ Key moves from draft2:
 
 ## Core Design Principles
 
-1. **Agents communicate through files, not messages.** Planner writes `features.json` (projection only — see §File Contract), `architecture.md`, `handoff.json` seed. Implementer reads those, writes code + `progress.md` + appends to `handoff.json` + `.yoke/status-updates.jsonl`. Reviewer subagents write directly to `reviews/feature-N/<angle>.json`. No agent-to-agent message passing. No shared context.
+1. **Agents communicate through files, not messages.** Planner writes `features.json` (projection only — see §File Contract), `architecture.md`, `handoff.json` seed. Implementer reads those, writes code + appends to `handoff.json` (with a prose `note`) + `.yoke/status-updates.jsonl`. Reviewer subagents write directly to `reviews/feature-N/<angle>.json`. No agent-to-agent message passing. No shared context.
 
 2. **Quality gates are the user's choice of mechanism; the harness just runs what you configure.** Users may wire quality gates via (a) a Claude Stop hook, (b) Yoke `post:` commands (D50), (c) both, or (d) neither at their own risk. The harness accepts phase completion when the configured acceptance conditions pass — the agent session exited cleanly, every `post:` command returned success, and every configured artifact validator passed. Yoke does not own a hook namespace. Yoke ships example templates users can copy; `yoke init` can scaffold them on opt-in. `.yoke/last-check.json` is an **optional convention**: if a user's Stop hook emits it, the dashboard displays its contents; the harness does not require its presence. [D28, D30, D50, D55]
 
@@ -128,13 +128,11 @@ A fresh implementer session per feature. Full tools (Read, Edit, Write, Bash, Gl
 **Input prompt (via stdin, one-shot buffer):**
 - Feature spec (pulled from SQLite, not worktree)
 - Architecture.md (if present)
-- `progress.md` (narrative)
-- `handoff.json` entries relevant to this feature (structured cross-phase context, including any queued inject-context, retry history, reviewer notes from prior attempts)
+- `handoff.json` entries relevant to this feature (each entry carries a `note` with the prior session's narrative) (structured cross-phase context, including any queued inject-context, retry history, reviewer notes from prior attempts)
 - Recent git log (last 20 commits)
 
 **Output:**
 - Code changes committed to git
-- `progress.md` updated
 - `.yoke/status-updates.jsonl` appended (narrow status channel — this is how the implementer reports status to SQLite)
 - `handoff.json` entry for this attempt (intended_files, deferred_criteria, known_risks)
 - `.yoke/last-check.json` — **optional**, written by a user-configured Stop hook if the user chose that quality-gate path
@@ -342,7 +340,7 @@ Status updates from the implementer go through a narrow channel: the implementer
 
 ### handoff.json (structured cross-phase channel)
 
-Per-workflow, append-only. Solves the "progress.md is free-form and reviewers need context" leak. [D13]
+Per-workflow, append-only. Each entry carries a `note` (prose narrative) plus structured metadata. [D13]
 
 ```json
 {
@@ -365,10 +363,6 @@ Per-workflow, append-only. Solves the "progress.md is free-form and reviewers ne
 ```
 
 User "inject context" entries queue here as `user_injected_context` and are consumed by the next session of that feature. [D43]
-
-### progress.md
-
-Free-form narrative. Not a contract. Exists alongside handoff.json.
 
 ### reviews/feature-N/<angle>.json
 
@@ -615,7 +609,7 @@ Heartbeat **never kills**. It emits a `SystemNotice` warning. User decides. Defa
 
 ### Core rule
 
-`-c` is a soft optimization for intra-phase continuation. **Crash recovery does not depend on `-c`.** Recovery is always a fresh session; the harness reconstructs context from artifacts + `progress.md` + `handoff.json` + git log + Session Log Store.
+`-c` is a soft optimization for intra-phase continuation. **Crash recovery does not depend on `-c`.** Recovery is always a fresh session; the harness reconstructs context from artifacts + `handoff.json` + git log + Session Log Store.
 
 ### On harness SIGTERM/SIGINT
 
@@ -791,8 +785,6 @@ phases:
     command: "claude"
     args: ["-p", "--output-format", "stream-json"]
     prompt_template: "prompts/implement.md"
-    output_artifacts:
-      - { path: "progress.md", required: true }
     max_outer_retries: 3
     retry_ladder: ["continue", "fresh_with_failure_summary", "awaiting_user"]
     on_review_fail: { retry_mode: "fresh_with_failure_summary" }

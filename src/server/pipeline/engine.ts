@@ -537,8 +537,8 @@ function selectConditionalOutcome(
             retryMode: decision.mode,
           };
         }
-        // Exhausted: use awaiting_user (o[5] is stop-and-ask, so fall through)
-        return { to: 'awaiting_user', sideEffects: [] };
+        // Exhausted: awaiting_user with pending_attention so the user is notified.
+        return { to: 'awaiting_user', sideEffects: ['insert pending_attention'] };
       }
 
       if (action.kind === 'stop-and-ask') {
@@ -584,7 +584,8 @@ function selectConditionalOutcome(
           retryMode: decision.mode,
         };
       }
-      return { to: 'awaiting_user', sideEffects: [] };
+      // o[1]: budget exhausted → awaiting_user with pending_attention
+      return { to: o[1].to, sideEffects: o[1].sideEffects };
     }
 
     // -----------------------------------------------------------------------
@@ -602,7 +603,8 @@ function selectConditionalOutcome(
           retryMode: decision.mode,
         };
       }
-      return { to: 'awaiting_user', sideEffects: [] };
+      // o[1]: budget exhausted → awaiting_user with pending_attention
+      return { to: o[1].to, sideEffects: o[1].sideEffects };
     }
 
     // -----------------------------------------------------------------------
@@ -615,17 +617,15 @@ function selectConditionalOutcome(
     case 'in_progress:session_fail': {
       const classifier = ctx.classifierResult ?? 'unknown';
       if (classifier === 'transient') {
-        const decision = computeRetry(item, ctx);
-        if (decision.kind === 'retry') {
-          return {
-            to: o[0].to,
-            sideEffects: o[0].sideEffects,
-            newRetryCount: decision.nextRetryCount,
-            retryMode: decision.mode,
-          };
-        }
-        // Budget exhausted even though transient — treat as retries_exhausted
-        return { to: 'awaiting_user', sideEffects: [] };
+        // Transient failures (API 500, timeout, network errors) always retry with
+        // exponential backoff — no budget cap.  retry_count is still incremented
+        // so the scheduler can compute the correct delay (15 s → 30 s → 1 m → 2 m …).
+        return {
+          to: o[0].to,
+          sideEffects: o[0].sideEffects,
+          newRetryCount: item.retry_count + 1,
+          retryMode: 'fresh_with_failure_summary',
+        };
       }
       if (classifier === 'permanent') {
         return { to: o[1].to, sideEffects: o[1].sideEffects };
@@ -639,20 +639,21 @@ function selectConditionalOutcome(
     // Guard: retry budget remaining
     // -----------------------------------------------------------------------
     case 'awaiting_retry:backoff_elapsed': {
-      const maxOuter = ctx.maxOuterRetries ?? DEFAULT_MAX_OUTER_RETRIES;
       const ladder = ctx.retryLadder ?? DEFAULT_RETRY_LADDER;
       // retry_count was already incremented when we entered awaiting_retry.
-      // The mode for the upcoming session is the one that was chosen then.
-      // If the caller stored it in guardCtx.currentRetryMode, use that;
-      // otherwise re-derive from ladder[retry_count - 1].
-      if (item.retry_count <= 0 || item.retry_count > maxOuter) {
-        return { to: 'awaiting_user', sideEffects: [] };
+      // If the caller stored the chosen mode in guardCtx.currentRetryMode (e.g.
+      // for transient retries where the budget is unlimited), use it directly.
+      // Otherwise re-derive from ladder[retry_count - 1]; when the ladder runs
+      // out ('awaiting_user' sentinel or undefined), exhaust to awaiting_user
+      // with a pending_attention notification so the user is informed (o[1]).
+      if (item.retry_count <= 0) {
+        return { to: o[1].to, sideEffects: o[1].sideEffects };
       }
       const retryMode: RetryMode =
         ctx.currentRetryMode ??
         (ladder[item.retry_count - 1] ?? 'awaiting_user');
       if (retryMode === 'awaiting_user') {
-        return { to: 'awaiting_user', sideEffects: [] };
+        return { to: o[1].to, sideEffects: o[1].sideEffects };
       }
       return {
         to: o[0].to,
@@ -739,6 +740,69 @@ function cascadeBlockDependents(
       // Continue BFS for this newly-blocked item's own dependents
       queue.push(dep.id);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: cascade-unblock dependents when a blocking item completes
+// ---------------------------------------------------------------------------
+
+/**
+ * Reverses a prior cascade-block for all items whose blocked_reason references
+ * the given item.
+ *
+ * When item A entered a CASCADE_TRIGGER_STATE, cascadeBlockDependents() set
+ * every downstream item's status to 'blocked' with
+ *   blocked_reason = 'dependency <A.id> <state>'
+ *
+ * If A later transitions to 'complete', the reason for blocking is gone.
+ * This function finds all such items and resets them to 'pending' so the
+ * tick loop's deps_satisfied probe re-evaluates their readiness.
+ *
+ * Must be called from within a db.transaction() callback.
+ *
+ * Note: items that were manually blocked (via user_block) are not affected
+ * because their blocked_reason references their OWN id, not a dependency.
+ */
+function cascadeUnblockDependents(
+  db: SqliteDb,
+  workflowId: string,
+  completedItemId: string,
+  now: string,
+): void {
+  const pattern = `dependency ${completedItemId} %`;
+
+  const blocked = db
+    .prepare(`
+      SELECT id FROM items
+       WHERE workflow_id = ?
+         AND status = 'blocked'
+         AND blocked_reason LIKE ?
+    `)
+    .all(workflowId, pattern) as { id: string }[];
+
+  for (const item of blocked) {
+    db.prepare(`
+      UPDATE items
+         SET status = 'pending',
+             blocked_reason = NULL,
+             updated_at = ?
+       WHERE id = ?
+    `).run(now, item.id);
+
+    writeEvent(db, {
+      ts: now,
+      workflowId,
+      itemId: item.id,
+      sessionId: null,
+      stage: null,
+      phase: null,
+      attempt: null,
+      eventType: 'cascade_unblock',
+      level: 'info',
+      message: `Cascade-unblocked: dependency ${completedItemId} is now complete`,
+      extra: JSON.stringify({ origin: completedItemId }),
+    });
   }
 }
 
@@ -924,6 +988,42 @@ export function applyItemTransition(
         ? (`dependency ${params.itemId} ${currentState}`)
         : item.blocked_reason;
 
+    // No-op short-circuit: narrowly targets the tick-loop `deps_satisfied`
+    // poll on pending items (fires every 500 ms, resolves to pending→pending
+    // until a dep completes). Without this, the events table grows unboundedly
+    // and items.updated_at churns on every tick.
+    //
+    // Intentionally limited to (pending, deps_satisfied) only. Other same-state
+    // transitions are NOT short-circuited because they may still need to:
+    //   - re-run cascade-unblock on `complete` re-entry,
+    //   - re-probe stage-complete when sibling items changed,
+    //   - persist pending_attention rows bundled as side effects,
+    //   - emit an event that downstream consumers rely on even if the item's
+    //     own columns didn't change.
+    // The guard here only trusts the cheap, provably-safe case.
+    const isPendingPoll =
+      params.event === 'deps_satisfied' &&
+      currentState === 'pending' &&
+      newState === 'pending' &&
+      newPhase === item.current_phase &&
+      newRetryCount === item.retry_count &&
+      newBlockedReason === item.blocked_reason &&
+      selection.sideEffects.length === 0 &&
+      !ctx.prepostRuns?.length &&
+      !ctx.artifactWrites?.length;
+
+    if (isPendingPoll) {
+      return {
+        newState,
+        newPhase,
+        sideEffects: selection.sideEffects,
+        retryMode: selection.retryMode,
+        cascadeBlocked: false,
+        stageComplete: false,
+        pendingAttentionRowId: null,
+      };
+    }
+
     // Persist item changes.
     db.prepare(`
       UPDATE items
@@ -977,6 +1077,15 @@ export function applyItemTransition(
         now,
       );
       cascadeBlocked = true;
+    }
+
+    // Cascade-unblock: when an item reaches 'complete', reverse any prior
+    // cascade-block that referenced this item.  Blocked dependents are reset
+    // to 'pending' so the tick loop re-evaluates their deps_satisfied guard.
+    // Must run BEFORE stageComplete so the newly-pending items aren't counted
+    // as terminal (they aren't).
+    if (newState === 'complete') {
+      cascadeUnblockDependents(db, params.workflowId, params.itemId, now);
     }
 
     // Check stage completion (AC-1): fires when all items are terminal.

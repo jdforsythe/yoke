@@ -91,14 +91,15 @@ function insertItem(
     phase?: string;
     dependsOn?: string[];
     retryCount?: number;
+    blockedReason?: string;
   } = {},
 ) {
   pool.writer
     .prepare(`
       INSERT INTO items
         (id, workflow_id, stage_id, data, status, current_phase,
-         depends_on, retry_count, updated_at)
-      VALUES (?, ?, ?, '{}', ?, ?, ?, ?, '2026-01-01T00:00:00Z')
+         depends_on, retry_count, blocked_reason, updated_at)
+      VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?, '2026-01-01T00:00:00Z')
     `)
     .run(
       id,
@@ -108,6 +109,7 @@ function insertItem(
       opts.phase ?? 'implement',
       opts.dependsOn ? JSON.stringify(opts.dependsOn) : null,
       opts.retryCount ?? 0,
+      opts.blockedReason ?? null,
     );
 }
 
@@ -445,7 +447,8 @@ describe('applyItemTransition — phase_start worktree guard', () => {
 // ---------------------------------------------------------------------------
 
 describe('applyItemTransition — retry ladder (AC-3)', () => {
-  it('session_fail transient + retry_count=0 → awaiting_retry with continue', () => {
+  it('session_fail transient + retry_count=0 → awaiting_retry with fresh_with_failure_summary', () => {
+    // Transient failures always use fresh_with_failure_summary (bypasses the ladder).
     const wfId = makeWfId();
     const itemId = makeItemId();
     insertWorkflow(wfId);
@@ -464,7 +467,7 @@ describe('applyItemTransition — retry ladder (AC-3)', () => {
     });
 
     expect(result.newState).toBe('awaiting_retry');
-    expect(result.retryMode).toBe('continue');
+    expect(result.retryMode).toBe('fresh_with_failure_summary');
     expect(getItem(itemId)?.retry_count).toBe(1); // incremented
   });
 
@@ -491,7 +494,8 @@ describe('applyItemTransition — retry ladder (AC-3)', () => {
     expect(getItem(itemId)?.retry_count).toBe(2);
   });
 
-  it('session_fail transient + retry_count=2 → awaiting_user (exhausted)', () => {
+  it('session_fail transient + retry_count=2 → awaiting_retry (no budget cap for transient)', () => {
+    // Transient failures (API 500 / timeout) always retry regardless of retry_count.
     const wfId = makeWfId();
     const itemId = makeItemId();
     insertWorkflow(wfId);
@@ -509,8 +513,9 @@ describe('applyItemTransition — retry ladder (AC-3)', () => {
       guardCtx: { classifierResult: 'transient' },
     });
 
-    expect(result.newState).toBe('awaiting_user');
-    expect(result.retryMode).toBeUndefined();
+    expect(result.newState).toBe('awaiting_retry');
+    expect(result.retryMode).toBe('fresh_with_failure_summary');
+    expect(getItem(itemId)?.retry_count).toBe(3);
   });
 
   it('session_fail permanent → awaiting_user (no retry)', () => {
@@ -603,7 +608,9 @@ describe('applyItemTransition — retry ladder (AC-3)', () => {
     expect(result.retryMode).toBe('continue');
   });
 
-  it('custom retry_ladder is honoured', () => {
+  it('transient session_fail always uses fresh_with_failure_summary (custom retry_ladder ignored for transient)', () => {
+    // Transient failures bypass the retry ladder — they always use
+    // fresh_with_failure_summary so the next session starts fresh with context.
     const wfId = makeWfId();
     const itemId = makeItemId();
     insertWorkflow(wfId);
@@ -625,7 +632,8 @@ describe('applyItemTransition — retry ladder (AC-3)', () => {
       },
     });
 
-    expect(result.retryMode).toBe('fresh_with_diff');
+    expect(result.retryMode).toBe('fresh_with_failure_summary');
+    expect(result.newState).toBe('awaiting_retry');
   });
 });
 
@@ -973,6 +981,140 @@ describe('cascade block — AC-2', () => {
     // parent goes to abandoned; cascadeBlocked should be false (was already in cascade state)
     expect(result.newState).toBe('abandoned');
     expect(result.cascadeBlocked).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cascade unblock — auto-resume when blocking dependency completes
+// ---------------------------------------------------------------------------
+
+describe('cascade unblock — dependency completes', () => {
+  it('completing a parent resets cascade-blocked children to pending', () => {
+    const wfId = makeWfId();
+    const parent = makeItemId();
+    const child = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(parent, wfId, 'stage1', { status: 'in_progress' });
+    insertItem(child, wfId, 'stage1', {
+      status: 'blocked',
+      dependsOn: [parent],
+      blockedReason: `dependency ${parent} awaiting_user`,
+    });
+
+    // Parent succeeds — transitions in_progress → complete via session_ok.
+    // morePhases=false so the last-phase outcome fires.
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: parent,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'review',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false, allPostCommandsOk: true, validatorsOk: true, diffCheckOk: true },
+    });
+
+    // Child must be back to pending so deps_satisfied can re-evaluate.
+    const childRow = getItem(child);
+    expect(childRow?.status).toBe('pending');
+    expect(childRow?.blocked_reason).toBeNull();
+  });
+
+  it('cascade-unblock writes a cascade_unblock event for each unblocked item', () => {
+    const wfId = makeWfId();
+    const parent = makeItemId();
+    const child1 = makeItemId();
+    const child2 = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(parent, wfId, 'stage1', { status: 'in_progress' });
+    insertItem(child1, wfId, 'stage1', {
+      status: 'blocked',
+      dependsOn: [parent],
+      blockedReason: `dependency ${parent} awaiting_user`,
+    });
+    insertItem(child2, wfId, 'stage1', {
+      status: 'blocked',
+      dependsOn: [parent],
+      blockedReason: `dependency ${parent} awaiting_user`,
+    });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: parent,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'review',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false, allPostCommandsOk: true, validatorsOk: true, diffCheckOk: true },
+    });
+
+    const unblockEvents = pool.writer
+      .prepare(
+        `SELECT COUNT(*) AS n FROM events WHERE workflow_id = ? AND event_type = 'cascade_unblock'`,
+      )
+      .get(wfId) as { n: number };
+    expect(unblockEvents.n).toBe(2);
+  });
+
+  it('does not unblock items whose blocked_reason references a different item', () => {
+    const wfId = makeWfId();
+    const parentA = makeItemId();
+    const parentB = makeItemId();
+    const childOfB = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(parentA, wfId, 'stage1', { status: 'in_progress' });
+    insertItem(parentB, wfId, 'stage1', { status: 'awaiting_user' });
+    insertItem(childOfB, wfId, 'stage1', {
+      status: 'blocked',
+      dependsOn: [parentB],
+      blockedReason: `dependency ${parentB} awaiting_user`,
+    });
+
+    // parentA completes — should NOT unblock childOfB (which depends on parentB)
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: parentA,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'review',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false, allPostCommandsOk: true, validatorsOk: true, diffCheckOk: true },
+    });
+
+    expect(getItem(childOfB)?.status).toBe('blocked');
+  });
+
+  it('stageComplete is false after cascade-unblock because pending items are not terminal', () => {
+    const wfId = makeWfId();
+    const parent = makeItemId();
+    const child = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(parent, wfId, 'stage1', { status: 'in_progress' });
+    insertItem(child, wfId, 'stage1', {
+      status: 'blocked',
+      dependsOn: [parent],
+      blockedReason: `dependency ${parent} awaiting_user`,
+    });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId: parent,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'review',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: { morePhases: false, allPostCommandsOk: true, validatorsOk: true, diffCheckOk: true },
+    });
+
+    // stage is NOT complete because child was reset to pending
+    expect(result.stageComplete).toBe(false);
   });
 });
 
@@ -1569,6 +1711,91 @@ describe('session_fail — policy classifier', () => {
     expect(result.newState).toBe('awaiting_user');
     expect(result.retryMode).toBeUndefined();
     expect(getItem(itemId)?.status).toBe('awaiting_user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exhausted validator_fail / diff_check_fail → pending_attention (feat-pipeline-hardening)
+// ---------------------------------------------------------------------------
+
+describe('validator_fail exhausted → awaiting_user with pending_attention', () => {
+  it('inserts pending_attention when retry budget is exhausted', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    // retry_count=3 with default max_outer_retries=3 → exhausted
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress', retryCount: 3 });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 4,
+      event: 'validator_fail',
+    });
+
+    expect(result.newState).toBe('awaiting_user');
+    expect(getItem(itemId)?.status).toBe('awaiting_user');
+    expect(countPendingAttention(wfId)).toBe(1);
+    expect(pendingAttentionKinds(wfId)).toContain('awaiting_user_retry');
+  });
+});
+
+describe('diff_check_fail exhausted → awaiting_user with pending_attention', () => {
+  it('inserts pending_attention when retry budget is exhausted', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress', retryCount: 3 });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 4,
+      event: 'diff_check_fail',
+    });
+
+    expect(result.newState).toBe('awaiting_user');
+    expect(getItem(itemId)?.status).toBe('awaiting_user');
+    expect(countPendingAttention(wfId)).toBe(1);
+    expect(pendingAttentionKinds(wfId)).toContain('awaiting_user_retry');
+  });
+});
+
+describe('post_command_action retry exhausted → awaiting_user with pending_attention', () => {
+  it('inserts pending_attention when retry action budget is exhausted', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    insertWorkflow(wfId, { worktreePath: '/tmp/wt' });
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress', retryCount: 3 });
+
+    const result = applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 4,
+      event: 'post_command_action',
+      guardCtx: {
+        postCommandAction: {
+          kind: 'retry',
+          retry: { mode: 'fresh_with_failure_summary', max: 2 },
+        },
+      },
+    });
+
+    expect(result.newState).toBe('awaiting_user');
+    expect(getItem(itemId)?.status).toBe('awaiting_user');
+    expect(result.pendingAttentionRowId).not.toBeNull();
   });
 });
 

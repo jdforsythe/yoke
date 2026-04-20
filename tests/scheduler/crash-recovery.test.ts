@@ -233,35 +233,14 @@ function readRunningSessionCount(workflowId: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// AC-2: bootstrap_ok fault injection triggers bootstrap_fail recovery path
+// AC-2: bootstrap_ok fault injection
+//
+// Removed: the bootstrap_ok fault checkpoint lived inside _doBootstrapThenSpawn,
+// which is no longer on the hot path. Worktree creation + bootstrap run
+// deterministically in Scheduler.start() via _ensureWorktree — a bootstrap
+// failure there surfaces as a rejection from start() (see scheduler.test.ts
+// "bootstrap_fail → scheduler.start() rejects …"), not an item-level state.
 // ---------------------------------------------------------------------------
-
-describe('AC-2: bootstrap_ok fault injection', () => {
-  it('item transitions to bootstrap_failed when fault fires at bootstrap_ok checkpoint', async () => {
-    const config = makeConfig({
-      // Include worktrees config so _doBootstrapThenSpawn follows the bootstrap path.
-      worktrees: { base_dir: '.worktrees', bootstrap: { commands: ['echo bootstrap'] } },
-    });
-    const fi = new ActiveFaultInjector(['bootstrap_ok']);
-    const scheduler = buildScheduler({ config, faultInjector: fi });
-
-    await scheduler.start();
-
-    const { workflowId } = ingestWorkflow(db, config);
-    const items = readAllItems(workflowId);
-
-    // Wait for item to leave 'bootstrapping' and enter 'bootstrap_failed'.
-    // The fault injector causes FaultInjectionError after runBootstrap() but
-    // before applyItemTransition('bootstrap_ok'), and the catch block fires
-    // 'bootstrap_fail' to put the item in the bootstrap_fail recovery path.
-    await pollUntil(() => {
-      const status = readItemStatus(items[0].id);
-      return status === 'bootstrap_failed';
-    });
-
-    expect(readItemStatus(items[0].id)).toBe('bootstrap_failed');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // AC-3 / AC-4a / AC-4b: session_ok fault injection + crash recovery restart
@@ -327,9 +306,63 @@ describe('AC-3: session_ok fault injection → crash recovery restart', () => {
 
     const finalStatus = readItemStatus(items1[0].id);
     // Item must have exited 'in_progress' — crash recovery worked.
-    // Note: the stale session row stays 'running' in SQLite (never ended via
-    // endSession); crash recovery only updates the item state, not the session row.
     expect(['awaiting_retry', 'awaiting_user', 'complete', 'ready']).toContain(finalStatus);
+
+    // feat-pipeline-hardening: stale session rows are now ended during crash
+    // recovery. The session should have status='failed' (no longer 'running')
+    // so it does not count against maxParallel.
+    expect(readRunningSessionCount(workflowId)).toBe(0);
+
+    await scheduler2.stop();
+  });
+});
+
+describe('feat-pipeline-hardening: stale sessions ended during crash recovery', () => {
+  it('stale sessions have status=failed after crash recovery, not running', async () => {
+    const config = makeConfig();
+    const fi = new ActiveFaultInjector(['session_ok']);
+    const scheduler1 = buildScheduler({ config, faultInjector: fi });
+
+    const { workflowId } = ingestWorkflow(db, config);
+    await scheduler1.start();
+
+    // Wait for session to be created with 'running' status.
+    await pollUntil(() => readRunningSessionCount(workflowId) > 0);
+    // Wait for the fault to fire.
+    await pollUntil(
+      () => {
+        const items = readAllItems(workflowId);
+        return items[0]?.status === 'in_progress' && readRunningSessionCount(workflowId) === 1;
+      },
+      { timeoutMs: 3000 },
+    );
+    await scheduler1.stop();
+
+    // Capture the session id for verification.
+    const sessionsBefore = db.reader()
+      .prepare(`SELECT id, status FROM sessions WHERE workflow_id = ?`)
+      .all(workflowId) as { id: string; status: string }[];
+    const staleSession = sessionsBefore.find(s => s.status === 'running');
+    expect(staleSession).toBeDefined();
+
+    // Start a new scheduler — crash recovery should end the stale session.
+    const scheduler2 = buildScheduler({ config });
+    await scheduler2.start();
+
+    await pollUntil(() => {
+      const s = readItemStatus(readAllItems(workflowId)[0].id);
+      return s !== 'in_progress';
+    });
+
+    // The stale session must now be ended (status != 'running').
+    const sessionsAfter = db.reader()
+      .prepare(`SELECT id, status, ended_at FROM sessions WHERE id = ?`)
+      .get(staleSession!.id) as { id: string; status: string; ended_at: string | null };
+    expect(sessionsAfter.status).toBe('failed');
+    expect(sessionsAfter.ended_at).not.toBeNull();
+
+    // No more running sessions — concurrency is unblocked.
+    expect(readRunningSessionCount(workflowId)).toBe(0);
 
     await scheduler2.stop();
   });

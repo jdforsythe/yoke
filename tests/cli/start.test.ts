@@ -101,7 +101,7 @@ describe('yoke start — startServer()', () => {
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
     // Port 0 → OS-assigned port to avoid conflicts.
-    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck, noScheduler: true });
 
     try {
       expect(handle.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -125,7 +125,7 @@ describe('yoke start — startServer()', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
-    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck, noScheduler: true });
 
     try {
       const res = await fetch(`${handle.url}/api/workflows`);
@@ -142,7 +142,7 @@ describe('yoke start — startServer()', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
 
-    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck });
+    const handle = await startServer({ configPath, port: 0, _gitCheck: noopGitCheck, noScheduler: true });
     const serverJsonPath = path.join(tmpDir, '.yoke', 'server.json');
     expect(fs.existsSync(serverJsonPath)).toBe(true);
 

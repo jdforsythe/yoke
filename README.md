@@ -71,6 +71,12 @@ docs/
 
 ---
 
+## Coverage
+
+Run `pnpm test:coverage` to execute unit tests with coverage thresholds; the HTML report is written to `coverage/index.html`.
+
+---
+
 ## License
 
 TBD (will be set before the first public release).

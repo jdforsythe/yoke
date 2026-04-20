@@ -7,3 +7,9 @@ bin/
 *.db-shm
 .worktrees/
 .yoke/
+handoff.json
+handoff-*.json
+review-verdict.json
+test-results/
+playwright-report/
+coverage/

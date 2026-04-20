@@ -124,13 +124,10 @@ export async function dispatchNotification(
   // Always log to console (visible in terminal and CI).
   console.log(`[yoke] attention required — ${title}: ${message} (${deepLinkUrl})`);
 
-  // RC-3: skip native notification on non-macOS.
-  if (process.platform !== 'darwin') {
-    return;
-  }
-
   // Use injected notifier (tests) or load node-notifier dynamically (production).
-  const notifyFn: NotifierFn | null = deps.notifier ?? await loadNodeNotifier();
+  // RC-3: native loader is macOS-only; injected notifier always fires (cross-platform tests).
+  const notifyFn: NotifierFn | null =
+    deps.notifier ?? (process.platform === 'darwin' ? await loadNodeNotifier() : null);
   if (!notifyFn) {
     // RC-3: gracefully skip when node-notifier binary is unavailable.
     return;

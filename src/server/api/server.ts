@@ -27,6 +27,10 @@ import {
   createWsHandler,
 } from './ws.js';
 import { IdempotencyStore } from './idempotency.js';
+import type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
+
+// Re-export so consumers can import from a single server entry point.
+export type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -44,7 +48,8 @@ function notFound(reply: FastifyReply, message = 'not found'): FastifyReply {
 // Snapshot helpers
 // ---------------------------------------------------------------------------
 
-interface WorkflowRow {
+/** Raw row shape as returned by SQLite (snake_case column names). */
+interface DbWorkflowRow {
   id: string;
   name: string;
   status: string;
@@ -52,6 +57,112 @@ interface WorkflowRow {
   created_at: string;
   updated_at: string;
   active_sessions: number;
+  archived_at: string | null;
+}
+
+function mapWorkflowRow(row: DbWorkflowRow): WorkflowRow {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status as WorkflowStatus,
+    currentStage: row.current_stage,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    activeSessions: row.active_sessions,
+    unreadEvents: 0,
+  };
+}
+
+interface DbTimelineEvent {
+  id: number;
+  ts: string;
+  workflow_id: string;
+  item_id: string | null;
+  session_id: string | null;
+  stage: string | null;
+  phase: string | null;
+  attempt: number | null;
+  event_type: string;
+  level: string;
+  message: string;
+  extra: string | null;
+}
+
+function mapTimelineEvent(e: DbTimelineEvent) {
+  return {
+    id: e.id,
+    ts: e.ts,
+    workflowId: e.workflow_id,
+    itemId: e.item_id,
+    sessionId: e.session_id,
+    stage: e.stage,
+    phase: e.phase,
+    attempt: e.attempt,
+    eventType: e.event_type,
+    level: e.level,
+    message: e.message,
+    extra: e.extra ? (() => { try { return JSON.parse(e.extra!); } catch { return e.extra; } })() : null,
+  };
+}
+
+interface DbItemSession {
+  id: string;
+  phase: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  exit_code: number | null;
+}
+
+function mapItemSession(row: DbItemSession) {
+  return {
+    id: row.id,
+    phase: row.phase,
+    status: row.status,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    exitCode: row.exit_code,
+  };
+}
+
+interface DbUsageRow {
+  dimension: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  session_count: number;
+}
+
+function mapUsageRow(row: DbUsageRow) {
+  return {
+    dimension: row.dimension,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens,
+    cacheReadInputTokens: row.cache_read_input_tokens,
+    sessionCount: row.session_count,
+  };
+}
+
+interface DbTimeseriesRow {
+  bucket: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  session_count: number;
+}
+
+function mapTimeseriesRow(row: DbTimeseriesRow) {
+  return {
+    bucket: row.bucket,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens,
+    cacheReadInputTokens: row.cache_read_input_tokens,
+    sessionCount: row.session_count,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +217,21 @@ export type AckAttentionResult =
  */
 export type AckAttentionFn = (workflowId: string, attentionId: number) => AckAttentionResult;
 
+// Re-export RetryItemsResult so the CLI can import it from a single place.
+export type { RetryItemsResult, RetryItemsFn } from '../pipeline/retry-items.js';
+
+// Re-export control executor types so the CLI can import them from a single place.
+export type {
+  ControlExecutorResult,
+  ControlExecutorFn,
+} from '../pipeline/control-executor.js';
+
+// Re-export archive types so the CLI can import from a single place.
+export type {
+  ArchiveWorkflowResult,
+  ArchiveWorkflowFn,
+} from '../pipeline/archive-workflow.js';
+
 /**
  * Optional callbacks injected into the server at creation time.
  * These allow the API layer to delegate writes to the pipeline engine layer
@@ -118,6 +244,26 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   ackAttention?: AckAttentionFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/retry.
+   * Transitions all awaiting_user items in the workflow to in_progress.
+   * If omitted, the endpoint returns 501 Not Implemented.
+   */
+  retryItems?: import('../pipeline/retry-items.js').RetryItemsFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/control or sends a
+   * WS control frame.  Executes cancel (and future pause/resume) actions via
+   * the pipeline engine.  If omitted, the endpoint falls back to the legacy
+   * stub behaviour (record + cache without executing) so existing tests keep
+   * working.
+   */
+  controlExecutor?: import('../pipeline/control-executor.js').ControlExecutorFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/archive or
+   * POST /api/workflows/:id/unarchive.
+   * If omitted, those endpoints return 501 Not Implemented.
+   */
+  archiveWorkflow?: import('../pipeline/archive-workflow.js').ArchiveWorkflowFn;
 }
 
 /**
@@ -144,7 +290,17 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
   // WebSocket route at /stream (§4 Lifecycle).
   // Registered directly on the root fastify instance so it inherits the
   // @fastify/websocket plugin decoration without sub-plugin scoping issues.
-  const wsHandler = createWsHandler({ db, idempotency, seqStore, backfillBuffer, registry });
+  const wsHandler = createWsHandler({
+    db,
+    idempotency,
+    seqStore,
+    backfillBuffer,
+    registry,
+    // controlExecutor is read at call time via the callbacks closure so
+    // start.ts can wire it in after createServer returns (same pattern as
+    // ackAttention / retryItems above).
+    getControlExecutor: () => callbacks.controlExecutor,
+  });
   fastify.get('/stream', { websocket: true }, (connection: SocketStream) => {
     wsHandler(connection.socket);
   });
@@ -165,10 +321,17 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const limit = Math.min(limitRaw, 100);
 
       let sql =
-        'SELECT w.id, w.name, w.status, w.current_stage, w.created_at, w.updated_at,' +
+        'SELECT w.id, w.name, w.status, w.current_stage, w.created_at, w.updated_at, w.archived_at,' +
         ' (SELECT COUNT(*) FROM sessions s WHERE s.workflow_id = w.id AND s.ended_at IS NULL) AS active_sessions' +
         ' FROM workflows w WHERE 1=1';
       const params: unknown[] = [];
+
+      // Exclude archived rows by default; include them only when ?archived=true.
+      if (qs.archived === 'true') {
+        sql += ' AND w.archived_at IS NOT NULL';
+      } else {
+        sql += ' AND w.archived_at IS NULL';
+      }
 
       if (qs.status) {
         sql += ' AND w.status = ?';
@@ -184,14 +347,14 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       }
       sql += ` ORDER BY w.created_at DESC LIMIT ${limit + 1}`;
 
-      const rows = db.reader().prepare(sql).all(...params) as WorkflowRow[];
+      const rows = db.reader().prepare(sql).all(...params) as DbWorkflowRow[];
       const hasMore = rows.length > limit;
-      const workflows = hasMore ? rows.slice(0, limit) : rows;
+      const workflows = (hasMore ? rows.slice(0, limit) : rows).map(mapWorkflowRow);
 
       return reply.send({
         workflows,
         hasMore,
-        nextBefore: hasMore ? workflows[workflows.length - 1].created_at : null,
+        nextBefore: hasMore ? workflows[workflows.length - 1]!.createdAt : null,
       });
     },
   );
@@ -211,27 +374,11 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         .prepare(
           'SELECT id, ts, workflow_id, item_id, session_id, stage, phase, attempt, event_type, level, message, extra FROM events WHERE workflow_id = ? ORDER BY ts, id',
         )
-        .all(id) as Array<{
-          id: number;
-          ts: string;
-          workflow_id: string;
-          item_id: string | null;
-          session_id: string | null;
-          stage: string | null;
-          phase: string | null;
-          attempt: number | null;
-          event_type: string;
-          level: string;
-          message: string;
-          extra: string | null;
-        }>;
+        .all(id) as DbTimelineEvent[];
 
       return reply.send({
         workflowId: id,
-        events: events.map((e) => ({
-          ...e,
-          extra: e.extra ? (() => { try { return JSON.parse(e.extra!); } catch { return e.extra; } })() : null,
-        })),
+        events: events.map(mapTimelineEvent),
       });
     },
   );
@@ -313,9 +460,9 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
            GROUP BY ${col}
            ORDER BY input_tokens DESC`,
         )
-        .all(id);
+        .all(id) as DbUsageRow[];
 
-      return reply.send({ workflowId: id, groupBy, rows });
+      return reply.send({ workflowId: id, groupBy, rows: rows.map(mapUsageRow) });
     },
   );
 
@@ -354,7 +501,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         )
         .all(id);
 
-      return reply.send({ workflowId: id, bucket, rows });
+      return reply.send({ workflowId: id, bucket, rows: (rows as DbTimeseriesRow[]).map(mapTimeseriesRow) });
     },
   );
 
@@ -380,9 +527,46 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       if (!wf) return notFound(reply, 'workflow not found');
 
       // Idempotency check (AC-4, RC: not by re-executing).
+      // Cache hits always reply 200 (distinct from the original 202) so the
+      // client can tell re-play apart from first execution; the body is the
+      // identical body originally returned.
       const cached = idempotency.get(body.commandId);
       if (cached !== undefined) {
         return reply.status(200).send(cached);
+      }
+
+      // If an executor is wired (start.ts injects it), delegate real execution
+      // to the engine layer. Otherwise fall back to the stub accepted-response
+      // so existing tests that don't inject callbacks keep passing.
+      if (callbacks.controlExecutor) {
+        const result = callbacks.controlExecutor(id, body.action);
+
+        if (result.status === 'workflow_not_found') {
+          return notFound(reply, 'workflow not found');
+        }
+        if (result.status === 'invalid_action') {
+          return reply.status(400).send({
+            error: `invalid action: ${result.action}`,
+            action: result.action,
+          });
+        }
+        if (result.status === 'already_terminal') {
+          return reply.status(409).send({
+            error: 'workflow is already terminal',
+          });
+        }
+
+        // accepted
+        const responseBody = {
+          status: 'accepted',
+          commandId: body.commandId,
+          workflowId: id,
+          action: body.action,
+          cancelledItems: result.cancelledItems,
+        };
+        // Cache AFTER successful execution (so a failure retry can re-run).
+        idempotency.set(body.commandId, responseBody);
+        return reply.status(202).send(responseBody);
       }
 
       // Cache and return accepted response. Actual execution deferred to pipeline engine.
@@ -434,6 +618,114 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const result = callbacks.ackAttention(id, attId);
       if (result.status === 'not_found') return notFound(reply, 'attention item not found');
       return reply.send(result);
+    },
+  );
+
+  // GET /api/workflows/:id/items/:itemId/data
+  // Returns the parsed items.data JSON for the given item.
+  // 404 when workflow or item is not found, or item belongs to a different workflow.
+  // 500 when items.data exists but cannot be parsed as JSON (defensive — schema guarantees valid JSON).
+  fastify.get(
+    '/api/workflows/:id/items/:itemId/data',
+    async (
+      req: FastifyRequest<{ Params: { id: string; itemId: string } }>,
+      reply: FastifyReply,
+    ) => {
+      const { id, itemId } = req.params;
+      const reader = db.reader();
+
+      const wf = reader.prepare('SELECT id FROM workflows WHERE id = ?').get(id) as { id: string } | undefined;
+      if (!wf) return notFound(reply, 'workflow not found');
+
+      const item = reader
+        .prepare('SELECT data FROM items WHERE id = ? AND workflow_id = ?')
+        .get(itemId, id) as { data: string } | undefined;
+      // Cross-workflow access returns 404 (item not found) — do not leak existence.
+      if (!item) return notFound(reply, 'item not found');
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(item.data);
+      } catch {
+        return reply.status(500).send({ error: 'item data is not valid JSON' });
+      }
+
+      return reply.send(parsed);
+    },
+  );
+
+  // GET /api/items/:id/sessions
+  // Returns past sessions for an item ordered by started_at DESC.
+  fastify.get(
+    '/api/items/:id/sessions',
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const reader = db.reader();
+
+      const item = reader
+        .prepare('SELECT id FROM items WHERE id = ?')
+        .get(id) as { id: string } | undefined;
+      if (!item) return notFound(reply, 'item not found');
+
+      const sessions = reader
+        .prepare(
+          `SELECT id, phase, status, started_at, ended_at, exit_code
+           FROM sessions
+           WHERE item_id = ?
+           ORDER BY started_at DESC`,
+        )
+        .all(id) as DbItemSession[];
+
+      return reply.send({ sessions: sessions.map(mapItemSession) });
+    },
+  );
+
+  // POST /api/workflows/:id/archive and POST /api/workflows/:id/unarchive
+  // Soft-archive or restore a workflow.
+  // The write is delegated to callbacks.archiveWorkflow (RC-3 — no writes in API layer).
+  // Archiving an in_progress workflow returns 409 with the current status.
+  const handleArchive = (action: 'archive' | 'unarchive') =>
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+
+      if (!callbacks.archiveWorkflow) {
+        return reply.status(501).send({ error: 'archive not configured' });
+      }
+
+      const result = callbacks.archiveWorkflow(id, action);
+
+      if (result.status === 'workflow_not_found') return notFound(reply, 'workflow not found');
+      if (result.status === 'conflict') {
+        return reply.status(409).send({
+          error: `cannot archive a workflow with status '${result.currentStatus}'`,
+          currentStatus: result.currentStatus,
+        });
+      }
+      return reply.status(200).send(result);
+    };
+
+  fastify.post('/api/workflows/:id/archive', handleArchive('archive'));
+  fastify.post('/api/workflows/:id/unarchive', handleArchive('unarchive'));
+
+  // POST /api/workflows/:id/retry
+  // Transition all awaiting_user items in the workflow back to in_progress.
+  // The write is delegated to callbacks.retryItems (RC-3 — no writes in API layer).
+  fastify.post(
+    '/api/workflows/:id/retry',
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+
+      if (!callbacks.retryItems) {
+        return reply.status(501).send({ error: 'retry not configured' });
+      }
+
+      const result = callbacks.retryItems(id);
+
+      if (result.status === 'workflow_not_found') return notFound(reply, 'workflow not found');
+      if (result.status === 'none_awaiting') {
+        return reply.status(200).send({ status: 'none_awaiting', items: [] });
+      }
+      return reply.status(200).send(result);
     },
   );
 

@@ -13,9 +13,6 @@ Phase: {{item_state.current_phase}} | Attempt: {{item_state.retry_count}}
 ## Architecture reference
 {{architecture_md}}
 
-## Progress notes
-{{progress_md}}
-
 ## Handoff entries for this feature
 {{handoff_entries}}
 
@@ -40,16 +37,24 @@ Report:
 
 Do not re-implement. Only report findings. Stop after the report.
 
-If there are any blocking issues, append a review entry to `handoff.json` before stopping:
-```json
+If there are any blocking issues, append a review entry to `handoff.json` before
+stopping — **do not edit handoff.json directly.** Free-form edits risk corrupting
+the JSON, which poisons every future session for this item. Pipe the entry into
+the typed writer, which parses, appends, schema-validates, and writes atomically:
+```bash
+cat <<'JSON' | node scripts/append-handoff-entry.js
 {
   "phase": "review",
   "attempt": <increment from prior entries, starting at 1>,
   "session_id": "<value of $YOKE_SESSION_ID from your environment>",
   "ts": "<ISO 8601 timestamp>",
   "verdict": "FAIL",
+  "note": "<brief summary of what failed and why>",
   "blocking_issues": ["<each blocking issue>"],
   "non_blocking": ["<optional minor observations>"]
 }
+JSON
 ```
-If handoff.json does not exist, create it: `{"item_id": "{{item_id}}", "entries": [<entry>]}`.
+The script creates handoff.json with the correct `item_id` (from $YOKE_ITEM_ID)
+if it does not yet exist. A non-zero exit means the entry was rejected — fix
+the error reported on stderr and re-run before stopping.
