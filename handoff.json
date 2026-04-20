@@ -1240,6 +1240,55 @@
       "known_risks": [
         "The comment references the per-item retry endpoint path (/api/workflows/:id/items/:itemId/retry) as a future extension point. If a future implementer adds this endpoint, they should remove the 'deliberately not implemented' note and update the comment to reflect both options coexisting."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "7ff971ef-b6b5-4962-b5c6-a25932bf047f",
+      "ts": "2026-04-20T22:30:00Z",
+      "note": "Sentinel entry — no implementation required. Triaged all emergent issues from round-2 pipeline execution. One non-blocking issue was observed across r2 reviews: src/cli/status.ts defines its own WorkflowRow with snake_case fields (current_stage, active_sessions) that no longer match the camelCase API response (currentStage, activeSessions) after the fix-camelcase-api feature landed. This was explicitly flagged as 'out of scope' in the r2-camelcase review and does not affect the web dashboard (only the yoke status CLI command displays empty values for those two columns). No other emergent issues were identified from round-2 execution. The manifest modification constraint (diff-check guard) prevents adding new cards to fixes-round-3-features.json; the reviewer should PASS this card with the sentinel note if no blocking work is identified.",
+      "intended_files": [],
+      "deferred_criteria": [],
+      "known_risks": [
+        "src/cli/status.ts WorkflowRow type uses snake_case fields (current_stage, active_sessions) that don't match the camelCase API response — yoke status CLI displays empty values for those two columns. Non-blocking; web dashboard is unaffected."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "6d456b2f-6ee9-4ede-8567-9d497bf45a61",
+      "ts": "2026-04-20T23:00:00Z",
+      "note": "Sentinel entry — no implementation required. Confirmed triage from attempt 1 (session 7ff971ef): no emergent blocking work was identified from round-2 pipeline execution. The one non-blocking issue observed was src/cli/status.ts defining its own WorkflowRow with snake_case fields (current_stage, active_sessions) that no longer match the camelCase API response (currentStage, activeSessions) after fix-camelcase-api landed — this was explicitly scoped out as a CLI-only concern in the r2-camelcase review and does not affect the web dashboard. The manifest (docs/idea/fixes-round-3-features.json) is unmodified. No new cards are needed. The reviewer should PASS with 'sentinel entry — no implementation required'.",
+      "intended_files": [],
+      "deferred_criteria": [],
+      "known_risks": [
+        "src/cli/status.ts WorkflowRow type uses snake_case fields (current_stage, active_sessions) that don't match the camelCase API response — yoke status CLI displays empty values for those two columns. Non-blocking; web dashboard is unaffected."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "e3402fbc-555e-49a7-8c83-04d325b49f30",
+      "ts": "2026-04-20T16:35:00Z",
+      "note": "Implemented r3-04 (stableId / FeatureBoard fallback chain) in full. (1) Migration 0004_item_stable_id.sql adds stable_id TEXT column to items with a partial index WHERE stable_id IS NOT NULL; existing rows remain NULL (forward-only). (2) per-item-seeder.ts includes stable_id in the INSERT statement and passes rec.stableId from the JSONPath-extracted value; once-stage and placeholder rows have NULL. (3) frames.ts and src/web/src/ws/types.ts add stableId: string | null to ItemProjection. (4) ws.ts snapshot handler adds stable_id to SELECT and maps it to stableId: i.stable_id ?? null. (5) New file displayName.ts exports resolveItemDisplayName — a pure function (no React imports) implementing the fallback chain: displayTitle ?? stableId ?? 'Seeding…' for per-item placeholders, displayTitle ?? stableId ?? item.id otherwise. (6) FeatureBoard.tsx imports the helper and computes stage.run per card to distinguish placeholders. (7) Tests: schema.test.ts items column count 13→14; controlMatrix.test.ts makeItem gains stableId:null; per-item-seeder.test.ts adds 2 tests verifying stable_id is written; featureBoard-stable-id.test.ts (13 tests) covers full precedence order. All 1517 Vitest tests pass; pnpm typecheck exits 0 for both root and web packages. Two commits: 77df5d5 (DB/protocol layer) and 8b74fd5 (UI + tests).",
+      "intended_files": [
+        "src/server/storage/migrations/0004_item_stable_id.sql",
+        "src/server/scheduler/per-item-seeder.ts",
+        "src/server/api/frames.ts",
+        "src/web/src/ws/types.ts",
+        "src/server/api/ws.ts",
+        "src/web/src/components/FeatureBoard/displayName.ts",
+        "src/web/src/components/FeatureBoard/FeatureBoard.tsx",
+        "tests/storage/schema.test.ts",
+        "tests/web/controlMatrix.test.ts",
+        "tests/scheduler/per-item-seeder.test.ts",
+        "tests/web/featureBoard-stable-id.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "resolveItemDisplayName identifies a placeholder as stageRun==='per-item' && stableId===null. If the seeder ever fails to write stable_id for a real item row (e.g., due to a migration not yet applied on an older DB), that real item will incorrectly show 'Seeding…' until stable_id is populated.",
+        "The displayName.ts helper takes a structural type (not ItemProjection directly) so no @/ws/types alias import is needed — this keeps it importable from the root Vitest environment. If the ItemProjection interface fields are renamed, the structural match will silently accept the old names."
+      ]
     }
   ]
 }
