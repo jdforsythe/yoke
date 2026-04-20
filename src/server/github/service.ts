@@ -82,8 +82,11 @@ export type CreatePrResult =
  * After the transaction commits, emits a workflow.update broadcast so WS
  * subscribers see the new state without polling (r2-12).  A thrown transaction
  * (rollback) re-throws before reaching the broadcast call, suppressing it.
+ *
+ * Exported as `writeGithubState` so the scheduler's auto-PR path can write
+ * the 'failed' state on push failure without duplicating the DB logic (r2-10).
  */
-function _writeGithubState(
+export function writeGithubState(
   db: DbPool,
   workflowId: string,
   state: GithubStatus,
@@ -173,19 +176,19 @@ export async function createPr(
       kind: 'api_failed',
       message: guardResult.reason ?? 'branch has unpushed commits',
     };
-    _writeGithubState(db, input.workflowId, 'failed', { error }, broadcast);
+    writeGithubState(db, input.workflowId, 'failed', { error }, broadcast);
     return { ok: false, error };
   }
 
   // --- 2. Auth resolution ---
   const authResult = await resolveAuth(authDeps);
   if (!authResult.ok) {
-    _writeGithubState(db, input.workflowId, 'failed', { error: authResult.failure }, broadcast);
+    writeGithubState(db, input.workflowId, 'failed', { error: authResult.failure }, broadcast);
     return { ok: false, error: authResult.failure };
   }
 
   // --- 3. Transition to 'creating' ---
-  _writeGithubState(db, input.workflowId, 'creating', {}, broadcast);
+  writeGithubState(db, input.workflowId, 'creating', {}, broadcast);
 
   const prInput: PrInput = {
     owner: input.owner,
@@ -214,13 +217,13 @@ export async function createPr(
           statusCode: err instanceof OctokitPrError ? err.statusCode : undefined,
           message: err instanceof Error ? err.message : String(err),
         };
-        _writeGithubState(db, input.workflowId, 'failed', { error: apiErr }, broadcast);
+        writeGithubState(db, input.workflowId, 'failed', { error: apiErr }, broadcast);
         return { ok: false, error: apiErr };
       }
     }
 
     if (octokitResult !== null) {
-      _writeGithubState(db, input.workflowId, 'created', {
+      writeGithubState(db, input.workflowId, 'created', {
         prNumber: octokitResult.prNumber,
         prUrl: octokitResult.prUrl,
       }, broadcast);
@@ -236,7 +239,7 @@ export async function createPr(
     if (!octokitAuthFailed) {
       // Should not reach here, but guard anyway
       const err: GithubError = { kind: 'api_failed', message: 'octokit returned no result' };
-      _writeGithubState(db, input.workflowId, 'failed', { error: err }, broadcast);
+      writeGithubState(db, input.workflowId, 'failed', { error: err }, broadcast);
       return { ok: false, error: err };
     }
   }
@@ -244,7 +247,7 @@ export async function createPr(
   // --- 4b. Try gh CLI (fallback or gh_auth source) ---
   try {
     const ghResult = await ghCliAdapter.createPr(prInput);
-    _writeGithubState(db, input.workflowId, 'created', {
+    writeGithubState(db, input.workflowId, 'created', {
       prNumber: ghResult.prNumber,
       prUrl: ghResult.prUrl,
     }, broadcast);
@@ -259,7 +262,7 @@ export async function createPr(
       kind: 'api_failed',
       message: err instanceof Error ? err.message : String(err),
     };
-    _writeGithubState(db, input.workflowId, 'failed', { error: apiErr }, broadcast);
+    writeGithubState(db, input.workflowId, 'failed', { error: apiErr }, broadcast);
     return { ok: false, error: apiErr };
   }
 }
@@ -297,5 +300,5 @@ export function initGithubState(
   } else {
     state = 'idle';
   }
-  _writeGithubState(db, workflowId, state, {}, broadcast);
+  writeGithubState(db, workflowId, state, {}, broadcast);
 }
