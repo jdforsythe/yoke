@@ -117,9 +117,19 @@ export function WorkflowDetailRoute() {
   }, [pendingAttentionArr]);
 
   // sendControl wrapper so ControlMatrix doesn't import the WS module directly.
+  // 'retry' uses POST /api/workflows/:id/retry — the WS control executor only
+  // handles 'cancel', so sending a WS frame for retry would get invalid_action.
   const sendControl = useCallback(
-    (action: ControlPayload['action'], opts: Omit<ControlPayload, 'action'>) =>
-      getClient().sendControl(action, opts),
+    (action: ControlPayload['action'], opts: Omit<ControlPayload, 'action'>): string => {
+      if (action === 'retry') {
+        void fetch(
+          `/api/workflows/${encodeURIComponent(opts.workflowId)}/retry`,
+          { method: 'POST' },
+        ).catch(() => {});
+        return '';
+      }
+      return getClient().sendControl(action, opts);
+    },
     [],
   );
 
@@ -172,7 +182,16 @@ export function WorkflowDetailRoute() {
           recoveryState?: WorkflowSnapshotPayload['workflow']['recoveryState'];
           githubState?: WorkflowSnapshotPayload['workflow']['githubState'];
           pendingAttention?: WorkflowSnapshotPayload['pendingAttention'];
+          retried?: boolean;
         };
+        // After user_retry the server broadcasts {retried:true}. Cycle the
+        // subscription so the server re-sends a workflow.snapshot with updated
+        // item states (subscribe() deduplicates, so unsubscribe first).
+        if (patch.retried) {
+          client.unsubscribe(workflowId);
+          client.subscribe(workflowId);
+          return;
+        }
         setState((prev) => {
           if (!prev.snapshot) return prev;
           return {
