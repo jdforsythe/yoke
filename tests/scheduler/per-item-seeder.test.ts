@@ -110,11 +110,11 @@ function writeManifest(content: unknown, filename = 'items.json'): string {
 /** Read all item rows for a workflow from SQLite. */
 function readItems(workflowId: string): Array<{
   id: string; stage_id: string; status: string;
-  depends_on: string | null; data: string;
+  depends_on: string | null; data: string; stable_id: string | null;
 }> {
   return db.reader()
-    .prepare('SELECT id, stage_id, status, depends_on, data FROM items WHERE workflow_id = ? ORDER BY rowid')
-    .all(workflowId) as Array<{ id: string; stage_id: string; status: string; depends_on: string | null; data: string }>;
+    .prepare('SELECT id, stage_id, status, depends_on, data, stable_id FROM items WHERE workflow_id = ? ORDER BY rowid')
+    .all(workflowId) as Array<{ id: string; stage_id: string; status: string; depends_on: string | null; data: string; stable_id: string | null }>;
 }
 
 function makeStage(overrides: Partial<Stage> = {}): Stage {
@@ -586,5 +586,57 @@ describe('error paths (RC-9)', () => {
 
     expect(result.kind).toBe('error');
     expect((result as { kind: 'error'; message: string }).message).toMatch(/items_from/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC (r3-04) — stable_id is written for each seeded item row
+// ---------------------------------------------------------------------------
+
+describe('stable_id persisted for each seeded item (r3-04)', () => {
+  it('writes stable_id from items_id JSONPath for every real item row', () => {
+    writeManifest({
+      features: [{ id: 'feat-alpha' }, { id: 'feat-beta' }, { id: 'feat-gamma' }],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    const result = seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage(),
+    });
+
+    expect(result).toEqual({ kind: 'seeded', count: 3 });
+
+    const items = readItems(workflowId);
+    expect(items).toHaveLength(3);
+
+    const stableIds = items.map((i) => i.stable_id);
+    expect(stableIds).toContain('feat-alpha');
+    expect(stableIds).toContain('feat-beta');
+    expect(stableIds).toContain('feat-gamma');
+    // Every seeded row must have a non-null stable_id.
+    expect(items.every((i) => i.stable_id !== null)).toBe(true);
+  });
+
+  it('stable_id matches the items_id JSONPath expression value', () => {
+    writeManifest({
+      features: [{ name: 'Feature One', slug: 'feature-one' }],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage({ items_id: '$.slug' }),
+    });
+
+    const items = readItems(workflowId);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.stable_id).toBe('feature-one');
   });
 });
