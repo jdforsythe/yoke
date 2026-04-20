@@ -10,6 +10,10 @@
  *   - LiveStreamPane (active session output, virtualized)
  *   - HistoryPane (past session logs for selected item)
  *   - ControlMatrix (available manual actions)
+ *
+ * r2-04: activeSessionId (global) has been replaced by itemActiveSession
+ * Map<itemId, ActiveSession>.  The stream pane is scoped to selectedItemId so
+ * parallel per-item sessions never bleed into each other.
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
@@ -17,6 +21,8 @@ import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
 import { setAttentionCount } from '@/store/attentionStore';
+import { buildFromSnapshot, upsert, removeBySessionId } from '@/store/itemSessionMap';
+import type { ActiveSession } from '@/store/itemSessionMap';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
@@ -30,6 +36,7 @@ import type {
   ItemStatePayload,
   ItemProjection,
   SessionStartedPayload,
+  SessionEndedPayload,
   NoticePayload,
   PendingAttention,
   ServerFrame,
@@ -43,8 +50,21 @@ import type {
 interface WorkflowDetailState {
   snapshot: WorkflowSnapshotPayload | null;
   items: Map<string, ItemProjection>;
-  activeSessionId: string | null;
-  activeSessionPhase: string | null;
+  /**
+   * Per-item active sessions. Keyed by itemId (null-itemId sessions are
+   * excluded — they are once-per-workflow and have no item to scope to).
+   * Maintained via:
+   *   workflow.snapshot → buildFromSnapshot
+   *   session.started   → upsert
+   *   session.ended     → removeBySessionId
+   */
+  itemActiveSession: Map<string, ActiveSession>;
+  /**
+   * Tracks the last ended sessionId per itemId so the pane can show "Session
+   * ended" with the frozen render-model blocks instead of "No active session".
+   * Cleared when a new session.started arrives for the same item.
+   */
+  itemEndedSession: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,8 +95,8 @@ export function WorkflowDetailRoute() {
   const [state, setState] = useState<WorkflowDetailState>({
     snapshot: null,
     items: new Map(),
-    activeSessionId: null,
-    activeSessionPhase: null,
+    itemActiveSession: new Map(),
+    itemEndedSession: new Map(),
   });
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -117,13 +137,11 @@ export function WorkflowDetailRoute() {
   useEffect(() => {
     if (!workflowId) return;
     // Synchronously clear stale state before the new snapshot arrives.
-    // Without this, the previous workflow's snapshot remains visible until
-    // the new subscription delivers its first workflow.snapshot frame.
     setState({
       snapshot: null,
       items: new Map(),
-      activeSessionId: null,
-      activeSessionPhase: null,
+      itemActiveSession: new Map(),
+      itemEndedSession: new Map(),
     });
     setSelectedItemId(null);
     const client = getClient();
@@ -135,19 +153,14 @@ export function WorkflowDetailRoute() {
       client.on('workflow.snapshot', (frame: ServerFrame) => {
         const p = frame.payload as WorkflowSnapshotPayload;
         if (p.workflow.id !== workflowId) return;
-        // Cancel the not-found timeout — a valid snapshot arrived.
         snapshotArrivedRef.current = true;
         const items = new Map<string, ItemProjection>();
         for (const item of p.items) items.set(item.id, item);
-        const lastSession =
-          p.activeSessions.length > 0
-            ? p.activeSessions[p.activeSessions.length - 1]!
-            : null;
         setState({
           snapshot: p,
           items,
-          activeSessionId: lastSession?.sessionId ?? null,
-          activeSessionPhase: lastSession?.phase ?? null,
+          itemActiveSession: buildFromSnapshot(p.activeSessions),
+          itemEndedSession: new Map(),
         });
       }),
     );
@@ -179,7 +192,6 @@ export function WorkflowDetailRoute() {
 
     // notice frames with severity requires_attention and a persistedAttentionId
     // add items to the pending attention list in real-time (RC-4: no polling).
-    // Deduplication: if the item is already in pendingAttention, it is a no-op.
     offs.push(
       client.on('notice', (frame: ServerFrame) => {
         const p = frame.payload as NoticePayload;
@@ -192,8 +204,6 @@ export function WorkflowDetailRoute() {
         };
         setState((prev) => {
           if (!prev.snapshot) return prev;
-          // Deduplicate by id — identical item from a workflow.snapshot or prior
-          // notice frame must not appear twice.
           if (prev.snapshot.pendingAttention.some((a) => a.id === newItem.id)) return prev;
           return {
             ...prev,
@@ -209,7 +219,6 @@ export function WorkflowDetailRoute() {
     offs.push(
       client.on('item.state', (frame: ServerFrame) => {
         const p = frame.payload as ItemStatePayload;
-        // Invalidate item.data cache so re-selecting the item fetches fresh data.
         invalidateItemData(p.itemId);
         setState((prev) => {
           const existing = prev.items.get(p.itemId);
@@ -227,17 +236,37 @@ export function WorkflowDetailRoute() {
     offs.push(
       client.on('session.started', (frame: ServerFrame) => {
         const p = frame.payload as SessionStartedPayload;
-        setState((prev) => ({
-          ...prev,
-          activeSessionId: p.sessionId,
-          activeSessionPhase: p.phase,
-        }));
+        if (p.itemId) {
+          const session: ActiveSession = {
+            sessionId: p.sessionId,
+            phase: p.phase,
+            startedAt: p.startedAt,
+          };
+          setState((prev) => {
+            const endedMap = new Map(prev.itemEndedSession);
+            endedMap.delete(p.itemId!);
+            return {
+              ...prev,
+              itemActiveSession: upsert(prev.itemActiveSession, p.itemId!, session),
+              itemEndedSession: endedMap,
+            };
+          });
+        }
         dispatch(frame);
       }),
     );
 
     offs.push(
       client.on('session.ended', (frame: ServerFrame) => {
+        const p = frame.payload as SessionEndedPayload;
+        setState((prev) => {
+          const { map, clearedItemId } = removeBySessionId(prev.itemActiveSession, p.sessionId);
+          const endedMap =
+            clearedItemId !== null
+              ? new Map([...prev.itemEndedSession, [clearedItemId, p.sessionId]])
+              : prev.itemEndedSession;
+          return { ...prev, itemActiveSession: map, itemEndedSession: endedMap };
+        });
         dispatch(frame);
       }),
     );
@@ -269,16 +298,14 @@ export function WorkflowDetailRoute() {
       client.unsubscribe(workflowId);
       for (const off of offs) off();
       reset();
-      // Clear item.data cache on navigation so stale data never shows if the
-      // user returns to this workflow before any item.state frames arrive.
       clearItemDataCache();
-      // Reset attention count so the bell badge returns to 0 after navigation.
       setAttentionCount(0);
     };
   }, [workflowId]);
 
   // Fetch past sessions for the selected item whenever it changes.
   // Reset to Live tab and clear sessions when item is deselected.
+  // Auto-switch to History tab if the item has past sessions but no active session.
   useEffect(() => {
     if (!selectedItemId) {
       setItemSessions([]);
@@ -288,14 +315,32 @@ export function WorkflowDetailRoute() {
     setStreamTab('live');
     void fetch(`/api/items/${encodeURIComponent(selectedItemId)}/sessions`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((d: { sessions?: ItemSession[] }) => setItemSessions(d.sessions ?? []))
+      .then((d: { sessions?: ItemSession[] }) => {
+        const sessions = d.sessions ?? [];
+        setItemSessions(sessions);
+        // Auto-switch to History when the item has past sessions but no active
+        // or recently-ended session in view.
+        setState((prev) => {
+          if (
+            sessions.length > 0 &&
+            !prev.itemActiveSession.has(selectedItemId) &&
+            !prev.itemEndedSession.has(selectedItemId)
+          ) {
+            setStreamTab('history');
+          }
+          return prev;
+        });
+      })
       .catch(() => setItemSessions([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedItemId]);
 
-  // Deep-link: ?attention=<id> → scroll to attention banner (handled by
-  // AttentionBanner on mount via URL search param reading).
+  // Deep-link: /workflow/:id/item/:itemId pre-selects the item.
+  // FeatureBoard's useLayoutEffect calls onSelectItem(deepLinkedItemId) after
+  // the snapshot loads so selectedItemId is set automatically; no extra logic
+  // needed here.
 
-  const { snapshot, items, activeSessionId, activeSessionPhase } = state;
+  const { snapshot, items, itemActiveSession, itemEndedSession } = state;
 
   if (!snapshot) {
     if (notFound) {
@@ -322,13 +367,21 @@ export function WorkflowDetailRoute() {
     );
   }
 
+  // Derive the active session for the currently selected item.
+  const activeSession: ActiveSession | null =
+    selectedItemId ? itemActiveSession.get(selectedItemId) ?? null : null;
+  // If the selected item's session just ended, show frozen frames + "Session ended".
+  const endedSessionId: string | null =
+    selectedItemId ? itemEndedSession.get(selectedItemId) ?? null : null;
+
   const isReviewPhase =
-    activeSessionPhase === 'review' || activeSessionPhase === 'pre_review';
-  const showTabBar = !!(selectedItemId || activeSessionId);
+    activeSession?.phase === 'review' || activeSession?.phase === 'pre_review';
+  // Show tab bar when an item is selected or any per-item session is active.
+  const showTabBar = !!(selectedItemId || itemActiveSession.size > 0);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Banners (layout order guarantees top-of-content placement) */}
+      {/* Banners */}
       {snapshot.workflow.recoveryState && (
         <CrashRecoveryBanner
           workflowId={workflowId!}
@@ -372,7 +425,7 @@ export function WorkflowDetailRoute() {
             workflowId={workflowId!}
             stages={snapshot.stages}
             items={Array.from(items.values())}
-            activeSessionId={activeSessionId}
+            activeSessionId={activeSession?.sessionId ?? null}
             selectedItemId={selectedItemId}
             onSelectItem={setSelectedItemId}
           />
@@ -380,7 +433,7 @@ export function WorkflowDetailRoute() {
 
         {/* Stream pane */}
         <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-          {/* Live / History tab bar — visible when an item is selected or a session is active */}
+          {/* Live / History tab bar */}
           {showTabBar && (
             <div className="shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-gray-700 bg-gray-900">
               <button
@@ -420,7 +473,7 @@ export function WorkflowDetailRoute() {
                 sessions={itemSessions}
               />
             </div>
-          ) : activeSessionId ? (
+          ) : activeSession ? (
             <>
               {/* Control matrix toolbar */}
               <div className="shrink-0 border-b border-gray-700 px-3 py-1.5">
@@ -431,7 +484,7 @@ export function WorkflowDetailRoute() {
                   selectedItem={
                     selectedItemId ? items.get(selectedItemId) ?? null : null
                   }
-                  activeSessionId={activeSessionId}
+                  activeSessionId={activeSession.sessionId}
                   sendControl={sendControl}
                 />
               </div>
@@ -439,15 +492,28 @@ export function WorkflowDetailRoute() {
               {/* Stream output */}
               <div className="flex-1 min-h-0">
                 {isReviewPhase ? (
-                  <ReviewPanel sessionId={activeSessionId} phase={activeSessionPhase!} />
+                  <ReviewPanel sessionId={activeSession.sessionId} phase={activeSession.phase} />
                 ) : (
-                  <LiveStreamPane sessionId={activeSessionId} workflowId={workflowId!} />
+                  <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
                 )}
               </div>
             </>
+          ) : endedSessionId ? (
+            /* Frozen pane: session ended, show last frames with a banner */
+            <div className="flex flex-col flex-1 min-h-0">
+              <div
+                data-testid="session-ended-banner"
+                className="shrink-0 px-3 py-1.5 bg-amber-900/20 border-b border-amber-700/30 text-xs text-amber-300"
+              >
+                Session ended
+              </div>
+              <div className="flex-1 min-h-0">
+                <LiveStreamPane sessionId={endedSessionId} workflowId={workflowId!} />
+              </div>
+            </div>
           ) : (
             <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-              No active session
+              {selectedItemId ? 'Select an item to view its session' : 'No active session'}
             </div>
           )}
         </div>
