@@ -955,6 +955,26 @@
         "prompt_assembly_failed now uses session_fail+permanent which transitions the item to awaiting_user (not awaiting_retry). This is intentional — prompt assembly failures are not transient; the user must intervene. If the classification policy changes, the guardCtx parameter should be updated.",
         "The backoff_elapsed test relies on DEFAULT_RETRY_LADDER[2] = 'awaiting_user' being the exhaustion sentinel. If the default ladder changes, the test must be updated to use a retry_count that hits the new sentinel position."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "b7f2db2a-48b1-4e6b-a0ba-f2b12402d3a4",
+      "ts": "2026-04-20T18:35:00Z",
+      "note": "Implemented r2-10 (auto-PR on workflow complete). Extended Scheduler._handleStageComplete to call _triggerAutoPr(workflowId) when the final stage completes with a terminal status and config.github.enabled + config.github.auto_pr are set. _triggerAutoPr runs asynchronously via an injected asyncRunner (default fire-and-forget), reads workflow branch_name/worktree_path, resolves owner/repo from git remote, gathers last 10 commit subjects and last non-harness handoff note, builds the PR body via buildPrBody, pushes the branch, then calls createPr. Push failures and PR errors write github_state='failed' without retrying or throwing. Added: (1) src/server/github/pr-body.ts — pure buildPrBody function; (2) src/server/github/service.ts — renamed _writeGithubState → writeGithubState (export) so the scheduler can call it; (3) src/server/scheduler/scheduler.ts — AutoPrDeps interface, autoPr option, _triggerAutoPr and _makeGithubBroadcast methods, _handleStageComplete extension; (4) tests/github/pr-body.test.ts — 13 unit tests for the pure function; (5) tests/scheduler/auto-pr-on-complete.test.ts — 10 integration tests covering all 9 ACs using real SQLite + injected stubs. All 23 new tests pass; 14 pre-existing test failures are unrelated (github-create-pr API endpoint and AttentionBanner KIND_MAP); typecheck shows 4 pre-existing errors only.",
+      "intended_files": [
+        "src/server/github/pr-body.ts",
+        "src/server/github/service.ts",
+        "src/server/scheduler/scheduler.ts",
+        "tests/github/pr-body.test.ts",
+        "tests/scheduler/auto-pr-on-complete.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "Production defaults for getOwnerRepo, getRecentCommits, getLastHandoffNote, and push use dynamic import() so they do not inflate the main bundle. If any of these modules fail to load at runtime, _triggerAutoPr catches and writes github_state='failed'.",
+        "The createPr production default is an inline closure inside _triggerAutoPr so it can capture this.db. It also re-imports auth and adapter modules dynamically. If the import paths change, a runtime error will be caught and written as a failed state.",
+        "getLastHandoffNote reads handoff.json from configDir; if the file is absent or malformed, it returns null (no handoff note section in PR body). This is intentional — a missing handoff file should not prevent PR creation."
+      ]
     }
   ]
 }
