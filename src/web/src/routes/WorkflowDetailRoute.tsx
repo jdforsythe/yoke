@@ -481,6 +481,7 @@ export function WorkflowDetailRoute() {
                   workflowId={workflowId!}
                   workflowStatus={snapshot.workflow.status}
                   stages={snapshot.stages}
+                  items={Array.from(items.values())}
                   selectedItem={
                     selectedItemId ? items.get(selectedItemId) ?? null : null
                   }
