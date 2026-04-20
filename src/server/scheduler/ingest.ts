@@ -66,13 +66,13 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig): IngestResult
   const existingRow = db.reader()
     .prepare(
       `SELECT id FROM workflows
-        WHERE name = ?
+        WHERE (name = ? OR name LIKE ?)
           AND json_extract(config, '$.configDir') = ?
           AND status NOT IN (${placeholders})
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .get(config.project.name, config.configDir, ...TERMINAL_WF_STATUSES) as
+    .get(config.project.name, `${config.project.name}-%`, config.configDir, ...TERMINAL_WF_STATUSES) as
     | { id: string }
     | undefined;
 
@@ -96,7 +96,7 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig): IngestResult
       `)
       .run(
         workflowId,
-        config.project.name,
+        `${config.project.name}-${workflowId.slice(0, 8)}`,
         JSON.stringify({ stages: config.pipeline.stages.map((s) => s.id) }),
         JSON.stringify({ stages: config.pipeline.stages }),
         JSON.stringify({ configDir: config.configDir }),

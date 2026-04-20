@@ -214,7 +214,7 @@ describe('WS control frame — idempotency', () => {
 // ---------------------------------------------------------------------------
 
 describe('Cross-transport idempotency (HTTP ↔ WS share the idempotency store)', () => {
-  it('HTTP first, then WS with the same commandId — executor fires once', async () => {
+  it('HTTP first, then WS with the same commandId — executor fires once, WS echoes cached HTTP body byte-for-byte', async () => {
     const wfId = insertWorkflow();
     const commandId = 'cmd-cross-1';
 
@@ -234,9 +234,11 @@ describe('Cross-transport idempotency (HTTP ↔ WS share the idempotency store)'
       id: commandId,
       payload: { workflowId: wfId, action: 'cancel' },
     });
-    await s.next(); // cached response echoed back
+    const wsResponse = await s.next(); // cached response echoed back
     s.close();
 
-    expect(executorCallCount).toBe(1);
+    expect(executorCallCount).toBe(1); // NOT executed again
+    // The WS echoes the exact cached HTTP response body byte-for-byte (RC-3).
+    expect(JSON.stringify(wsResponse)).toBe(JSON.stringify(r1.body));
   });
 });

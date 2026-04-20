@@ -35,27 +35,7 @@ import {
 } from 'react';
 import { useParams } from 'react-router-dom';
 import type { ItemProjection, StageProjection } from '@/ws/types';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function itemStatusClass(status: string): string {
-  switch (status) {
-    case 'in_progress':
-    case 'active':
-      return 'bg-blue-500/20 text-blue-300';
-    case 'complete':
-      return 'bg-green-500/20 text-green-300';
-    case 'failed':
-      return 'bg-red-500/20 text-red-300';
-    case 'blocked':
-      return 'bg-orange-500/20 text-orange-300';
-    case 'pending':
-    default:
-      return 'bg-gray-500/20 text-gray-400';
-  }
-}
+import { itemStatusClass, ITEM_STATUS_OPTIONS } from './itemStatus';
 
 function fuzzyMatch(item: ItemProjection, query: string): boolean {
   if (!query) return true;
@@ -402,12 +382,11 @@ export function FeatureBoard({
             className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
             aria-label="Filter items by status"
           >
-            <option value="all">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="in_progress">In progress</option>
-            <option value="complete">Complete</option>
-            <option value="failed">Failed</option>
-            <option value="blocked">Blocked</option>
+            {ITEM_STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
           <select
             value={categoryFilter}

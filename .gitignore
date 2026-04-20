@@ -10,3 +10,4 @@ bin/
 handoff.json
 test-results/
 playwright-report/
+coverage/

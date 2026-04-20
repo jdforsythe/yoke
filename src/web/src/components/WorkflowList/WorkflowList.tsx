@@ -2,19 +2,25 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import type { WorkflowIndexUpdatePayload, ServerFrame } from '@/ws/types';
+import type { WorkflowRow } from '@shared/types/workflow';
+import { WORKFLOW_STATUS_VALUES, WORKFLOW_STATUS_LABELS } from '@shared/types/workflow';
+
+// ---------------------------------------------------------------------------
+// Archive helper
+// ---------------------------------------------------------------------------
+
+async function postArchive(workflowId: string, action: 'archive' | 'unarchive'): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/workflows/${workflowId}/${action}`, { method: 'POST' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface WorkflowRow {
-  id: string;
-  name: string;
-  status: string;
-  updatedAt: string;
-  createdAt: string;
-  unreadEvents: number;
-}
 
 interface WorkflowsApiResponse {
   workflows: WorkflowRow[];
@@ -25,30 +31,24 @@ interface WorkflowsApiResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const STATUS_OPTIONS = [
-  'all',
-  'active',
-  'paused',
-  'complete',
-  'failed',
-  'cancelled',
-] as const;
+const STATUS_OPTIONS = ['all', ...WORKFLOW_STATUS_VALUES] as const;
+
+const STATUS_CHIP_CLASS: Record<string, string> = {
+  pending: 'bg-gray-500/20 text-gray-400',
+  in_progress: 'bg-blue-500/20 text-blue-300',
+  pending_stage_approval: 'bg-yellow-500/20 text-yellow-300',
+  completed: 'bg-green-500/20 text-green-300',
+  completed_with_blocked: 'bg-orange-500/20 text-orange-300',
+  abandoned: 'bg-red-500/20 text-red-300',
+};
 
 function statusChipClass(status: string): string {
-  switch (status) {
-    case 'active':
-    case 'in_progress':
-      return 'bg-blue-500/20 text-blue-300';
-    case 'paused':
-      return 'bg-yellow-500/20 text-yellow-300';
-    case 'complete':
-      return 'bg-green-500/20 text-green-300';
-    case 'failed':
-      return 'bg-red-500/20 text-red-300';
-    case 'cancelled':
-    default:
-      return 'bg-gray-500/20 text-gray-400';
-  }
+  return STATUS_CHIP_CLASS[status] ?? 'bg-gray-500/20 text-gray-400';
+}
+
+function statusLabel(status: string): string {
+  if (status === 'all') return 'All';
+  return WORKFLOW_STATUS_LABELS[status as keyof typeof WORKFLOW_STATUS_LABELS] ?? status;
 }
 
 function relativeTime(iso: string): string {
@@ -161,14 +161,17 @@ export function WorkflowList() {
       setRows((prev) => {
         const idx = prev.findIndex((r) => r.id === p.id);
         if (idx < 0) {
-          // New workflow — prepend.
+          // New workflow — prepend. currentStage/activeSessions come from the
+          // next HTTP fetch; WS frame doesn't include them, so use defaults.
           return [
             {
               id: p.id,
               name: p.name,
               status: p.status,
+              currentStage: null,
               updatedAt: p.updatedAt,
               createdAt: p.updatedAt,
+              activeSessions: 0,
               unreadEvents: p.unreadEvents,
             },
             ...prev,
@@ -230,7 +233,7 @@ export function WorkflowList() {
         >
           {STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {s.charAt(0).toUpperCase() + s.slice(1)}
+              {statusLabel(s)}
             </option>
           ))}
         </select>
@@ -257,47 +260,80 @@ export function WorkflowList() {
         )}
 
         {rows.map((row) => (
-          <button
+          <div
             key={row.id}
             role="listitem"
-            onClick={() => {
-              getClient().subscribe(row.id);
-              navigate(`/workflow/${row.id}`);
-            }}
+            aria-current={activeId === row.id ? 'page' : undefined}
             className={[
-              'w-full text-left px-3 py-2.5 border-b border-gray-700/40',
+              'group relative w-full border-b border-gray-700/40',
               'hover:bg-gray-700/40 transition-colors',
               activeId === row.id
                 ? 'bg-gray-700/60 border-l-2 border-l-blue-500'
                 : '',
             ].join(' ')}
-            aria-current={activeId === row.id ? 'page' : undefined}
           >
-            <div className="flex items-start justify-between gap-1.5">
-              <span className="text-gray-100 text-xs font-medium truncate flex-1">
-                {row.name}
-              </span>
-              {row.unreadEvents > 0 && (
-                <span
-                  className="shrink-0 bg-blue-500 text-white text-[10px] rounded-full px-1.5 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center"
-                  aria-label={`${row.unreadEvents} unread events`}
-                >
-                  {row.unreadEvents > 99 ? '99+' : row.unreadEvents}
+            <button
+              className="w-full text-left px-3 py-2.5"
+              onClick={() => {
+                navigate(`/workflow/${row.id}`);
+              }}
+            >
+              <div className="flex items-start justify-between gap-1.5">
+                <span className="text-gray-100 text-xs font-medium truncate flex-1">
+                  {row.name}
                 </span>
+                {row.unreadEvents > 0 && (
+                  <span
+                    className="shrink-0 bg-blue-500 text-white text-[10px] rounded-full px-1.5 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center"
+                    aria-label={`${row.unreadEvents} unread events`}
+                  >
+                    {row.unreadEvents > 99 ? '99+' : row.unreadEvents}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${statusChipClass(row.status)}`}
+                >
+                  {row.status}
+                </span>
+                {/* Re-renders every 60 s via tick, not on every WS frame */}
+                <span key={tick} className="text-[10px] text-gray-500">
+                  {relativeTime(row.updatedAt)}
+                </span>
+              </div>
+            </button>
+
+            {/* Archive / unarchive button — visible on row hover only */}
+            <button
+              aria-label={showArchived ? 'Unarchive workflow' : 'Archive workflow'}
+              title={showArchived ? 'Unarchive' : 'Archive'}
+              className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-600/60"
+              onClick={async (e) => {
+                e.stopPropagation();
+                const action = showArchived ? 'unarchive' : 'archive';
+                const ok = await postArchive(row.id, action);
+                if (ok) {
+                  // Optimistically remove the row from the current view since
+                  // archiving from normal view makes it disappear, and
+                  // unarchiving from archived view also removes it.
+                  setRows((prev) => prev.filter((r) => r.id !== row.id));
+                }
+              }}
+            >
+              {showArchived ? (
+                /* Unarchive icon: inbox-arrow-down */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+              ) : (
+                /* Archive icon: archive-box */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8" />
+                </svg>
               )}
-            </div>
-            <div className="flex items-center gap-1.5 mt-1">
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${statusChipClass(row.status)}`}
-              >
-                {row.status}
-              </span>
-              {/* Re-renders every 60 s via tick, not on every WS frame */}
-              <span key={tick} className="text-[10px] text-gray-500">
-                {relativeTime(row.updatedAt)}
-              </span>
-            </div>
-          </button>
+            </button>
+          </div>
         ))}
 
         {/* Infinite-scroll sentinel */}

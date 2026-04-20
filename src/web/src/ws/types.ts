@@ -3,6 +3,8 @@
  * Do NOT modify without updating the server-side types in sync.
  */
 
+import type { WorkflowStatus } from '../../../shared/types/workflow';
+
 export type ServerFrameType =
   | 'hello'
   | 'workflow.snapshot'
@@ -137,7 +139,7 @@ export interface WorkflowSnapshotPayload {
 export interface WorkflowIndexUpdatePayload {
   id: string;
   name: string;
-  status: string;
+  status: WorkflowStatus;
   updatedAt: string;
   unreadEvents: number;
 }

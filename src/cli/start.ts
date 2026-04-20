@@ -39,6 +39,7 @@ import { dispatchNotification } from '../server/notifications/dispatcher.js';
 import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
 import { makeRetryItemsFn } from '../server/pipeline/retry-items.js';
 import { makeControlExecutor } from '../server/pipeline/control-executor.js';
+import { makeArchiveWorkflowFn } from '../server/pipeline/archive-workflow.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
@@ -202,6 +203,12 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   // user_retry transitions via the pipeline engine (RC-3 — no writes in API layer).
   callbacks.retryItems = makeRetryItemsFn(db, (workflowId) => {
     state.registry.broadcast(workflowId, null, 'workflow.update', { retried: true });
+  });
+
+  // Wire the archiveWorkflow handler so POST /api/workflows/:id/archive|unarchive
+  // can set/clear archived_at via the pipeline engine (RC-3 — no writes in API layer).
+  callbacks.archiveWorkflow = makeArchiveWorkflowFn(db.writer, (workflowId) => {
+    state.registry.broadcast(workflowId, null, 'workflow.update', { archived: true });
   });
 
   // Write server discovery file.
