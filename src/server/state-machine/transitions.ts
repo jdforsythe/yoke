@@ -144,6 +144,10 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
         ['skip bootstrap, spawn agent'],
       ),
     ]),
+    seed_failed: direct(
+      'awaiting_user',
+      ['insert pending_attention{kind=seed_failed}'],
+    ),
     user_cancel: direct('abandoned', []),
   },
 
@@ -324,6 +328,13 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
 
     retries_exhausted: direct('awaiting_user', []),
 
+    // Per-item placeholder re-seeding fails after user_retry brings it to
+    // in_progress. Same side effect as (ready, seed_failed).
+    seed_failed: direct(
+      'awaiting_user',
+      ['insert pending_attention{kind=seed_failed}'],
+    ),
+
     user_cancel: direct('abandoned', ['SIGTERM process group']),
   },
 
@@ -435,6 +446,7 @@ export const TRANSITIONS: { [S in State]: Partial<Record<Event, TransitionResult
     user_cancel: ABANDONED_NOOP,
     bootstrap_ok: ABANDONED_NOOP,
     bootstrap_fail: ABANDONED_NOOP,
+    seed_failed: ABANDONED_NOOP,
   } satisfies Record<Event, TransitionResult>,
 } as const;
 

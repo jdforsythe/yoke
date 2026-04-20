@@ -47,7 +47,8 @@ export type Event =
   | 'user_unblock_with_notes'
   | 'user_cancel'
   | 'bootstrap_ok'
-  | 'bootstrap_fail';
+  | 'bootstrap_fail'
+  | 'seed_failed';
 
 /**
  * All Event values as a runtime array.
@@ -83,4 +84,5 @@ export const EVENT_VALUES = [
   'user_cancel',
   'bootstrap_ok',
   'bootstrap_fail',
+  'seed_failed',
 ] as const satisfies readonly Event[];
