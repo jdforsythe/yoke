@@ -728,6 +728,64 @@
         "error-boundary.spec.ts relies on globalThis.WebSocket being subclassable in Chromium. If Chromium restricts subclassing, the init script interception pattern will need to change.",
         "control-roundtrip.spec.ts cancel test waits up to 5s for the workflow.update broadcast — on very slow CI machines this timeout could fire before the broadcast arrives."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "d9f345b0-ca54-4f02-b68b-7cfb06388feb",
+      "ts": "2026-04-20T12:42:00Z",
+      "note": "Implemented r2-05 cancel-item-frames in full. (1) Extended ControlBroadcastFn in control-executor.ts to accept 'workflow.update' | 'item.state' frame types. (2) Updated the cancel loop in makeControlExecutor to capture the applyItemTransition result and emit an item.state broadcast (with {itemId, stageId, state:{status:'abandoned', currentPhase, retryCount, blockedReason:null}}) immediately after each transition commits — AFTER the transaction, BEFORE the terminal workflow.update. Items that raced to terminal between the initial SELECT and applyItemTransition are protected by checking result.newState === 'abandoned' before emitting. (3) Extended tests/api/control-execute.test.ts with 3 new tests: ordered-frame-sequence (N=3 item.state frames indexed before workflow.update), zero-non-terminal (only workflow.update), and no-redundant-frame (terminal items pre-filtered by SQL do not emit). (4) Created src/web/e2e/real/cancel-item-frames.spec.ts using the realBackend fixture: seeds a workflow with 3 in-progress items + 1 active session, clicks Cancel, confirms dialog, and asserts each item card shows 'abandoned' without a reload. All 10 control-execute tests pass, all 1223 Vitest tests pass, all 26 real-backend Playwright tests pass, typecheck clean.",
+      "intended_files": [
+        "src/server/pipeline/control-executor.ts",
+        "tests/api/control-execute.test.ts",
+        "src/web/e2e/real/cancel-item-frames.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "If an item races to terminal between the non-terminal SELECT and applyItemTransition, cancelledCount still increments but no item.state frame is emitted (the newState !== 'abandoned' guard handles this). The cancelledItems count in the HTTP response may therefore be higher than the number of item.state frames — acceptable since the race window is narrow under SQLite serialized writes.",
+        "The Playwright spec requires an active session (ended_at IS NULL) for the Cancel button to appear via ControlMatrix. It seeds one session attached to item[0]. If ControlMatrix's visibility logic changes, the test's Cancel button assertion will break."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "b840e7e7-57ad-4eb2-85b4-b98d3eacbf33",
+      "ts": "2026-04-20T12:52:00Z",
+      "note": "Implemented r2-01 attention-broadcasts in full. (1) Added buildAttentionMessage exported free function to scheduler.ts deriving human-readable messages from kind+payload. (2) Added _emitAttentionNotice private method that reads kind/payload from pending_attention table and broadcasts a notice frame with severity, kind, message, and persistedAttentionId. (3) Updated _applyTransition to call _emitAttentionNotice whenever applyItemTransition returns a non-null pendingAttentionRowId — centralizing all attention notice dispatch. (4) Removed manual notice broadcast from prompt_assembly_failed path (now routed through centralized emitter). (5) Created tests/scheduler/attention-broadcasts.test.ts with 11 tests covering all attention-producing transitions using real SQLite + fake BroadcastFn. (6) Extended tests/notifications/attention-roundtrip.test.ts with live-path test: engine inserts row via _applyTransition → notice frame over WS → ack → workflow.index.update. (7) Added broadcast method to StartHandle interface in cli/start.ts. (8) Extended realBackend Playwright fixture to expose broadcast helper so specs can inject WS frames without running a real scheduler. (9) Created src/web/e2e/real/live-attention.spec.ts with 2 tests: AttentionBanner renders within 2s without reload after notice frame, and banner disappears optimistically after Acknowledge. All 1265 Vitest tests pass, typecheck clean.",
+      "intended_files": [
+        "src/server/scheduler/scheduler.ts",
+        "tests/scheduler/attention-broadcasts.test.ts",
+        "tests/notifications/attention-roundtrip.test.ts",
+        "src/cli/start.ts",
+        "src/web/e2e/fixtures/realBackend.ts",
+        "src/web/e2e/real/live-attention.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "prompt_assembly_failed path calls _applyTransition with session_fail+classifier_result=unknown — this may not always insert a pending_attention row (depends on retry ladder state). Notice is only emitted when a row is actually inserted, which is the correct behavior.",
+        "Playwright live-attention.spec.ts injects notice frames via backend.broadcast() rather than running the real scheduler — the broadcast path is tested but the full Scheduler._applyTransition path is tested only in Vitest. Any future change that reroutes the broadcast call may silently break the e2e assertion.",
+        "_emitAttentionNotice reads the pending_attention row immediately after applyItemTransition commits — under heavy concurrent load (multiple goroutines committing simultaneously) the reader might see a slightly stale snapshot, but SQLite serialized writes make this extremely unlikely in practice."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "r2-03-index-updates",
+      "ts": "2026-04-20T13:00:00Z",
+      "note": "Implemented r2-03 workflow.index.update emission. (1) Added scheduleIndexUpdate (public, 500 ms per-workflow debounce via Map<workflowId, timer>) and _emitIndexUpdate (queries DB fresh for status and unreadEvents count) to Scheduler. (2) Wired emission sites: _applyTransition when pendingAttentionRowId != null, _handleStageComplete after applyWorkflowComplete, ackAttention callback in start.ts, and makeControlExecutor cancel path via new optional 4th param. (3) stop() clears all pending timers. (4) Created tests/scheduler/index-updates.test.ts with 17 tests covering debounce timing (fake setTimeout), coalescing, cross-workflow isolation, unreadEvents from DB at emission time, all 4 emission sites. (5) Created src/web/e2e/real/sidebar-live-status.spec.ts with 2 real-backend Playwright tests: status chip updates in_progress → completed without reload, unreadEvents badge appears after pending_attention insert. All 1265 Vitest tests pass, typecheck clean.",
+      "intended_files": [
+        "src/server/scheduler/scheduler.ts",
+        "src/server/pipeline/control-executor.ts",
+        "src/cli/start.ts",
+        "src/web/e2e/fixtures/realBackend.ts",
+        "tests/scheduler/index-updates.test.ts",
+        "src/web/e2e/real/sidebar-live-status.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "Playwright sidebar-live-status.spec.ts relies on the 500 ms debounce firing in real time in the test process. If CI machines are slow, the 3s Playwright timeout may be tight — increase if flaky.",
+        "WorkflowDetailRoute changes (r2-04 prep) committed in same branch — prior-session work staged alongside r2-03 commits. Not expected to conflict but review should verify."
+      ]
     }
   ]
 }
