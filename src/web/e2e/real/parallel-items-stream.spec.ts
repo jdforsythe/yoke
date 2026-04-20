@@ -2,10 +2,13 @@
  * r2-04 AC3: 3 parallel per-item sessions — clicking item A/B scopes the
  * stream pane to that item's session without bleeding between items.
  *
- * Seeds 3 in-progress items each with their own active session (item_id set,
- * ended_at IS NULL). Broadcasts stream.text for sessions A and B, then asserts:
+ * Seeds 3 in-progress items but NO sessions in the DB so the snapshot has
+ * empty activeSessions. After items appear, drives session.started for each
+ * via backend.broadcast() — this exercises the upsert path (not buildFromSnapshot).
+ * Then asserts:
  *   - Clicking item A shows A's content only
  *   - Clicking item B shows B's content only
+ *   - Clicking item A again shows A's content (map preserved — no auto-switch)
  *   - "Session ended" banner does not appear (sessions are still live)
  */
 
@@ -20,7 +23,7 @@ const PIPELINE = JSON.stringify({
 function seedParallelWorkflow(
   db: BackendHandle['db'],
   wfId: string,
-  entries: Array<{ itemId: string; sessionId: string }>,
+  itemIds: string[],
 ): void {
   const now = new Date().toISOString();
   db.writer
@@ -30,7 +33,7 @@ function seedParallelWorkflow(
     )
     .run(wfId, `Parallel Items ${wfId}`, PIPELINE, now, now);
 
-  for (const { itemId, sessionId } of entries) {
+  for (const itemId of itemIds) {
     db.writer
       .prepare(
         `INSERT INTO items
@@ -38,18 +41,11 @@ function seedParallelWorkflow(
          VALUES (?, ?, 'stage-1', '{}', 'in_progress', 'implement', 0, ?)`,
       )
       .run(itemId, wfId, now);
-    db.writer
-      .prepare(
-        `INSERT INTO sessions
-           (id, workflow_id, item_id, stage, phase, agent_profile, started_at, status)
-         VALUES (?, ?, ?, 'stage-1', 'implement', 'default', ?, 'in_progress')`,
-      )
-      .run(sessionId, wfId, itemId, now);
   }
 }
 
 test.describe('parallel-items-stream — r2-04 AC3', () => {
-  test('clicking item A shows A stream; clicking item B shows B stream; no cross-bleeding', async ({
+  test('session.started upserts map; clicking A/B scopes pane; clicking A again preserves map', async ({
     page,
     backend,
   }) => {
@@ -59,7 +55,9 @@ test.describe('parallel-items-stream — r2-04 AC3', () => {
     const itemB = { itemId: `item-par-b-${suffix}`, sessionId: `sess-par-b-${suffix}` };
     const itemC = { itemId: `item-par-c-${suffix}`, sessionId: `sess-par-c-${suffix}` };
 
-    seedParallelWorkflow(backend.db, wfId, [itemA, itemB, itemC]);
+    // Seed workflow + items but NO sessions — snapshot activeSessions will be empty,
+    // so buildFromSnapshot produces an empty map. Sessions are driven via broadcast below.
+    seedParallelWorkflow(backend.db, wfId, [itemA.itemId, itemB.itemId, itemC.itemId]);
 
     await page.goto(`/workflow/${wfId}`);
 
@@ -67,6 +65,19 @@ test.describe('parallel-items-stream — r2-04 AC3', () => {
     await expect(page.locator(`#item-${itemA.itemId}`)).toBeVisible({ timeout: 6000 });
     await expect(page.locator(`#item-${itemB.itemId}`)).toBeVisible({ timeout: 3000 });
     await expect(page.locator(`#item-${itemC.itemId}`)).toBeVisible({ timeout: 3000 });
+
+    // Drive session.started for each item via the real backend (upsert path).
+    // This populates itemActiveSession via session.started handler, not buildFromSnapshot.
+    const now = new Date().toISOString();
+    for (const { itemId, sessionId } of [itemA, itemB, itemC]) {
+      backend.broadcast(wfId, sessionId, 'session.started', {
+        sessionId,
+        itemId,
+        phase: 'implement',
+        attempt: 1,
+        startedAt: now,
+      });
+    }
 
     // Broadcast distinguishable stream.text for sessions A and B so assertions
     // can tell which session's content is in the visible pane.
@@ -99,6 +110,14 @@ test.describe('parallel-items-stream — r2-04 AC3', () => {
     // A's content must NOT bleed into B's pane.
     await expect(page.getByText('Stream content for item A')).not.toBeVisible();
     // No "Session ended" banner — session B is still active.
+    await expect(page.getByTestId('session-ended-banner')).not.toBeVisible();
+
+    // --- Click item A again: assert map preserved A's session state ---
+    // A's session was never ended, so itemActiveSession still holds it.
+    // Selecting A must show A's content without switching to B or clearing.
+    await page.locator(`#item-${itemA.itemId}`).click();
+    await expect(page.getByText('Stream content for item A')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Stream content for item B')).not.toBeVisible();
     await expect(page.getByTestId('session-ended-banner')).not.toBeVisible();
   });
 });
