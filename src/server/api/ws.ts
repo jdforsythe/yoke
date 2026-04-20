@@ -291,11 +291,12 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
 
   const itemRows = reader
     .prepare(
-      'SELECT id, stage_id, status, current_phase, retry_count, blocked_reason FROM items WHERE workflow_id = ? ORDER BY rowid',
+      'SELECT id, stage_id, stable_id, status, current_phase, retry_count, blocked_reason FROM items WHERE workflow_id = ? ORDER BY rowid',
     )
     .all(workflowId) as Array<{
       id: string;
       stage_id: string;
+      stable_id: string | null;
       status: string;
       current_phase: string | null;
       retry_count: number;
@@ -305,6 +306,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
   const items: ItemProjection[] = itemRows.map((i) => ({
     id: i.id,
     stageId: i.stage_id,
+    stableId: i.stable_id ?? null,
     state: {
       status: i.status,
       currentPhase: i.current_phase,

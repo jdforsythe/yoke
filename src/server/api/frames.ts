@@ -112,6 +112,7 @@ export interface ItemProjection {
   state: ItemStateProjection;
   displayTitle: string | null;
   displaySubtitle: string | null;
+  stableId: string | null;
 }
 
 export interface ItemStateProjection {
