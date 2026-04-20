@@ -1061,6 +1061,52 @@
       "known_risks": [
         "seed-failed-banner.spec.ts uses backend.broadcast() injection (not the real scheduler tick) — the full end-to-end path with a real scheduler tick is covered by unit tests, not Playwright."
       ]
+    },
+    {
+      "phase": "review",
+      "attempt": 3,
+      "session_id": "r2-04-review-03",
+      "ts": "2026-04-20T19:30:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-3: scheduler.ts:1414-1419 broadcasts session.started WITHOUT itemId — the payload only contains {sessionId, phase, attempt, startedAt}. Because the client handler guards on `if (p.itemId)` (WorkflowDetailRoute.tsx:249), the upsert path is dead code in production: no real per-item session started by the scheduler will ever populate itemActiveSession after the initial snapshot. The E2E spec (parallel-items-stream.spec.ts:72-80) works around this by using backend.broadcast() with a hand-crafted payload that manually includes itemId. The test proves the client upsert logic is correct but does not prove the scheduler emits itemId. The feature spec explicitly requires 'maintain it via session.started (upsert)' — that path never fires in a real workflow."
+      ],
+      "non_blocking": [
+        "RC-2: removeBySessionId (itemSessionMap.ts:57-72) is O(n) per session.ended frame. Acceptable since session.ended is infrequent and the map is bounded by concurrent item count (< 20). High-frequency stream.text frames do not trigger this path.",
+        "All other ACs and RCs pass: AC-1 (Map state, no global activeSessionId field — WorkflowDetailRoute.tsx:50-68), AC-2 (ws.ts:332 projects itemId in activeSessions; fastify-ws.test.ts:289-313 covers shape), AC-4 (session-end-no-autoswitch.spec.ts asserts Session ended banner, no auto-switch), AC-5 (ItemDetailRoute renders WorkflowDetailRoute; FeatureBoard.tsx:152-168 useLayoutEffect calls onSelectItem), AC-6 (reducer.test.ts:605-699 12 map tests), RC-1 (no activeSessionId state field), RC-3 (ControlMatrix receives activeSession.sessionId scoped to selectedItemId — WorkflowDetailRoute.tsx:502), RC-4 (ReviewPanel and LiveStreamPane receive activeSession.sessionId — lines 510, 512), RC-5 (no polling, map maintained solely via WS frames)."
+      ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 4,
+      "session_id": "802450bb-81de-45c2-8ae6-078a84bbf18c",
+      "ts": "2026-04-20T19:04:22.207Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • AC-3: scheduler.ts:1414-1419 broadcasts session.started WITHOUT itemId — the payload only contains {sessionId, phase, attempt, startedAt}. Because the client handler guards on `if (p.itemId)` (WorkflowDetailRoute.tsx:249), the upsert path is dead code in production: no real per-item session started by the scheduler will ever populate itemActiveSession after the initial snapshot. The E2E spec (parallel-items-stream.spec.ts:72-80) works around this by using backend.broadcast() with a hand-crafted payload that manually includes itemId. The test proves the client upsert logic is correct but does not prove the scheduler emits itemId. The feature spec explicitly requires 'maintain it via session.started (upsert)' — that path never fires in a real workflow.\n"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 3,
+      "session_id": "2c2f123d-82fc-416a-9797-2b9b9ad078f5",
+      "ts": "2026-04-20T15:15:00Z",
+      "note": "r2-07 is fully implemented across two commits. Commit 3c15a34 (attempt 1) introduced controlMatrixRules.ts with RULES over exhaustive Record<WorkflowStatus|State, boolean> lookups, SUPPORTED_ACTIONS=new Set(['cancel','retry']), and tests/web/controlMatrix.test.ts (110 truth-table tests × 9 actions × 11 State values, plus 4 multi-item retry tests and 5 cancel/terminal-workflow-status tests). Commit 86c0afb (this session) added the RC-3 fix: WorkflowDetailRoute.tsx sendControl branches on action==='retry' and calls fetch() POST /api/workflows/:id/retry instead of sending a WS control frame (which the executor rejects as invalid_action); after the POST the server broadcasts {retried:true} and the route cycles the WS subscription to receive a fresh workflow.snapshot. Added retry-control-button.spec.ts real-backend Playwright test. All 1498 Vitest tests pass; typecheck clean for both root and web packages.",
+      "intended_files": [
+        "src/web/src/components/ControlMatrix/controlMatrixRules.ts",
+        "src/web/src/components/ControlMatrix/ControlMatrix.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "tests/web/controlMatrix.test.ts",
+        "src/web/e2e/real/retry-control-button.spec.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "retry-control-button.spec.ts seeds a session with status='in_progress' directly in the DB so ControlMatrix renders for the selected item. If ControlMatrix's session-visibility logic changes, the seeding must be updated.",
+        "The {retried:true} patch handling in WorkflowDetailRoute.tsx cycles unsubscribe+subscribe. If the server doesn't send a fresh snapshot within the Playwright timeout (3s), the item status assertion may flake on very slow CI.",
+        "The workflowStatus in ControlCtx is typed as string (not WorkflowStatus) to match the snapshot projection. TERMINAL_WF lookup uses 'as WorkflowStatus' cast with ?? false fallback for unknown values — a new status value that should be terminal will silently allow cancel until TERMINAL_WF is updated."
+      ]
     }
   ]
 }
