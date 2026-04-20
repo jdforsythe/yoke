@@ -1140,7 +1140,10 @@ export class Scheduler {
         phase: phaseKey,
         attempt,
         event: 'session_fail',
-        guardCtx: { classifierResult: 'unknown' },
+        // Use 'permanent' so applyPendingSideEffects inserts a pending_attention
+        // row and _emitAttentionNotice broadcasts a notice with persistedAttentionId
+        // (AC-4: prompt_assembly_failed must not emit a bare notice).
+        guardCtx: { classifierResult: 'permanent' },
       });
       this._broadcastItemState(wf.id, item.id, item.stage_id, result);
       await logWriter.close();

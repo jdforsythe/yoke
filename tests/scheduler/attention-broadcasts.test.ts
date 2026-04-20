@@ -9,7 +9,11 @@
  *   - bootstrapping → bootstrap_fail  (kind=bootstrap_failed)
  *   - in_progress  → pre_command_failed+stop-and-ask  (kind=awaiting_user_retry)
  *   - in_progress  → post_command_action+revisit_limit (kind=revisit_limit)
+ *   - in_progress  → post_command_action+stop-and-ask
  *   - in_progress  → session_fail+permanent  (kind=awaiting_user_retry)
+ *   - in_progress  → validator_fail+budget_exhausted
+ *   - in_progress  → diff_check_fail+budget_exhausted
+ *   - awaiting_retry → backoff_elapsed+ladder_exhausted
  *   - awaiting_retry → retries_exhausted  (kind=awaiting_user_retry)
  *   - No double-broadcast: single pending_attention → single notice frame
  *   - Transitions WITHOUT pending_attention do NOT emit a notice frame
@@ -389,6 +393,108 @@ describe('Scheduler._applyTransition — attention broadcasts', () => {
     const row = getAttentionRow(notice.persistedAttentionId as number);
     expect(row).toBeDefined();
     expect(row!.kind).toBe('awaiting_user_retry');
+  });
+
+  // -------------------------------------------------------------------------
+  // in_progress → validator_fail + retry budget exhausted → awaiting_user
+  // retry_count=3 >= DEFAULT_MAX_OUTER_RETRIES(3) → exhausted
+  // -------------------------------------------------------------------------
+  it('validator_fail with retry budget exhausted emits notice with persistedAttentionId', () => {
+    const wfId = mkWf();
+    const itemId = mkItem();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, { status: 'in_progress', retryCount: 3 });
+
+    const { scheduler, frames } = makeScheduler();
+
+    applyTransition(scheduler, {
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 3,
+      event: 'validator_fail',
+    });
+
+    const notices = countNotices(frames);
+    expect(notices).toHaveLength(1);
+
+    const notice = notices[0]!.payload as Record<string, unknown>;
+    expect(notice.severity).toBe('requires_attention');
+    expect(typeof notice.persistedAttentionId).toBe('number');
+
+    const row = getAttentionRow(notice.persistedAttentionId as number);
+    expect(row).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // in_progress → diff_check_fail + retry budget exhausted → awaiting_user
+  // retry_count=3 >= DEFAULT_MAX_OUTER_RETRIES(3) → exhausted
+  // -------------------------------------------------------------------------
+  it('diff_check_fail with retry budget exhausted emits notice with persistedAttentionId', () => {
+    const wfId = mkWf();
+    const itemId = mkItem();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, { status: 'in_progress', retryCount: 3 });
+
+    const { scheduler, frames } = makeScheduler();
+
+    applyTransition(scheduler, {
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 3,
+      event: 'diff_check_fail',
+    });
+
+    const notices = countNotices(frames);
+    expect(notices).toHaveLength(1);
+
+    const notice = notices[0]!.payload as Record<string, unknown>;
+    expect(notice.severity).toBe('requires_attention');
+    expect(typeof notice.persistedAttentionId).toBe('number');
+
+    const row = getAttentionRow(notice.persistedAttentionId as number);
+    expect(row).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // awaiting_retry → backoff_elapsed + retry ladder exhausted → awaiting_user
+  // retry_count=3 → ladder[2]='awaiting_user' → exhausted sentinel
+  // -------------------------------------------------------------------------
+  it('backoff_elapsed with retry ladder exhausted emits notice with persistedAttentionId', () => {
+    const wfId = mkWf();
+    const itemId = mkItem();
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, { status: 'awaiting_retry', retryCount: 3 });
+
+    const { scheduler, frames } = makeScheduler();
+
+    applyTransition(scheduler, {
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 3,
+      event: 'backoff_elapsed',
+    });
+
+    const notices = countNotices(frames);
+    expect(notices).toHaveLength(1);
+
+    const notice = notices[0]!.payload as Record<string, unknown>;
+    expect(notice.severity).toBe('requires_attention');
+    expect(typeof notice.persistedAttentionId).toBe('number');
+
+    const row = getAttentionRow(notice.persistedAttentionId as number);
+    expect(row).toBeDefined();
   });
 
   // -------------------------------------------------------------------------
