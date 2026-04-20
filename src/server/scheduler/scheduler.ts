@@ -782,9 +782,11 @@ export class Scheduler {
       )
       .get(wf.id) as { cnt: number };
 
-    // Items currently in inFlight count as running even if insertSession hasn't
-    // been called yet — prevents over-scheduling within a single tick.
-    const pendingInFlight = [...this.inFlight.keys()].filter((id) => {
+    // Count only 'pending' (pre-insertSession) inFlight entries. Items with a
+    // live InFlightSession are already counted by runningSql.cnt; including them
+    // here would double-count and inflate effectiveRunning past maxParallel.
+    const pendingInFlight = [...this.inFlight.entries()].filter(([id, entry]) => {
+      if (entry !== 'pending') return false;
       const item = this._readItem(id);
       return item?.workflow_id === wf.id;
     }).length;
@@ -1579,6 +1581,10 @@ export class Scheduler {
     const morePhases = phaseIdx >= 0 && phaseIdx < stage.phases.length - 1;
     const nextPhase = morePhases ? stage.phases[phaseIdx + 1] : undefined;
 
+    // Tracks whether session_ok advanced the item to a next phase so the
+    // wrap-up can spawn it immediately instead of waiting for the tick loop.
+    let sessionOkNewPhase: string | null = null;
+
     try {
 
     if (exitCode === 0) {
@@ -1734,6 +1740,9 @@ export class Scheduler {
         });
         console.log(`[scheduler] ${freshItem.stage_id}/${freshItem.current_phase} session_ok → ${result.newState}${result.newPhase ? `/${result.newPhase}` : ''}`);
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
+        if (result.newState === 'in_progress' && result.newPhase) {
+          sessionOkNewPhase = result.newPhase;
+        }
 
       } else if (postResult.kind === 'action') {
         // post_command_action — forward the resolved action to the engine.
@@ -1904,7 +1913,10 @@ export class Scheduler {
         this.inFlight.delete(item.id);
         return;
       }
-      throw err; // re-raise unexpected errors
+      // Prevent permanent inFlight slot leak — without this, the item stays
+      // in the inFlight map forever (until restart), blocking all scheduling.
+      this.inFlight.delete(item.id);
+      throw err;
     }
 
     // --- Wrap up session ---
@@ -1917,9 +1929,23 @@ export class Scheduler {
       statusFlags: { parseErrors },
       reason: exitCode === 0 ? 'ok' as const : 'fail' as const,
     });
-    await logWriter.close();
+    // Free the scheduling slot in DB before the async log flush so that
+    // effectiveRunning drops immediately. Previously logWriter.close() ran
+    // first: any tick that fired during the flush saw the session still
+    // 'running' in DB plus the item still in inFlight, hit maxParallel, and
+    // blocked all new sessions for however long the flush took.
     endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
     this.inFlight.delete(item.id);
+    // When session_ok advanced to the next phase, spawn immediately rather
+    // than waiting up to pollIntervalMs for the tick loop to notice.
+    if (sessionOkNewPhase !== null && !this.stopped) {
+      const nextItem = this._readItem(item.id);
+      if (nextItem) {
+        this.inFlight.set(item.id, 'pending');
+        void this._runSession(wf, nextItem, stage);
+      }
+    }
+    await logWriter.close();
   }
 
   // -------------------------------------------------------------------------

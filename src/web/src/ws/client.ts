@@ -290,6 +290,11 @@ export class YokeWsClient {
             break;
           case 'SUBSCRIPTION_LIMIT':
             break; // surfaced to UI via frame handlers below
+          case 'NOT_FOUND':
+            // Workflow no longer exists — evict the stale subscription so it
+            // is not re-sent on the next reconnect.
+            if (frame.workflowId) this.subs.delete(frame.workflowId);
+            break;
           case 'BAD_FRAME':
             console.warn('[yoke-ws] BAD_FRAME:', err.message);
             break;

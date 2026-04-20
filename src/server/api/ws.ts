@@ -420,7 +420,7 @@ function handleSubscribe(
   const snapshot = buildSnapshot(ctx.db, workflowId);
   if (!snapshot) {
     process.stdout.write(`[MAIN_REPO_WS] NOT_FOUND for ${workflowId}\n`);
-    send(socket, makeErrorFrame('NOT_FOUND', `Workflow ${workflowId} not found [MAIN_REPO]`));
+    send(socket, makeFrame('error', { code: 'NOT_FOUND', message: `Workflow ${workflowId} not found` }, { workflowId }));
     return;
   }
 
