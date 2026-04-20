@@ -433,7 +433,11 @@ export function WorkflowDetailRoute() {
         >
           {snapshot.workflow.status}
         </span>
-        <GithubButton githubState={snapshot.workflow.githubState ?? null} />
+        <GithubButton
+          workflowId={workflowId!}
+          workflowStatus={snapshot.workflow.status}
+          githubState={snapshot.workflow.githubState ?? null}
+        />
       </div>
 
       {/* Main body: board + stream pane side-by-side */}

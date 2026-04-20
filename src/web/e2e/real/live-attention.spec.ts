@@ -105,8 +105,8 @@ test.describe('live attention broadcast — real backend', () => {
     const banner = page.getByRole('region', { name: 'Attention required' });
     await expect(banner).toBeVisible({ timeout: 2000 });
 
-    // Click Acknowledge — optimistic removal hides the item immediately.
-    await page.getByRole('button', { name: 'Acknowledge' }).click();
+    // Click Resume (bootstrap_failed is retryable) — optimistic removal hides the item.
+    await page.getByRole('button', { name: 'Resume' }).click();
     await expect(banner).not.toBeVisible({ timeout: 3000 });
 
     // DB row is acknowledged (ack endpoint was called).

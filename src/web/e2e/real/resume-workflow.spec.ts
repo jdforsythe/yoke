@@ -56,7 +56,8 @@ test.describe('resume-workflow — real backend', () => {
     const attId = seedRetriableWorkflow(backend.db, { wfId, itemId, attId: null });
 
     await page.goto(`/workflow/${wfId}`);
-    await expect(page.getByText(`Resume Wf ${wfId}`)).toBeVisible({ timeout: 6000 });
+    // Use heading role to avoid strict-mode violation (name also appears in sidebar).
+    await expect(page.getByRole('heading', { name: `Resume Wf ${wfId}`, exact: true })).toBeVisible({ timeout: 6000 });
 
     // Inject the notice frame so the banner renders (same pattern as live-attention.spec.ts).
     backend.broadcast(wfId, null, 'notice', {
