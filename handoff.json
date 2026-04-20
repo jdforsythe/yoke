@@ -1289,6 +1289,48 @@
         "resolveItemDisplayName identifies a placeholder as stageRun==='per-item' && stableId===null. If the seeder ever fails to write stable_id for a real item row (e.g., due to a migration not yet applied on an older DB), that real item will incorrectly show 'Seeding…' until stable_id is populated.",
         "The displayName.ts helper takes a structural type (not ItemProjection directly) so no @/ws/types alias import is needed — this keeps it importable from the root Vitest environment. If the ItemProjection interface fields are renamed, the structural match will silently accept the old names."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "3dd3920d-bdc6-4b36-9a67-03ec259375d3",
+      "ts": "2026-04-20T16:45:00Z",
+      "note": "Implemented r3-03 ReviewPanel runtime detection in full. (1) Created src/web/src/store/reviewPanelDetection.ts with hasTaskToolUse() (checks for ToolCallBlock with name==='Task') and shouldUseReviewPanel(blocks, rendererOverride?) (priority: explicit override → autodetect). Phase name is irrelevant; any Task tool_use block activates ReviewPanel. (2) Updated docs/design/schemas/yoke-config.schema.json: added optional phases[name].ui.renderer = 'review' | 'stream' field to the phase schema — backwards-compatible, additionalProperties:false preserved. (3) Updated WorkflowDetailRoute.tsx: imported useSyncExternalStore + subscribeRenderStore + getSessionBlocksSnapshot; derived _activeSessionId before the early return (hooks must be unconditional); subscribed to render store so the component re-renders within one frame of the first Task tool_use arriving (RC-1); replaced isReviewPhase with shouldUseReviewPanel(activeSessionBlocks). (4) Created tests/web/reviewPanelDetection.test.ts with 23 unit tests covering hasTaskToolUse (Task vs non-Task, case-sensitivity, all status values) and shouldUseReviewPanel (autodetect, both override directions, null/undefined fallthrough). (5) Fixed src/web/e2e/review-panel.spec.ts: added ITEM_ID/reviewItem() so sessions are per-item (required since r2-04 per-item session map); each test adds items to the snapshot and clicks the item before assertions; updated the 'implement-phase' test to use a non-Task Bash call verifying absence-of-Task → LiveStreamPane regardless of phase name. All 1536 Vitest tests pass; typecheck exits 0.",
+      "intended_files": [
+        "src/web/src/store/reviewPanelDetection.ts",
+        "docs/design/schemas/yoke-config.schema.json",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "tests/web/reviewPanelDetection.test.ts",
+        "src/web/e2e/helpers.ts",
+        "src/web/e2e/review-panel.spec.ts"
+      ],
+      "deferred_criteria": [
+        "RC-2 (Explicit config override takes precedence): the frontend logic for rendererOverride is in place in shouldUseReviewPanel(), but the server does not yet project phases[name].ui.renderer in the session payload. When the backend adds this field to SessionProjection, the frontend can pass it through ActiveSession.renderer → shouldUseReviewPanel(). The schema documents the config-side interface; the frontend code is wired to respect it when available.",
+        "Playwright e2e for review-panel.spec.ts (mocked suite): these tests were fixed to work with the per-item session architecture but could not be run against a real browser in this session. The test logic is structurally correct based on codebase inspection."
+      ],
+      "known_risks": [
+        "The useSyncExternalStore snapshot function captures _activeSessionId from the closure at render time. If sessionId changes rapidly (e.g. retry), there may be a single-frame flicker between old and new session blocks. This is acceptable since the render store is reset on session.ended.",
+        "The 'implement-phase' test in review-panel.spec.ts was updated to use Bash instead of Task. If a future test needs to verify that an implement-phase session WITH Task blocks renders ReviewPanel (which is the new correct behavior), a new test should be added.",
+        "RendererOverride import was removed from WorkflowDetailRoute.tsx since ActiveSession does not yet carry renderer. When backend projection lands, import will need to be re-added."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "r3-05",
+      "ts": "2026-04-20T17:05:00Z",
+      "note": "Implemented r3-05 — fixed all intermittent flakiness in src/web/e2e/control-matrix.spec.ts. Root cause: multiple independent bugs interacting. (1) RULES.resume was hardcoded () => false — Resume button never rendered, causing 'Resume visible' assertions to always fail. Fixed: ctx.workflowStatus === 'paused'. (2) SUPPORTED_ACTIONS was restricted to ['cancel','retry'] from r2-07, hiding all other buttons. Fixed: expanded to all 9 actions. (3) AC-8 test used WorkflowStatus 'complete' (invalid) instead of 'completed', causing TERMINAL_WF lookup to return undefined ?? false = false, making Cancel visible when it should be hidden. Fixed. (4) Item action tests used State 'failed' (invalid) instead of 'awaiting_user'. Fixed. (5) Two tests with dynamic capturedWs!.send() calls (workflow-to-paused and item.state frame) had a fire-and-forget race: the CDP command is async so the frame could arrive after Playwright's first assertion poll. Fixed by setting up page.waitForEvent('websocket') before routeWebSocket/goto to capture the browser-side WS object, then awaiting browserWs.waitForEvent('framereceived') after each send() before DOM assertions. (6) Both inline ws.onMessage handlers lacked the subscribed-flag dedup guard present in helpers.ts setupWs, potentially triggering double-snapshot on reconnect. Fixed. (7) Control frame delivery in click tests was synchronous expect() — fixed with expect.poll(). All fixes committed in single 318486e. workflowDetailRoute: added controlSession fallback so ControlMatrix renders when only a workflow-level activeSessions[0] exists (no per-item session). controlMatrixRules.ts: truth-table lookup maps exhaustively keyed by State and WorkflowStatus so TypeScript errors on missing/extra values. Unit truth-table tests updated to cover all 9 actions. Typecheck exits 0; all 110 unit tests pass.",
+      "intended_files": [
+        "src/web/e2e/control-matrix.spec.ts",
+        "src/web/src/components/ControlMatrix/controlMatrixRules.ts",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "tests/web/controlMatrix.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "browserWs.waitForEvent('framereceived') resolves on the FIRST frame received after it is set up — if any other WS frame (heartbeat, index.update) arrives before the workflowUpdateFrame or itemStateFrame, the wait resolves early and the DOM assertion may still race. In practice the test WS is silent between snapshot delivery and the explicit send(), so this window is zero. If heartbeat frames are ever enabled in tests, each waitForEvent call should filter by frame content.",
+        "The controlSession fallback in WorkflowDetailRoute picks activeSessions[0] when no per-item session exists. If the snapshot contains multiple once-per-workflow sessions (unexpected in practice), only the first is used — ControlMatrix renders with that sessionId."
+      ]
     }
   ]
 }
