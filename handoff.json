@@ -859,6 +859,102 @@
         "The error field serializes GithubAuthError to 'GITHUB_TOKEN: <reason>; gh_auth: <reason>' and GithubApiError to error.message. If UI consumers expect a structured object, the string representation may be insufficient — but GithubButton.tsx uses it as a tooltip string, so this is correct.",
         "initGithubState now accepts an optional 4th broadcast parameter. Existing callers (tests only at this point; ingest.ts in r2-08) do not pass it, so they continue to work with no broadcast emitted."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "34349633-4187-4567-b890-2ef26a136407",
+      "ts": "2026-04-20T13:45:00Z",
+      "note": "Implemented r2-08 in full. (1) Created src/server/github/remote-parse.ts with parseGitRemoteUrl(), a pure function that parses SSH (git@host:owner/repo.git) and HTTPS (https://host/owner/repo.git) remote URLs into owner/repo — handles with/without .git, trailing slash, case-insensitive host, returns null for malformed URLs. (2) Updated src/server/scheduler/ingest.ts: added IngestDeps interface with getRemoteOriginUrl(configDir) and makeProductionIngestDeps() factory (uses execFileSync, reads local git config only, never contacts origin). ingestWorkflow now resolves the remote URL via deps before the transaction, then calls initGithubState inside the same db.transaction as the workflow INSERT (better-sqlite3 handles the nested call as a SAVEPOINT). Resume path (isResume=true) early-returns before the transaction, so initGithubState is never called on resume. (3) Updated src/server/scheduler/scheduler.ts to pass makeProductionIngestDeps() to ingestWorkflow. (4) Created tests/github/remote-parse.test.ts with 23 unit tests covering all URL formats. (5) Expanded tests/scheduler/ingest.test.ts with 6 new tests covering: disabled (github.enabled=false), unconfigured (github.enabled=true, no remote), idle (github.enabled=true, valid remote), unconfigured when deps omitted, unconfigured when remote URL malformed, resume path preserves github_state. All 1428 Vitest tests pass, typecheck clean.",
+      "intended_files": [
+        "src/server/github/remote-parse.ts",
+        "tests/github/remote-parse.test.ts",
+        "src/server/scheduler/ingest.ts",
+        "tests/scheduler/ingest.test.ts",
+        "src/server/scheduler/scheduler.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "initGithubState is called from inside db.transaction() which itself calls db.transaction() internally — better-sqlite3 handles this via SAVEPOINT semantics. If the nested call ever throws, the outer transaction rolls back entirely (correct behaviour), but the error message may reference the savepoint rather than the outer transaction.",
+        "makeProductionIngestDeps uses execFileSync with a 5-second timeout. On a system under heavy I/O load, `git remote get-url origin` could theoretically time out, causing github_state=unconfigured for a workflow that is actually configured. This is safe (unconfigured is a valid initial state) but could surprise users who configured github.enabled=true.",
+        "The static import of execFileSync from node:child_process at the top of ingest.ts means the child_process module is loaded whenever ingest.ts is imported, including in tests. This is a Node.js built-in with no side effects, so it does not affect test isolation."
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 2,
+      "session_id": "ac9dc92e-5b76-4884-8ffc-ebad0a1517d7",
+      "ts": "2026-04-20T14:30:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-1: tests/scheduler/attention-broadcasts.test.ts covers only 6 of 9 transitions whose side-effects contain 'insert pending_attention'. Three are untested: (a) in_progress:validator_fail when retry budget exhausted (transitions.ts:287, engine.ts:587), (b) in_progress:diff_check_fail when retry budget exhausted (transitions.ts:300, engine.ts:606), (c) awaiting_retry:backoff_elapsed when retry ladder exhausted (transitions.ts:343, engine.ts:650-656). None of these event names appear in the 11 test cases at attention-broadcasts.test.ts:187-534.",
+        "AC-4: prompt_assembly_failed path (scheduler.ts:1134) calls _applyTransition with event='session_fail' and classifierResult='unknown'. The in_progress:session_fail+unknown case returns { to: 'awaiting_user', sideEffects: [] } (transitions.ts:320-322, engine.ts:633-634). applyPendingSideEffects returns null for empty sideEffects (engine.ts:858-862), so pendingAttentionRowId is null and _emitAttentionNotice is never called (scheduler.ts:392). No notice frame of any kind is emitted for prompt_assembly_failed — neither a bare notice nor one with persistedAttentionId."
+      ],
+      "non_blocking": [
+        "AC-2 passes: attention-roundtrip.test.ts:361 adds the live path test (engine inserts row via _applyTransition → notice frame over WS → ack → workflow.index.update) using a real Scheduler wired to the real WsClientRegistry.",
+        "AC-3 passes: live-attention.spec.ts seeds the data and uses backend.broadcast() to inject the exact notice frame that _emitAttentionNotice would produce; AttentionBanner renders within 2s without reload. The spec uses the realBackend fixture against real Fastify+SQLite.",
+        "RC-1 passes: _emitAttentionNotice reads kind and payload from the DB via SELECT kind, payload FROM pending_attention WHERE id = ? (scheduler.ts:409-412) — no hardcoded values at call sites.",
+        "RC-2 passes: DB commit happens inside applyItemTransition, _emitAttentionNotice (notice) is called inside _applyTransition before it returns, then the caller calls _broadcastItemState (item.state) — order is DB commit → notice → item.state (scheduler.ts:388-398, comment at 385-386).",
+        "RC-3 passes: broadcast always fires; notifyFn is conditional (scheduler.ts:424-432); verified by tests at attention-broadcasts.test.ts:448-495.",
+        "RC-4 passes: _emitAttentionNotice is a private Scheduler method with injected broadcastFn (scheduler.ts:408); test factory at attention-broadcasts.test.ts:150 injects a fake BroadcastFn.",
+        "RC-5 passes: single transition calls _emitAttentionNotice at most once; test at attention-broadcasts.test.ts:397 asserts exactly one notice frame."
+      ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 2,
+      "session_id": "ac9dc92e-5b76-4884-8ffc-ebad0a1517d7",
+      "ts": "2026-04-20T17:29:12.767Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nReview verdict: FAIL — 2 blocking issue(s):\n  • AC-3: parallel-items-stream.spec.ts does not broadcast session.started frames via the real backend; sessions are seeded directly in the DB so the map is populated by buildFromSnapshot (workflow.snapshot path), never by upsert (session.started path). The AC requires 'drives session.started for each via the real backend' — evidence: src/web/e2e/real/parallel-items-stream.spec.ts:73-83 broadcasts only stream.text, no session.started broadcast present.\n  • AC-3: parallel-items-stream.spec.ts does not click back to item A after switching to item B, so the AC requirement 'A's state is preserved in the map' is never explicitly asserted. After clicking B (lines 95-103), the test only verifies B is shown and A does not bleed; it never re-selects A to confirm A's session state remains accessible — evidence: src/web/e2e/real/parallel-items-stream.spec.ts:86-103.\n"
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 2,
+      "session_id": "dd62f15a-3e7c-4dee-b687-d64b0c8147b7",
+      "ts": "2026-04-20T15:00:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-3: parallel-items-stream.spec.ts does not broadcast session.started frames via the real backend; sessions are seeded directly in the DB so the map is populated by buildFromSnapshot (workflow.snapshot path), never by upsert (session.started path). The AC requires 'drives session.started for each via the real backend' — evidence: src/web/e2e/real/parallel-items-stream.spec.ts:73-83 broadcasts only stream.text, no session.started broadcast present.",
+        "AC-3: parallel-items-stream.spec.ts does not click back to item A after switching to item B, so the AC requirement 'A's state is preserved in the map' is never explicitly asserted. After clicking B (lines 95-103), the test only verifies B is shown and A does not bleed; it never re-selects A to confirm A's session state remains accessible — evidence: src/web/e2e/real/parallel-items-stream.spec.ts:86-103."
+      ],
+      "non_blocking": [
+        "RC-2: removeBySessionId in itemSessionMap.ts:57-72 performs an O(n) scan per session.ended frame to find the itemId for a given sessionId. The comment at line 55 acknowledges this as acceptable since the map is bounded by concurrent item count (typically < 20). The RC intent (prevent per-frame degradation for high-frequency stream frames) is met since session.ended is infrequent.",
+        "RC-1: activeSessionId remains as a prop name in ControlMatrix and FeatureBoard, but the value is correctly derived from itemActiveSession.get(selectedItemId) — it is not a backwards-compat shim. The WorkflowDetailState interface has no activeSessionId field (WorkflowDetailRoute.tsx:50-68).",
+        "All other ACs and RCs pass: AC-1 (Map state), AC-2 (itemId in snapshot projection + fastify-ws test line 289-312), AC-4 (session-end-no-autoswitch spec), AC-5 (deep link route wired, FeatureBoard useLayoutEffect pre-selects), AC-6 (reducer.test.ts:605-699 12 map tests), RC-3 (ControlMatrix gets per-item sessionId), RC-4 (LiveStreamPane/ReviewPanel scoped to selectedItemId), RC-5 (no polling)."
+      ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 2,
+      "session_id": "dd62f15a-3e7c-4dee-b687-d64b0c8147b7",
+      "ts": "2026-04-20T17:29:37.666Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nERROR: review-verdict.json was not written by the review session.\nThe review prompt requires writing this file with {\"verdict\": \"PASS\"} or {\"verdict\": \"FAIL\", \"blocking_issues\": [...]}.\n"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "918afb88-135d-4f75-91e1-971511512832",
+      "ts": "2026-04-20T14:45:00Z",
+      "note": "Addressed both blocking issues from review attempt 2. (1) AC-1: Added 3 missing test cases to tests/scheduler/attention-broadcasts.test.ts — validator_fail with retry_count=3 (>= DEFAULT_MAX_OUTER_RETRIES=3, budget exhausted), diff_check_fail with retry_count=3 (budget exhausted), and awaiting_retry:backoff_elapsed with retry_count=3 (ladder[2]='awaiting_user' sentinel exhausted). File now covers all 9 pending_attention-inserting transitions. Total: 14 tests. (2) AC-4: Changed prompt_assembly_failed path in scheduler.ts from session_fail+unknown (o[2]: empty sideEffects, no pending_attention row) to session_fail+permanent (o[1]: ['insert pending_attention']), so applyPendingSideEffects inserts a row and _emitAttentionNotice broadcasts a notice frame with persistedAttentionId. Added a comment explaining why 'permanent' is used. All 1431 Vitest tests pass, typecheck clean.",
+      "intended_files": [
+        "tests/scheduler/attention-broadcasts.test.ts",
+        "src/server/scheduler/scheduler.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "prompt_assembly_failed now uses session_fail+permanent which transitions the item to awaiting_user (not awaiting_retry). This is intentional — prompt assembly failures are not transient; the user must intervene. If the classification policy changes, the guardCtx parameter should be updated.",
+        "The backoff_elapsed test relies on DEFAULT_RETRY_LADDER[2] = 'awaiting_user' being the exhaustion sentinel. If the default ladder changes, the test must be updated to use a retry_count that hits the new sentinel position."
+      ]
     }
   ]
 }
