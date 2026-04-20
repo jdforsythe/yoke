@@ -68,7 +68,7 @@ import {
 } from '../pipeline/engine.js';
 import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
-import { ingestWorkflow } from './ingest.js';
+import { ingestWorkflow, makeProductionIngestDeps } from './ingest.js';
 import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
@@ -506,7 +506,7 @@ export class Scheduler {
     if (this.stopped) throw new Error('Scheduler already stopped');
 
     // Step 1: Ingest workflow + items from config (AC-1).
-    const { workflowId, isResume } = ingestWorkflow(this.db, this.config);
+    const { workflowId, isResume } = ingestWorkflow(this.db, this.config, makeProductionIngestDeps());
     this.workflowId = workflowId;
     console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
 
