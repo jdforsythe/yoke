@@ -118,8 +118,11 @@ test('AC-2: Pause button sends control frame with action=pause and a UUID comman
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   await page.getByRole('button', { name: 'Pause' }).click();
 
+  // Wait for the WS control frame to arrive at the mock handler before reading sent[].
+  // Without this, the browser's ws.send() is fire-and-forget — the frame may not have
+  // reached Playwright's onMessage callback by the time the test continues.
+  await expect.poll(() => parseControlFrames(sent).length).toBeGreaterThan(0);
   const frames = parseControlFrames(sent);
-  expect(frames.length).toBeGreaterThan(0);
   const ctrl = frames[0]!;
   expect(ctrl.payload.action).toBe('pause');
   // AC-5: commandId (the frame's top-level id) is a UUID (crypto.randomUUID format)
@@ -139,8 +142,8 @@ test('AC-2/cancel: Cancel sends control frame after confirmation', async ({ page
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Confirm' }).click();
 
+  await expect.poll(() => parseControlFrames(sent).length).toBeGreaterThan(0);
   const frames = parseControlFrames(sent);
-  expect(frames.length).toBeGreaterThan(0);
   expect(frames[0]!.payload.action).toBe('cancel');
 });
 
@@ -205,9 +208,10 @@ test('AC-6: inject-context opens modal and sends control frame with extra text',
   // Modal should close
   await expect(modal).not.toBeVisible();
 
+  // Wait for WS frame delivery — modal closing and ws.send() are concurrent.
+  await expect.poll(() => parseControlFrames(sent).length).toBeGreaterThan(0);
   // Control frame should include extra text
   const frames = parseControlFrames(sent);
-  expect(frames.length).toBeGreaterThan(0);
   const ctrl = frames[0]!;
   expect(ctrl.payload.action).toBe('inject-context');
   expect(ctrl.payload.extra).toBe('Please apply the latest style guide');
@@ -348,8 +352,8 @@ test('AC-7: approve-stage sends control frame with stageId', async ({ page }) =>
   await expect(page.getByRole('button', { name: 'Approve stage' })).toBeVisible();
   await page.getByRole('button', { name: 'Approve stage' }).click();
 
+  await expect.poll(() => parseControlFrames(sent).length).toBeGreaterThan(0);
   const frames = parseControlFrames(sent);
-  expect(frames.length).toBeGreaterThan(0);
   const ctrl = frames[0]!;
   expect(ctrl.payload.action).toBe('approve-stage');
   expect((ctrl.payload as { stageId?: string }).stageId).toBe('stage-needs-approval');
@@ -364,13 +368,19 @@ test('AC-1/AC-8: Pause hidden and Resume shown when workflow changes to paused',
 }) => {
   let capturedWs: WebSocketRoute | null = null;
 
+  // Must be set up before routeWebSocket and goto so we capture the browser's WS object.
+  const browserWsPromise = page.waitForEvent('websocket');
+
   await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
     capturedWs = ws;
     ws.send(helloFrame());
+    let subscribed = false;
     ws.onMessage((msg: string | Buffer) => {
+      if (subscribed) return;
       try {
         const f = JSON.parse(msg.toString()) as { type: string };
         if (f.type === 'subscribe') {
+          subscribed = true;
           ws.send(defaultSnapshot());
         }
       } catch {
@@ -380,12 +390,15 @@ test('AC-1/AC-8: Pause hidden and Resume shown when workflow changes to paused',
   });
 
   await page.goto(`/workflow/${WF_ID}`);
+  const browserWs = await browserWsPromise;
 
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Resume' })).not.toBeVisible();
 
-  // Server changes workflow to paused
+  // Wait for the browser to receive the frame before asserting DOM state.
+  const updateReceived = browserWs.waitForEvent('framereceived');
   capturedWs!.send(workflowUpdateFrame({ status: 'paused' }));
+  await updateReceived;
 
   await expect(page.getByRole('button', { name: 'Resume' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pause' })).not.toBeVisible();
@@ -395,7 +408,7 @@ test('AC-8: Cancel hidden when workflow is already complete', async ({ page }) =
   await setupWs(page, (ws) =>
     ws.send(
       snapshotFrame({
-        workflow: { status: 'complete' },
+        workflow: { status: 'completed' },
         activeSessions: ACTIVE_SESSION,
       }),
     ),
@@ -472,7 +485,9 @@ test('retry appears when a failed item is selected', async ({ page }) => {
             displayTitle: 'Failed Feature',
             displaySubtitle: null,
             state: {
-              status: 'failed',
+              // In the state machine, items that fail go to awaiting_user
+              // (the user must decide whether to retry or skip).
+              status: 'awaiting_user',
               currentPhase: null,
               retryCount: 2,
               blockedReason: null,
@@ -531,8 +546,8 @@ test('skip sends control frame with itemId after confirmation', async ({ page })
   await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Confirm' }).click();
 
+  await expect.poll(() => parseControlFrames(sent).length).toBeGreaterThan(0);
   const frames = parseControlFrames(sent);
-  expect(frames.length).toBeGreaterThan(0);
   const ctrl = frames[0]!;
   expect(ctrl.payload.action).toBe('skip');
   expect((ctrl.payload as { itemId?: string }).itemId).toBe('item-blocked-2');
@@ -541,13 +556,19 @@ test('skip sends control frame with itemId after confirmation', async ({ page })
 test('item actions dynamically update when item.state frame arrives', async ({ page }) => {
   let capturedWs: WebSocketRoute | null = null;
 
+  // Must be set up before routeWebSocket and goto so we capture the browser's WS object.
+  const browserWsPromise = page.waitForEvent('websocket');
+
   await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
     capturedWs = ws;
     ws.send(helloFrame());
+    let subscribed = false;
     ws.onMessage((msg: string | Buffer) => {
+      if (subscribed) return;
       try {
         const f = JSON.parse(msg.toString()) as { type: string };
         if (f.type === 'subscribe') {
+          subscribed = true;
           ws.send(
             snapshotFrame({
               workflow: { status: 'in_progress' },
@@ -571,18 +592,21 @@ test('item actions dynamically update when item.state frame arrives', async ({ p
   });
 
   await page.goto(`/workflow/${WF_ID}`);
+  const browserWs = await browserWsPromise;
   await page.locator('#item-item-transition').click();
 
   // in_progress item: skip visible, retry not visible
   await expect(page.getByRole('button', { name: 'Skip item' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry' })).not.toBeVisible();
 
-  // item.state transitions to failed
+  // Wait for the browser to receive the frame before asserting DOM state.
+  const stateReceived = browserWs.waitForEvent('framereceived');
   capturedWs!.send(
-    itemStateFrame({ itemId: 'item-transition', state: { status: 'failed' } }),
+    itemStateFrame({ itemId: 'item-transition', state: { status: 'awaiting_user' } }),
   );
+  await stateReceived;
 
-  // retry should now be visible, skip should be hidden (failed is not in skip rule)
+  // retry should now be visible, skip should be hidden (awaiting_user is not skip-eligible)
   await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Skip item' })).not.toBeVisible();
 });

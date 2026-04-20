@@ -417,6 +417,17 @@ export function WorkflowDetailRoute() {
   const endedSessionId: string | null =
     selectedItemId ? itemEndedSession.get(selectedItemId) ?? null : null;
 
+  // For workflow-level controls (cancel, pause, resume, inject-context) we need
+  // a session ID even when no per-item session is selected.  The itemActiveSession
+  // map only holds sessions that carry itemId; workflow-level sessions (no itemId)
+  // fall through.  Fall back to the first session from the raw snapshot list so
+  // ControlMatrix renders for workflow-scoped actions.
+  const controlSession: { sessionId: string } | null =
+    activeSession ??
+    (snapshot.activeSessions[0]
+      ? { sessionId: snapshot.activeSessions[0].sessionId }
+      : null);
+
   // RC-2: explicit config override (phases[name].ui.renderer) takes precedence;
   // absent until the server projects it, so autodetection always runs for now.
   const useReviewPanel = shouldUseReviewPanel(activeSessionBlocks);
@@ -521,7 +532,7 @@ export function WorkflowDetailRoute() {
                 sessions={itemSessions}
               />
             </div>
-          ) : activeSession ? (
+          ) : controlSession ? (
             <>
               {/* Control matrix toolbar */}
               <div className="shrink-0 border-b border-gray-700 px-3 py-1.5">
@@ -533,18 +544,20 @@ export function WorkflowDetailRoute() {
                   selectedItem={
                     selectedItemId ? items.get(selectedItemId) ?? null : null
                   }
-                  activeSessionId={activeSession.sessionId}
+                  activeSessionId={controlSession.sessionId}
                   sendControl={sendControl}
                 />
               </div>
 
-              {/* Stream output */}
+              {/* Stream output — scoped to the per-item session when one exists */}
               <div className="flex-1 min-h-0">
-                {useReviewPanel ? (
-                  <ReviewPanel sessionId={activeSession.sessionId} phase={activeSession.phase} />
-                ) : (
-                  <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
-                )}
+                {activeSession ? (
+                  useReviewPanel ? (
+                    <ReviewPanel sessionId={activeSession.sessionId} phase={activeSession.phase} />
+                  ) : (
+                    <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
+                  )
+                ) : null}
               </div>
             </>
           ) : endedSessionId ? (
