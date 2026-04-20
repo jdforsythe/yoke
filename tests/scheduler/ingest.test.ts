@@ -212,4 +212,23 @@ describe('ingestWorkflow — github_state initialisation', () => {
     expect(isResume).toBe(true);
     expect(getWorkflowRow(workflowId).github_state).toBe('creating');
   });
+
+  it('accepts full github config with pr_target_branch and auth_order (no throw)', () => {
+    // Mirrors the github section in .yoke.yml and .yoke-round-3.yml verbatim.
+    const config = makeConfig('yoke', undefined, {
+      github: {
+        enabled: true,
+        auto_pr: true,
+        pr_target_branch: 'master',
+        auth_order: ['env:GITHUB_TOKEN', 'gh:auth:token'],
+      },
+    });
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
+
+    expect(() => ingestWorkflow(db, config, deps)).not.toThrow();
+
+    const { workflowId } = ingestWorkflow(db, config);
+    // The first call created a live workflow; second call resumes — both are fine.
+    expect(workflowId).toBeTruthy();
+  });
 });
