@@ -242,7 +242,7 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
 
     const ctx = await buildPromptContext({
       workflow: workflowRow,
-      stage: { id: promptOpts.stageId, run: promptOpts.stageRun },
+      stage: { id: promptOpts.stageId, run: promptOpts.stageRun, itemsFrom: promptOpts.stageItemsFrom },
       item: itemRow,
       worktreePath: promptOpts.worktreePath,
       git,
