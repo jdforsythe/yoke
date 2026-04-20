@@ -264,6 +264,12 @@ export interface ServerCallbacks {
    * If omitted, those endpoints return 501 Not Implemented.
    */
   archiveWorkflow?: import('../pipeline/archive-workflow.js').ArchiveWorkflowFn;
+  /**
+   * Called when a client POSTs to POST /api/workflows/:id/github/create-pr.
+   * Validates eligibility then runs pushBranch + createPr.
+   * If omitted, the endpoint returns 501 Not Implemented.
+   */
+  createPrExecutor?: import('../pipeline/create-pr-executor.js').CreatePrExecutorFn;
 }
 
 /**
@@ -726,6 +732,50 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         return reply.status(200).send({ status: 'none_awaiting', items: [] });
       }
       return reply.status(200).send(result);
+    },
+  );
+
+  // POST /api/workflows/:id/github/create-pr
+  // Creates a GitHub PR for a terminal workflow. Idempotent via commandId.
+  // The write is delegated to callbacks.createPrExecutor (RC-3 — no writes in API layer).
+  fastify.post(
+    '/api/workflows/:id/github/create-pr',
+    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const { id } = req.params;
+      const body = req.body as { commandId?: string } | null;
+
+      if (!body?.commandId) return badRequest(reply, 'commandId is required');
+      if (!callbacks.createPrExecutor) {
+        return reply.status(501).send({ error: 'create-pr not configured' });
+      }
+
+      const cached = idempotency.get(body.commandId);
+      if (cached !== undefined) return reply.status(200).send(cached);
+
+      const result = await callbacks.createPrExecutor(id, body.commandId);
+
+      if (result.status === 'workflow_not_found') return notFound(reply, 'workflow not found');
+      if (result.status === 'non_terminal') {
+        return reply.status(409).send({
+          error: `workflow is not terminal: current status is '${result.currentStatus}'`,
+          currentStatus: result.currentStatus,
+        });
+      }
+      if (result.status === 'github_state_conflict') {
+        return reply.status(409).send({
+          error: `cannot create PR when github_state is '${result.currentGithubState}'`,
+          currentGithubState: result.currentGithubState,
+        });
+      }
+
+      const responseBody = {
+        status: 'created',
+        prNumber: result.prNumber,
+        prUrl: result.prUrl,
+        usedPath: result.usedPath,
+      };
+      idempotency.set(body.commandId, responseBody);
+      return reply.status(200).send(responseBody);
     },
   );
 

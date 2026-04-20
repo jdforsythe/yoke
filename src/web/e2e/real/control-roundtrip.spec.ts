@@ -36,6 +36,7 @@ test.describe('control round-trips — real backend', () => {
     backend,
   }) => {
     const wfId = `wf-ctrl-cancel-${randomUUID().slice(0, 8)}`;
+    const itemId = `item-ctrl-cancel-${randomUUID().slice(0, 8)}`;
     const sessionId = `sess-ctrl-cancel-${randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
 
@@ -45,21 +46,28 @@ test.describe('control round-trips — real backend', () => {
         `INSERT INTO items (id, workflow_id, stage_id, data, status, updated_at)
          VALUES (?, ?, 'stage-1', '{}', 'in_progress', ?)`,
       )
-      .run(`item-ctrl-cancel-${randomUUID().slice(0, 8)}`, wfId, now);
-    // Active session (ended_at IS NULL) so ControlMatrix shows.
+      .run(itemId, wfId, now);
+    // Session must carry item_id so buildFromSnapshot adds it to itemActiveSession.
+    // With item_id=NULL the session is skipped and activeSession stays null, hiding
+    // ControlMatrix (r2-04 changed from global activeSessionId to per-item map).
     backend.db.writer
       .prepare(
         `INSERT INTO sessions
          (id, workflow_id, item_id, stage, phase, agent_profile, started_at, status)
-         VALUES (?, ?, NULL, 'stage-1', 'implement', 'default', ?, 'in_progress')`,
+         VALUES (?, ?, ?, 'stage-1', 'implement', 'default', ?, 'in_progress')`,
       )
-      .run(sessionId, wfId, now);
+      .run(sessionId, wfId, itemId, now);
 
     await page.goto(`/workflow/${wfId}`);
 
-    // ControlMatrix appears when activeSessionId is non-null.
+    // Click the item card so WorkflowDetailRoute sets selectedItemId, which
+    // makes activeSession non-null, which renders ControlMatrix.
+    const itemCard = page.locator(`#item-${itemId}`);
+    await expect(itemCard).toBeVisible({ timeout: 6000 });
+    await itemCard.click();
+
     const cancelBtn = page.getByRole('button', { name: 'Cancel', exact: true });
-    await expect(cancelBtn).toBeVisible({ timeout: 6000 });
+    await expect(cancelBtn).toBeVisible({ timeout: 3000 });
 
     // First click opens the confirmation dialog.
     await cancelBtn.click();
@@ -107,8 +115,8 @@ test.describe('control round-trips — real backend', () => {
     await expect(banner).toBeVisible({ timeout: 6000 });
     await expect(banner).toContainText('awaiting_user_retry');
 
-    // Click Acknowledge — triggers POST /api/workflows/:id/attention/:id/ack.
-    await banner.getByRole('button', { name: 'Acknowledge' }).click();
+    // Click Resume (awaiting_user_retry is retryable) — triggers ack + fire-and-forget retry.
+    await banner.getByRole('button', { name: 'Resume' }).click();
 
     // Optimistic removal: the banner item disappears immediately on success.
     await expect(banner.getByText('awaiting_user_retry')).not.toBeVisible({ timeout: 3000 });

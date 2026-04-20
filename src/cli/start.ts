@@ -40,6 +40,7 @@ import { makeAckAttentionFn } from '../server/pipeline/ack-attention.js';
 import { makeRetryItemsFn } from '../server/pipeline/retry-items.js';
 import { makeControlExecutor } from '../server/pipeline/control-executor.js';
 import { makeArchiveWorkflowFn } from '../server/pipeline/archive-workflow.js';
+import { makeCreatePrExecutorFn } from '../server/pipeline/create-pr-executor.js';
 import type { ServerCallbacks } from '../server/api/server.js';
 
 const execFileAsync = promisify(execFile);
@@ -147,6 +148,12 @@ export interface StartHandle {
   db: DbPool;
   fastify: FastifyInstance;
   scheduler: Scheduler;
+  /**
+   * Broadcast a server frame to all WS clients subscribed to workflowId.
+   * Exposed so tests and Playwright fixtures can inject frames without running
+   * the full scheduler (e.g. live-attention.spec.ts).
+   */
+  broadcast(workflowId: string, sessionId: string | null, frameType: string, payload: unknown): void;
   /** Clean shutdown: stops scheduler, closes db + fastify. */
   close(): Promise<void>;
 }
@@ -190,14 +197,8 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
   const url = `http://127.0.0.1:${actualPort}`;
 
-  // Wire the real ackAttention handler now that state.registry is available.
-  // The handler uses the writer connection for the UPDATE and broadcasts a
-  // workflow.update frame to subscribed WS clients (AC-1, AC-2, AC-3, RC-1).
-  callbacks.ackAttention = makeAckAttentionFn(db.writer, (workflowId) => {
-    state.registry.broadcast(workflowId, null, 'workflow.update', {
-      attentionAcked: true,
-    });
-  });
+  // ackAttention is wired after the scheduler is constructed (below) so its
+  // callback can call scheduler.scheduleIndexUpdate to coalesce index updates.
 
   // Wire the retryItems handler so POST /api/workflows/:id/retry can fire
   // user_retry transitions via the pipeline engine (RC-3 — no writes in API layer).
@@ -283,11 +284,142 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   // scheduler.killSession to SIGTERM running sessions when a workflow is
   // cancelled (RC-3 — no writes in API layer; all state changes happen in
   // the engine-layer executor).
+  // Now that scheduler is available, wire ackAttention to also schedule a
+  // coalesced workflow.index.update so the sidebar unreadEvents badge updates.
+  callbacks.ackAttention = makeAckAttentionFn(db.writer, (workflowId) => {
+    state.registry.broadcast(workflowId, null, 'workflow.update', {
+      attentionAcked: true,
+    });
+    scheduler.scheduleIndexUpdate(workflowId);
+  });
+
   callbacks.controlExecutor = makeControlExecutor(
     db.writer,
     (sid) => scheduler.killSession(sid),
     (wfId, frameType, payload) =>
       state.registry.broadcast(wfId, null, frameType, payload),
+    (wfId) => scheduler.scheduleIndexUpdate(wfId),
+  );
+
+  // Wire the createPr executor: POST /api/workflows/:id/github/create-pr.
+  // The production createPrFn mirrors the scheduler's _triggerAutoPr path:
+  // read workflow → push branch → create PR via service.ts.
+  callbacks.createPrExecutor = makeCreatePrExecutorFn(
+    db.writer,
+    async (workflowId: string) => {
+      const wf = db.writer
+        .prepare('SELECT name, branch_name, worktree_path FROM workflows WHERE id = ?')
+        .get(workflowId) as
+        | { name: string; branch_name: string | null; worktree_path: string | null }
+        | undefined;
+      if (!wf?.branch_name || !wf?.worktree_path) {
+        throw new Error(`workflow ${workflowId}: missing branch_name or worktree_path`);
+      }
+
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execAsync = promisify(execFile);
+
+      // Resolve owner/repo from the remote URL.
+      let ownerRepo: { owner: string; repo: string } | null = null;
+      try {
+        const { stdout } = await execAsync(
+          'git',
+          ['-C', wf.worktree_path, 'remote', 'get-url', 'origin'],
+          { timeout: 10_000 },
+        );
+        const { parseGitRemoteUrl } = await import('../server/github/remote-parse.js');
+        ownerRepo = parseGitRemoteUrl(stdout.trim());
+      } catch {
+        // falls through to error below
+      }
+      if (!ownerRepo) {
+        throw new Error(`workflow ${workflowId}: could not resolve owner/repo from remote`);
+      }
+
+      // Build PR body.
+      let recentCommits: string[] = [];
+      try {
+        const { stdout } = await execAsync(
+          'git',
+          ['-C', wf.worktree_path, 'log', '--format=%s', '-10'],
+          { timeout: 10_000 },
+        );
+        recentCommits = stdout.trim().split('\n').filter(Boolean).slice(0, 10);
+      } catch {
+        // ignore
+      }
+      let lastHandoffNote: string | null = null;
+      try {
+        const handoffPath = path.join(config.configDir, 'handoff.json');
+        if (fs.existsSync(handoffPath)) {
+          const raw = fs.readFileSync(handoffPath, 'utf8');
+          const data = JSON.parse(raw) as { entries?: unknown[] };
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          const last = [...entries].reverse().find((e: unknown) => {
+            return typeof e === 'object' && e !== null && !(e as Record<string, unknown>)['harness_injected'];
+          });
+          if (last) {
+            const note = (last as Record<string, unknown>)['note'];
+            lastHandoffNote = typeof note === 'string' ? note : null;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      const { buildPrBody } = await import('../server/github/pr-body.js');
+      const body = buildPrBody({ workflowName: wf.name, recentCommits, lastHandoffNote });
+
+      // Push branch.
+      const { pushBranch, makeProductionPushDeps } = await import('../server/github/push.js');
+      const pushDeps = makeProductionPushDeps();
+      const pushResult = await pushBranch(wf.branch_name, wf.worktree_path, pushDeps);
+      if (!pushResult.ok) {
+        const { writeGithubState } = await import('../server/github/service.js');
+        writeGithubState(
+          db,
+          workflowId,
+          'failed',
+          { error: { kind: 'api_failed', message: `git push failed: ${pushResult.rawStderr}` } },
+          (wfId, frameType, payload) => state.registry.broadcast(wfId, null, frameType, payload),
+        );
+        throw new Error(`git push failed: ${pushResult.rawStderr}`);
+      }
+
+      // Create PR.
+      const { createPr } = await import('../server/github/service.js');
+      const { makeProductionAuthDeps } = await import('../server/github/auth.js');
+      const { makeOctokitAdapter, makeGhCliAdapter } = await import('../server/github/pr.js');
+      const ghBroadcast = (wfId: string, frameType: 'workflow.update', payload: unknown) =>
+        state.registry.broadcast(wfId, null, frameType, payload);
+      const result = await createPr(
+        {
+          workflowId,
+          branchName: wf.branch_name,
+          owner: ownerRepo.owner,
+          repo: ownerRepo.repo,
+          base: config.github?.pr_target_branch ?? 'main',
+          title: wf.name,
+          body,
+        },
+        {
+          db,
+          authDeps: makeProductionAuthDeps(),
+          pushGuardDeps: { execGit: pushDeps.execGit },
+          octokitAdapter: makeOctokitAdapter(),
+          ghCliAdapter: makeGhCliAdapter(),
+          broadcast: ghBroadcast,
+        },
+      );
+      if (!result.ok) {
+        throw new Error(
+          result.error.kind === 'api_failed'
+            ? result.error.message
+            : result.error.attempts.map((a) => `${a.source}: ${a.reason}`).join('; '),
+        );
+      }
+      return { prNumber: result.prNumber, prUrl: result.prUrl, usedPath: result.usedPath };
+    },
   );
 
   if (!opts.noScheduler) {
@@ -299,6 +431,9 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     db,
     fastify,
     scheduler,
+    broadcast(workflowId: string, sessionId: string | null, frameType: string, payload: unknown) {
+      state.registry.broadcast(workflowId, sessionId, frameType as import('../server/api/frames.js').ServerFrameType, payload);
+    },
     async close() {
       if (!opts.noScheduler) {
         await scheduler.stop();

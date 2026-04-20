@@ -1,9 +1,10 @@
 /**
  * ControlMatrix — available manual-control actions derived from a declarative
- * rules object keyed on {workflowStatus, item?.status, session?}.
+ * rules object keyed on {workflowStatus, items, selectedItem, session}.
  *
  * Invalid actions are hidden (not disabled) per spec.
- * Destructive actions (cancel, skip) require a confirmation dialog.
+ * Actions not in SUPPORTED_ACTIONS are never rendered — no disabled buttons.
+ * Destructive actions (cancel) require a confirmation dialog.
  * Optimistic state: button shows spinner + disables until server acknowledges
  * via workflow.update or item.state frame.
  *
@@ -15,40 +16,8 @@
 
 import { useState, useCallback } from 'react';
 import type { ControlPayload, ItemProjection, StageProjection } from '@/ws/types';
-
-// ---------------------------------------------------------------------------
-// Rules
-// ---------------------------------------------------------------------------
-
-interface ControlCtx {
-  workflowStatus: string;
-  selectedItem: ItemProjection | null;
-  activeSessionId: string | null;
-  activeStage: StageProjection | null;
-}
-
-type RuleFn = (ctx: ControlCtx) => boolean;
-
-const RULES: Record<ControlPayload['action'], RuleFn> = {
-  pause: (ctx) => ctx.workflowStatus === 'in_progress',
-  resume: (ctx) => ctx.workflowStatus === 'paused',
-  cancel: (ctx) => !['cancelled', 'complete'].includes(ctx.workflowStatus),
-  skip: (ctx) =>
-    !!ctx.selectedItem &&
-    ['in_progress', 'blocked'].includes(ctx.selectedItem.state.status),
-  retry: (ctx) =>
-    !!ctx.selectedItem && ctx.selectedItem.state.status === 'failed',
-  unblock: (ctx) =>
-    !!ctx.selectedItem && ctx.selectedItem.state.status === 'blocked',
-  'inject-context': (ctx) => !!ctx.activeSessionId,
-  'rerun-phase': (ctx) =>
-    !!ctx.selectedItem &&
-    ['complete', 'failed'].includes(ctx.selectedItem.state.status),
-  'approve-stage': (ctx) =>
-    !!ctx.activeStage &&
-    ctx.activeStage.needsApproval &&
-    ctx.activeStage.status === 'complete',
-};
+import { RULES, SUPPORTED_ACTIONS } from './controlMatrixRules';
+import type { ControlCtx } from './controlMatrixRules';
 
 // ---------------------------------------------------------------------------
 // Button metadata
@@ -76,7 +45,7 @@ const ACTION_META: Record<ControlPayload['action'], ActionMeta> = {
     confirmMessage: 'Skip this item?',
     requiresItemId: true,
   },
-  retry: { label: 'Retry', requiresItemId: true },
+  retry: { label: 'Retry' },
   unblock: { label: 'Unblock', requiresItemId: true },
   'inject-context': { label: 'Inject context' },
   'rerun-phase': { label: 'Rerun phase', requiresItemId: true },
@@ -91,6 +60,7 @@ interface Props {
   workflowId: string;
   workflowStatus: string;
   stages: StageProjection[];
+  items: ItemProjection[];
   selectedItem: ItemProjection | null;
   activeSessionId: string | null;
   sendControl: (action: ControlPayload['action'], opts: Omit<ControlPayload, 'action'>) => string;
@@ -100,6 +70,7 @@ export function ControlMatrix({
   workflowId,
   workflowStatus,
   stages,
+  items,
   selectedItem,
   activeSessionId,
   sendControl,
@@ -113,13 +84,14 @@ export function ControlMatrix({
 
   const ctx: ControlCtx = {
     workflowStatus,
+    items,
     selectedItem,
     activeSessionId,
     activeStage,
   };
 
-  const visibleActions = (Object.entries(RULES) as [ControlPayload['action'], RuleFn][])
-    .filter(([, rule]) => rule(ctx))
+  const visibleActions = (Object.entries(RULES) as [ControlPayload['action'], (ctx: ControlCtx) => boolean][])
+    .filter(([action, rule]) => SUPPORTED_ACTIONS.has(action) && rule(ctx))
     .map(([action]) => action);
 
   const handleAction = useCallback(

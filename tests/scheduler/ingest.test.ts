@@ -6,6 +6,10 @@
  *   - Two consecutive fresh ingests against the same project produce distinct names
  *   - Resume path (live workflow exists) returns the same workflowId without
  *     changing the name (stable suffix for the lifetime of a workflow)
+ *   - github_state init: disabled (github.enabled=false)
+ *   - github_state init: unconfigured (github.enabled=true, no remote URL)
+ *   - github_state init: idle (github.enabled=true, valid remote URL parsed)
+ *   - Resume path does not re-call initGithubState (github_state preserved)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -17,6 +21,7 @@ import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { DbPool } from '../../src/server/storage/db.js';
 import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
+import type { IngestDeps } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +41,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeConfig(projectName = 'yoke', configDir?: string): ResolvedConfig {
+function makeConfig(projectName = 'yoke', configDir?: string, extra?: Partial<ResolvedConfig>): ResolvedConfig {
   return {
     version: '1',
     configDir: configDir ?? tmpDir,
@@ -53,14 +58,19 @@ function makeConfig(projectName = 'yoke', configDir?: string): ResolvedConfig {
         prompt_template: 'Do the thing.',
       },
     },
+    ...extra,
   };
 }
 
-function getWorkflowRow(workflowId: string): { id: string; name: string } {
+function getWorkflowRow(workflowId: string): { id: string; name: string; github_state: string | null } {
   return db.reader()
-    .prepare('SELECT id, name FROM workflows WHERE id = ?')
-    .get(workflowId) as { id: string; name: string };
+    .prepare('SELECT id, name, github_state FROM workflows WHERE id = ?')
+    .get(workflowId) as { id: string; name: string; github_state: string | null };
 }
+
+// ---------------------------------------------------------------------------
+// Existing name-suffix tests (unchanged behaviour)
+// ---------------------------------------------------------------------------
 
 describe('ingestWorkflow — name suffix', () => {
   it('formats name as ${projectName}-${first8charsOfUUID}', () => {
@@ -111,5 +121,114 @@ describe('ingestWorkflow — name suffix', () => {
 
     const resumedRow = getWorkflowRow(resumedId);
     expect(resumedRow.name).toBe(originalRow.name);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// github_state init paths (AC: all three paths covered)
+// ---------------------------------------------------------------------------
+
+describe('ingestWorkflow — github_state initialisation', () => {
+  it('sets github_state=disabled when github.enabled=false', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: false, auto_pr: true },
+    });
+    // Even with a valid remote URL, disabled flag wins.
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
+
+    const { workflowId } = ingestWorkflow(db, config, deps);
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.github_state).toBe('disabled');
+  });
+
+  it('sets github_state=unconfigured when github.enabled=true but no remote URL', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: true, auto_pr: true },
+    });
+    // getRemoteOriginUrl returns null — git remote not configured.
+    const deps: IngestDeps = { getRemoteOriginUrl: () => null };
+
+    const { workflowId } = ingestWorkflow(db, config, deps);
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.github_state).toBe('unconfigured');
+  });
+
+  it('sets github_state=unconfigured when deps not provided (no git helper)', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: true, auto_pr: true },
+    });
+    // No deps passed — falls back to hasOwnerRepo=false → unconfigured.
+    const { workflowId } = ingestWorkflow(db, config);
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.github_state).toBe('unconfigured');
+  });
+
+  it('sets github_state=idle when github.enabled=true and remote URL is valid', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: true, auto_pr: true },
+    });
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
+
+    const { workflowId } = ingestWorkflow(db, config, deps);
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.github_state).toBe('idle');
+  });
+
+  it('sets github_state=unconfigured when remote URL is malformed (never throws)', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: true, auto_pr: true },
+    });
+    // Malformed URL — parseGitRemoteUrl returns null → hasOwnerRepo=false.
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'not-a-valid-git-url' };
+
+    const { workflowId } = ingestWorkflow(db, config, deps);
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.github_state).toBe('unconfigured');
+  });
+
+  it('resume path does not re-call initGithubState (github_state preserved)', () => {
+    const config = makeConfig('yoke', undefined, {
+      github: { enabled: true, auto_pr: true },
+    });
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
+
+    // Fresh ingest → github_state = 'idle'
+    const { workflowId } = ingestWorkflow(db, config, deps);
+    expect(getWorkflowRow(workflowId).github_state).toBe('idle');
+
+    // Manually set github_state to 'creating' to simulate mid-run state.
+    db.writer
+      .prepare("UPDATE workflows SET github_state = 'creating' WHERE id = ?")
+      .run(workflowId);
+    expect(getWorkflowRow(workflowId).github_state).toBe('creating');
+
+    // Second ingest (resume) must NOT reset github_state.
+    const { isResume } = ingestWorkflow(db, config, deps);
+    expect(isResume).toBe(true);
+    expect(getWorkflowRow(workflowId).github_state).toBe('creating');
+  });
+
+  it('accepts full github config with pr_target_branch and auth_order (no throw)', () => {
+    // Mirrors the github section in .yoke.yml and .yoke-round-3.yml verbatim.
+    const config = makeConfig('yoke', undefined, {
+      github: {
+        enabled: true,
+        auto_pr: true,
+        pr_target_branch: 'master',
+        auth_order: ['env:GITHUB_TOKEN', 'gh:auth:token'],
+      },
+    });
+    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
+
+    expect(() => ingestWorkflow(db, config, deps)).not.toThrow();
+
+    const { workflowId } = ingestWorkflow(db, config);
+    // The first call created a live workflow; second call resumes — both are fine.
+    expect(workflowId).toBeTruthy();
   });
 });

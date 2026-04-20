@@ -2,7 +2,7 @@
  * Attention notice → pending_attention row → ack → cleared + workflow.update
  * broadcast round-trip.
  *
- * Sequence under test:
+ * Sequence under test (existing):
  *   1. A pending_attention row is inserted (simulating what the pipeline engine
  *      does when it detects a requires_attention condition).
  *   2. A WS client connects and subscribes to the workflow; the snapshot
@@ -12,6 +12,12 @@
  *      workflow.index.update frame via registry.broadcast().
  *   5. The WS client receives the broadcast frame with pendingAttentionCount: 0.
  *   6. acknowledged_at is set in SQLite (row "cleared").
+ *
+ * Extended (AC-2 live path):
+ *   The engine (via Scheduler._applyTransition) inserts the pending_attention row
+ *   and immediately broadcasts a notice frame with persistedAttentionId over WS.
+ *   The WS client receives the notice → ack endpoint clears the row →
+ *   workflow.index.update arrives.
  *
  * Tests boot a real Fastify instance + real SQLite — no mocking of the API
  * layer or DB (RC: real Fastify + real SQLite).
@@ -33,6 +39,14 @@ import {
 import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { WsClientRegistry } from '../../src/server/api/ws.js';
+import { Scheduler } from '../../src/server/scheduler/scheduler.js';
+import type {
+  BroadcastFn,
+} from '../../src/server/scheduler/scheduler.js';
+import type { ProcessManager } from '../../src/server/process/manager.js';
+import type { WorktreeManager } from '../../src/server/worktree/manager.js';
+import type { ResolvedConfig } from '../../src/shared/types/config.js';
+import type { ApplyItemTransitionParams } from '../../src/server/pipeline/engine.js';
 
 // ---------------------------------------------------------------------------
 // Setup / teardown
@@ -317,5 +331,110 @@ describe('attention round-trip', () => {
     s.close();
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live path (AC-2): engine inserts row → notice frame over WS → ack → cleared
+// ---------------------------------------------------------------------------
+
+// Minimal fake deps for Scheduler (no real spawning needed)
+const _fakePM = { spawn: () => { throw new Error('no spawn'); } } as unknown as ProcessManager;
+const _fakeWM = {
+  createWorktree: () => { throw new Error('no worktree'); },
+  runBootstrap: () => { throw new Error('no bootstrap'); },
+  runTeardown: () => { throw new Error('no teardown'); },
+  cleanup: () => {},
+} as unknown as WorktreeManager;
+
+function _makeConfig(configDir: string): ResolvedConfig {
+  return {
+    version: '1',
+    configDir,
+    project: { name: 'attn-rt-live' },
+    pipeline: { stages: [{ id: 'stage1', run: 'once', phases: ['impl'] }] },
+    phases: { impl: { command: 'echo', args: [], prompt_template: 'p.md' } },
+  } as unknown as ResolvedConfig;
+}
+
+describe('attention round-trip — live path (AC-2)', () => {
+  it('engine inserts row via _applyTransition → notice frame over WS → ack → workflow.index.update', async () => {
+    const wfId = insertWorkflow();
+
+    // Insert item in bootstrapping state so bootstrap_fail transition is valid.
+    const itemId = `item-live-${wfId}`;
+    db.writer
+      .prepare(
+        `INSERT INTO items
+           (id, workflow_id, stage_id, data, status, current_phase,
+            depends_on, retry_count, blocked_reason, updated_at)
+         VALUES (?, ?, 'stage1', '{}', 'bootstrapping', 'impl', null, 0, null, datetime('now'))`,
+      )
+      .run(itemId, wfId);
+
+    // Connect WS client and subscribe before the engine fires.
+    const s = await connectWs();
+    await s.next(); // hello frame
+    s.send({ v: 1, type: 'subscribe', id: 'live-sub-1', payload: { workflowId: wfId } });
+    await s.next(); // workflow.snapshot
+
+    // Wire a Scheduler that broadcasts through the real WsClientRegistry.
+    // This simulates the production wiring in start.ts.
+    const broadcastFn: BroadcastFn = (wId, sessId, frameType, payload) => {
+      handle.state.registry.broadcast(wId, sessId, frameType, payload);
+    };
+    const scheduler = new Scheduler({
+      db,
+      config: _makeConfig(os.tmpdir()),
+      processManager: _fakePM,
+      worktreeManager: _fakeWM,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'prompt',
+      broadcast: broadcastFn,
+      artifactValidator: async () => ({ kind: 'validators_ok' as const }),
+    });
+
+    // Drive bootstrap_fail through _applyTransition — inserts pending_attention
+    // and immediately broadcasts the notice via broadcastFn → registry.
+    (scheduler as unknown as {
+      _applyTransition(p: ApplyItemTransitionParams): unknown;
+    })._applyTransition({
+      db,
+      workflowId: wfId,
+      itemId,
+      sessionId: null,
+      stage: 'stage1',
+      phase: 'impl',
+      attempt: 1,
+      event: 'bootstrap_fail',
+    });
+
+    // WS client should receive the notice frame with persistedAttentionId.
+    const noticeFrame = await s.next();
+    expect(noticeFrame.type).toBe('notice');
+    const noticePayload = noticeFrame.payload as Record<string, unknown>;
+    expect(noticePayload.severity).toBe('requires_attention');
+    expect(noticePayload.kind).toBe('bootstrap_failed');
+    expect(typeof noticePayload.persistedAttentionId).toBe('number');
+    const attId = noticePayload.persistedAttentionId as number;
+
+    // Ack via HTTP — row is cleared, workflow.index.update broadcast fires.
+    const ackRes = await injectPost(`/api/workflows/${wfId}/attention/${attId}/ack`);
+    expect(ackRes.statusCode).toBe(200);
+    expect((ackRes.body as Record<string, unknown>).status).toBe('acknowledged');
+
+    // WS client receives workflow.index.update.
+    const updateFrame = await s.next();
+    s.close();
+
+    expect(updateFrame.type).toBe('workflow.index.update');
+    const updatePayload = updateFrame.payload as Record<string, unknown>;
+    expect(updatePayload.pendingAttentionCount).toBe(0);
+
+    // DB row is cleared.
+    const row = db.reader()
+      .prepare('SELECT acknowledged_at FROM pending_attention WHERE id = ?')
+      .get(attId) as { acknowledged_at: string | null };
+    expect(row.acknowledged_at).toBeTruthy();
   });
 });

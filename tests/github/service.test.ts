@@ -35,7 +35,7 @@ import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { DbPool } from '../../src/server/storage/db.js';
 import { createPr, initGithubState } from '../../src/server/github/service.js';
-import type { GithubServiceDeps, CreatePrInput } from '../../src/server/github/service.js';
+import type { GithubServiceDeps, CreatePrInput, GithubBroadcastFn } from '../../src/server/github/service.js';
 import type { AuthDeps } from '../../src/server/github/auth.js';
 import type { PushGuardDeps } from '../../src/server/github/push-guard.js';
 import type { OctokitAdapter, GhCliAdapter } from '../../src/server/github/pr.js';
@@ -483,5 +483,188 @@ describe('gh CLI adapter error path (AC-2)', () => {
 
     const row = readGithubState('wf-1');
     expect(row.github_state).toBe('failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Broadcast tests (r2-12) — GithubBroadcastFn injected through deps
+// ---------------------------------------------------------------------------
+
+interface BroadcastCall {
+  workflowId: string;
+  frameType: string;
+  payload: unknown;
+}
+
+function makeBroadcastStub(): { calls: BroadcastCall[]; fn: GithubBroadcastFn } {
+  const calls: BroadcastCall[] = [];
+  const fn: GithubBroadcastFn = (workflowId, frameType, payload) => {
+    calls.push({ workflowId, frameType, payload });
+  };
+  return { calls, fn };
+}
+
+describe('broadcast — initGithubState (r2-12)', () => {
+  it('emits exactly 1 workflow.update with status=idle when fully configured', () => {
+    const stub = makeBroadcastStub();
+    initGithubState(db, 'wf-1', { enabled: true, autoPr: true, hasOwnerRepo: true }, stub.fn);
+
+    expect(stub.calls).toHaveLength(1);
+    const call = stub.calls[0]!;
+    expect(call.workflowId).toBe('wf-1');
+    expect(call.frameType).toBe('workflow.update');
+    const payload = call.payload as { githubState: Record<string, unknown> };
+    expect(payload.githubState.status).toBe('idle');
+    expect(payload.githubState.lastCheckedAt).toBeTruthy();
+    // No extra fields beyond GithubState shape
+    expect(payload.githubState.prNumber).toBeUndefined();
+    expect(payload.githubState.prUrl).toBeUndefined();
+    expect(payload.githubState.error).toBeUndefined();
+  });
+
+  it('emits status=disabled when github.enabled is false', () => {
+    const stub = makeBroadcastStub();
+    initGithubState(db, 'wf-1', { enabled: false, autoPr: true, hasOwnerRepo: true }, stub.fn);
+
+    expect(stub.calls).toHaveLength(1);
+    const payload = stub.calls[0]!.payload as { githubState: Record<string, unknown> };
+    expect(payload.githubState.status).toBe('disabled');
+  });
+
+  it('emits status=unconfigured when owner/repo is absent', () => {
+    const stub = makeBroadcastStub();
+    initGithubState(db, 'wf-1', { enabled: true, autoPr: true, hasOwnerRepo: false }, stub.fn);
+
+    expect(stub.calls).toHaveLength(1);
+    const payload = stub.calls[0]!.payload as { githubState: Record<string, unknown> };
+    expect(payload.githubState.status).toBe('unconfigured');
+  });
+
+  it('no broadcast fires when broadcast is not provided', () => {
+    const stub = makeBroadcastStub();
+    initGithubState(db, 'wf-1', { enabled: true, autoPr: true, hasOwnerRepo: true });
+    // Called without broadcast — stub must not be called
+    expect(stub.calls).toHaveLength(0);
+  });
+});
+
+describe('broadcast — createPr success path (r2-12)', () => {
+  it('emits creating then created — two broadcasts, payload shape correct', async () => {
+    const stub = makeBroadcastStub();
+    const deps: GithubServiceDeps = {
+      db,
+      authDeps: githubTokenAuthDeps('ghp_token'),
+      pushGuardDeps: pushedGuardDeps(),
+      octokitAdapter: scriptedOctokitSuccess(7, 'https://github.com/org/repo/pull/7'),
+      ghCliAdapter: scriptedGhError('should not be called'),
+      broadcast: stub.fn,
+    };
+
+    await createPr(BASE_INPUT, deps);
+
+    expect(stub.calls).toHaveLength(2);
+
+    // First broadcast: creating
+    const creating = stub.calls[0]!.payload as { githubState: Record<string, unknown> };
+    expect(creating.githubState.status).toBe('creating');
+    expect(creating.githubState.lastCheckedAt).toBeTruthy();
+    expect(creating.githubState.prNumber).toBeUndefined();
+    expect(creating.githubState.prUrl).toBeUndefined();
+    expect(creating.githubState.error).toBeUndefined();
+
+    // Second broadcast: created with prNumber + prUrl
+    const created = stub.calls[1]!.payload as { githubState: Record<string, unknown> };
+    expect(created.githubState.status).toBe('created');
+    expect(created.githubState.prNumber).toBe(7);
+    expect(created.githubState.prUrl).toBe('https://github.com/org/repo/pull/7');
+    expect(created.githubState.error).toBeUndefined();
+  });
+});
+
+describe('broadcast — createPr failure paths (r2-12)', () => {
+  it('push guard failure: emits exactly 1 broadcast with status=failed and error', async () => {
+    const stub = makeBroadcastStub();
+    const deps: GithubServiceDeps = {
+      db,
+      authDeps: githubTokenAuthDeps('ghp_token'),
+      pushGuardDeps: unpushedGuardDeps(2),
+      octokitAdapter: scriptedOctokitSuccess(1, 'https://github.com/org/repo/pull/1'),
+      ghCliAdapter: scriptedGhSuccess(1, 'https://github.com/org/repo/pull/1'),
+      broadcast: stub.fn,
+    };
+
+    await createPr(BASE_INPUT, deps);
+
+    expect(stub.calls).toHaveLength(1);
+    const payload = stub.calls[0]!.payload as { githubState: Record<string, unknown> };
+    expect(payload.githubState.status).toBe('failed');
+    expect(typeof payload.githubState.error).toBe('string');
+    expect(payload.githubState.prNumber).toBeUndefined();
+  });
+
+  it('auth failure: emits exactly 1 broadcast with status=failed and error string', async () => {
+    const stub = makeBroadcastStub();
+    const deps: GithubServiceDeps = {
+      db,
+      authDeps: noAuthDeps('not logged in'),
+      pushGuardDeps: pushedGuardDeps(),
+      octokitAdapter: scriptedOctokitError(500),
+      ghCliAdapter: scriptedGhError('should not be called'),
+      broadcast: stub.fn,
+    };
+
+    await createPr(BASE_INPUT, deps);
+
+    expect(stub.calls).toHaveLength(1);
+    const payload = stub.calls[0]!.payload as { githubState: Record<string, unknown> };
+    expect(payload.githubState.status).toBe('failed');
+    expect(typeof payload.githubState.error).toBe('string');
+    // Auth failure error contains both attempt sources
+    expect(payload.githubState.error as string).toMatch(/GITHUB_TOKEN|gh_auth/);
+  });
+
+  it('gh CLI failure: emits creating then failed — two broadcasts', async () => {
+    const stub = makeBroadcastStub();
+    const deps: GithubServiceDeps = {
+      db,
+      authDeps: ghAuthOnlyDeps('gh_token'),
+      pushGuardDeps: pushedGuardDeps(),
+      octokitAdapter: scriptedOctokitError(500),
+      ghCliAdapter: scriptedGhError('GraphQL error'),
+      broadcast: stub.fn,
+    };
+
+    await createPr(BASE_INPUT, deps);
+
+    expect(stub.calls).toHaveLength(2);
+    expect((stub.calls[0]!.payload as { githubState: Record<string, unknown> }).githubState.status).toBe('creating');
+    const failed = stub.calls[1]!.payload as { githubState: Record<string, unknown> };
+    expect(failed.githubState.status).toBe('failed');
+    expect(failed.githubState.error).toBe('GraphQL error');
+  });
+});
+
+describe('broadcast — rollback suppresses broadcast (r2-12)', () => {
+  it('no broadcast fires when the transaction throws (simulated rollback)', () => {
+    const stub = makeBroadcastStub();
+
+    // A DbPool whose transaction always throws (simulates a constraint violation rollback).
+    const throwingDb = {
+      writer: db.writer,
+      reader: () => db.reader(),
+      close: () => db.close(),
+      transaction: <T>(_fn: (w: unknown) => T): T => {
+        throw new Error('simulated rollback');
+      },
+    };
+
+    expect(() => {
+      initGithubState(throwingDb as Parameters<typeof initGithubState>[0], 'wf-1', {
+        enabled: true, autoPr: true, hasOwnerRepo: true,
+      }, stub.fn);
+    }).toThrow('simulated rollback');
+
+    // The broadcast must NOT have fired since the transaction rolled back.
+    expect(stub.calls).toHaveLength(0);
   });
 });

@@ -35,6 +35,18 @@ export interface BackendHandle {
   backendUrl: string;
   /** Writer DbPool — use db.writer to seed rows before page.goto(). */
   db: DbPool;
+  /**
+   * Schedule a coalesced workflow.index.update broadcast (500 ms debounce).
+   * Use in tests that update the DB directly and need the sidebar to reflect
+   * the new status without a page reload.
+   */
+  scheduleIndexUpdate: (workflowId: string) => void;
+  /**
+   * Broadcast a server frame to all WS clients subscribed to workflowId.
+   * Use in tests to inject notice frames without running the full scheduler.
+   * Example: backend.broadcast(wfId, null, 'notice', { severity: 'requires_attention', ... })
+   */
+  broadcast(workflowId: string, sessionId: string | null, frameType: string, payload: unknown): void;
 }
 
 /**
@@ -118,7 +130,14 @@ export const test = base.extend<{ backend: BackendHandle }>({
         globalThis.WebSocket = OverrideWS as typeof WebSocket;
       }, wsTarget);
 
-      await use({ baseURL: 'http://localhost:4173', backendUrl: backendUrl, db: handle.db });
+      await use({
+        baseURL: 'http://localhost:4173',
+        backendUrl,
+        db: handle.db,
+        scheduleIndexUpdate: (wfId) => handle!.scheduler.scheduleIndexUpdate(wfId),
+        broadcast: (wfId, sessId, frameType, payload) =>
+          handle!.broadcast(wfId, sessId, frameType, payload),
+      });
     } finally {
       // Always clean up — even if the test threw. Order matters:
       // close() stops the scheduler (noop here) and fastify, then closes the pool.

@@ -114,6 +114,8 @@ export interface ItemProjection {
 
 export interface SessionProjection {
   sessionId: string;
+  /** item_id from the sessions table; null for once-per-workflow sessions. */
+  itemId: string | null;
   phase: string;
   attempt: number;
   startedAt: string;
@@ -170,6 +172,8 @@ export interface StageCompletePayload {
 
 export interface SessionStartedPayload {
   sessionId: string;
+  /** item_id the session belongs to; null / absent for once-per-workflow sessions. */
+  itemId?: string | null;
   phase: string;
   attempt: number;
   startedAt: string;

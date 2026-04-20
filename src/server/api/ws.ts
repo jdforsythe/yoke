@@ -317,10 +317,11 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
 
   const sessionRows = reader
     .prepare(
-      'SELECT id, phase, started_at, parent_session_id FROM sessions WHERE workflow_id = ? AND ended_at IS NULL ORDER BY started_at',
+      'SELECT id, item_id, phase, started_at, parent_session_id FROM sessions WHERE workflow_id = ? AND ended_at IS NULL ORDER BY started_at',
     )
     .all(workflowId) as Array<{
       id: string;
+      item_id: string | null;
       phase: string;
       started_at: string;
       parent_session_id: string | null;
@@ -328,6 +329,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
 
   const activeSessions: SessionProjection[] = sessionRows.map((s) => ({
     sessionId: s.id,
+    itemId: s.item_id,
     phase: s.phase,
     attempt: 0, // TODO: compute from events table when pipeline engine is integrated
     startedAt: s.started_at,

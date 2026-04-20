@@ -22,8 +22,13 @@ import {
   getSessionUsage,
   MAX_BLOCKS,
 } from '../../src/web/src/store/reducer';
+import {
+  buildFromSnapshot,
+  upsert,
+  removeBySessionId,
+} from '../../src/web/src/store/itemSessionMap';
 import type { RenderModelState, TextBlock, ToolCallBlock, ThinkingBlock, SystemNoticeBlock } from '../../src/web/src/store/types';
-import type { ServerFrame } from '../../src/web/src/ws/types';
+import type { ServerFrame, SessionProjection } from '../../src/web/src/ws/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -579,5 +584,116 @@ describe('stream.thinking', () => {
 
     expect(thinkBlock!.text).toBe('Thinking...');
     expect(thinkBlock!.collapsed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// itemSessionMap — per-item active session map helpers (r2-04)
+// ---------------------------------------------------------------------------
+
+function mkSessionProj(sessionId: string, itemId: string | null): SessionProjection {
+  return {
+    sessionId,
+    itemId,
+    phase: 'implement',
+    attempt: 1,
+    startedAt: '2026-01-01T00:00:00Z',
+    parentSessionId: null,
+  };
+}
+
+describe('itemSessionMap: buildFromSnapshot (workflow.snapshot)', () => {
+  it('builds map from activeSessions with itemIds', () => {
+    const map = buildFromSnapshot([
+      mkSessionProj('s1', 'item-A'),
+      mkSessionProj('s2', 'item-B'),
+    ]);
+    expect(map.size).toBe(2);
+    expect(map.get('item-A')?.sessionId).toBe('s1');
+    expect(map.get('item-B')?.sessionId).toBe('s2');
+  });
+
+  it('skips sessions with null itemId (once-per-workflow stages)', () => {
+    const map = buildFromSnapshot([
+      mkSessionProj('s-global', null),
+      mkSessionProj('s-item', 'item-A'),
+    ]);
+    expect(map.size).toBe(1);
+    expect(map.get('item-A')?.sessionId).toBe('s-item');
+    expect(map.has('null')).toBe(false);
+  });
+
+  it('returns empty map for empty activeSessions', () => {
+    expect(buildFromSnapshot([]).size).toBe(0);
+  });
+
+  it('captures phase and startedAt', () => {
+    const map = buildFromSnapshot([
+      { sessionId: 's1', itemId: 'item-A', phase: 'review', attempt: 2, startedAt: '2026-02-01T00:00:00Z', parentSessionId: null },
+    ]);
+    const entry = map.get('item-A');
+    expect(entry?.phase).toBe('review');
+    expect(entry?.startedAt).toBe('2026-02-01T00:00:00Z');
+  });
+});
+
+describe('itemSessionMap: upsert (session.started)', () => {
+  it('adds a new entry to an empty map', () => {
+    const next = upsert(new Map(), 'item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' });
+    expect(next.get('item-A')?.sessionId).toBe('s1');
+    expect(next.size).toBe(1);
+  });
+
+  it('replaces existing entry when the same itemId starts a new session', () => {
+    const prev = new Map([['item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }]]);
+    const next = upsert(prev, 'item-A', { sessionId: 's2', phase: 'review', startedAt: '2026-01-01T01:00:00Z' });
+    expect(next.get('item-A')?.sessionId).toBe('s2');
+    expect(next.size).toBe(1);
+  });
+
+  it('does not mutate the previous map', () => {
+    const prev = new Map<string, { sessionId: string; phase: string; startedAt: string }>();
+    upsert(prev, 'item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' });
+    expect(prev.size).toBe(0);
+  });
+
+  it('preserves other entries when adding a new one', () => {
+    const prev = new Map([['item-B', { sessionId: 's2', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }]]);
+    const next = upsert(prev, 'item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' });
+    expect(next.size).toBe(2);
+    expect(next.get('item-B')?.sessionId).toBe('s2');
+  });
+});
+
+describe('itemSessionMap: removeBySessionId (session.ended)', () => {
+  it('removes the correct itemId and returns clearedItemId', () => {
+    const prev = new Map([
+      ['item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }],
+      ['item-B', { sessionId: 's2', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }],
+    ]);
+    const { map, clearedItemId } = removeBySessionId(prev, 's1');
+    expect(clearedItemId).toBe('item-A');
+    expect(map.has('item-A')).toBe(false);
+    expect(map.has('item-B')).toBe(true);
+    expect(map.size).toBe(1);
+  });
+
+  it('returns clearedItemId=null when sessionId is not in the map', () => {
+    const prev = new Map([['item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }]]);
+    const { map, clearedItemId } = removeBySessionId(prev, 'unknown-session');
+    expect(clearedItemId).toBeNull();
+    expect(map.size).toBe(1);
+  });
+
+  it('does not mutate the previous map', () => {
+    const prev = new Map([['item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }]]);
+    removeBySessionId(prev, 's1');
+    expect(prev.size).toBe(1);
+  });
+
+  it('returns same map reference when sessionId not found (no-op optimisation)', () => {
+    const prev = new Map([['item-A', { sessionId: 's1', phase: 'implement', startedAt: '2026-01-01T00:00:00Z' }]]);
+    const { map } = removeBySessionId(prev, 'not-here');
+    expect(map).toBe(prev);
   });
 });

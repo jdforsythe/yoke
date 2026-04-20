@@ -218,6 +218,95 @@ describe('POST /api/workflows/:id/control cancel — executor wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ordered frame sequence assertions (AC-2)
+// ---------------------------------------------------------------------------
+
+describe('POST /api/workflows/:id/control cancel — broadcast frame ordering', () => {
+  it('emits item.state × N before the terminal workflow.update × 1', async () => {
+    const wfId = insertWorkflow('running');
+    insertItem(wfId, 'item-seq-A', 'in_progress', 'stage-1', 'implement');
+    insertItem(wfId, 'item-seq-B', 'in_progress', 'stage-1', 'review');
+    insertItem(wfId, 'item-seq-C', 'in_progress', 'stage-1', 'implement');
+
+    await inject('POST', `/api/workflows/${wfId}/control`, {
+      commandId: 'cmd-seq',
+      action: 'cancel',
+    });
+
+    // Assert N=3 item.state frames followed by 1 workflow.update.
+    const itemFrames = broadcastCalls.filter((c) => c.frameType === 'item.state');
+    const wfFrames = broadcastCalls.filter((c) => c.frameType === 'workflow.update');
+
+    expect(itemFrames.length).toBe(3);
+    expect(wfFrames.length).toBe(1);
+
+    // All item.state frames must appear before the workflow.update frame.
+    // (findLastIndex not available in this TS target — use reduce instead)
+    const lastItemFrameIdx = broadcastCalls.reduce(
+      (acc, c, i) => (c.frameType === 'item.state' ? i : acc),
+      -1,
+    );
+    const wfFrameIdx = broadcastCalls.findIndex((c) => c.frameType === 'workflow.update');
+    expect(lastItemFrameIdx).toBeLessThan(wfFrameIdx);
+
+    // Each item.state payload must reflect the abandoned transition.
+    for (const frame of itemFrames) {
+      expect(frame.workflowId).toBe(wfId);
+      const p = frame.payload as {
+        itemId: string;
+        stageId: string;
+        state: { status: string; blockedReason: null };
+      };
+      expect(p.stageId).toBe('stage-1');
+      expect(p.state.status).toBe('abandoned');
+      expect(p.state.blockedReason).toBeNull();
+    }
+
+    // Confirm all three items are represented.
+    const itemIds = itemFrames.map((f) => (f.payload as { itemId: string }).itemId).sort();
+    expect(itemIds).toEqual(['item-seq-A', 'item-seq-B', 'item-seq-C']);
+  });
+
+  it('emits only workflow.update when all items are already terminal (zero non-terminal)', async () => {
+    const wfId = insertWorkflow('running');
+    // All items terminal — cancel loop selects nothing.
+    insertItem(wfId, 'item-term-A', 'complete');
+    insertItem(wfId, 'item-term-B', 'abandoned');
+
+    const { statusCode, body } = await inject('POST', `/api/workflows/${wfId}/control`, {
+      commandId: 'cmd-all-terminal',
+      action: 'cancel',
+    });
+
+    expect(statusCode).toBe(202);
+    expect((body as any).cancelledItems).toBe(0);
+
+    const itemFrames = broadcastCalls.filter((c) => c.frameType === 'item.state');
+    const wfFrames = broadcastCalls.filter((c) => c.frameType === 'workflow.update');
+
+    expect(itemFrames.length).toBe(0);
+    expect(wfFrames.length).toBe(1);
+    expect((wfFrames[0].payload as any).status).toBe('abandoned');
+  });
+
+  it('does not emit item.state for terminal items that were pre-filtered by SQL', async () => {
+    const wfId = insertWorkflow('running');
+    insertItem(wfId, 'item-live-only', 'in_progress');
+    insertItem(wfId, 'item-done', 'complete');
+    insertItem(wfId, 'item-dead', 'abandoned');
+
+    await inject('POST', `/api/workflows/${wfId}/control`, {
+      commandId: 'cmd-skip-terminal',
+      action: 'cancel',
+    });
+
+    const itemFrames = broadcastCalls.filter((c) => c.frameType === 'item.state');
+    expect(itemFrames.length).toBe(1);
+    expect((itemFrames[0].payload as { itemId: string }).itemId).toBe('item-live-only');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error paths
 // ---------------------------------------------------------------------------
 

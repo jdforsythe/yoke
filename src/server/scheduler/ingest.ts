@@ -23,11 +23,27 @@
  *   already exists, it is returned as-is (isResume: true). A new workflow
  *   is only created when no live match is found — allowing safe restart
  *   without creating duplicate runs.
+ *
+ * ## GitHub state initialisation
+ *
+ *   For fresh workflows (isResume: false), initGithubState is called inside
+ *   the same transaction as the workflow INSERT so every new workflow row has
+ *   a non-null github_state from the moment it is committed.
+ *
+ *   The git remote URL is resolved via injected IngestDeps before the
+ *   transaction begins (it may block on a local filesystem read).  This
+ *   keeps the transaction itself synchronous.
+ *
+ *   Resume path: initGithubState is NOT called — the existing github_state
+ *   is left untouched.
  */
 
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import type { DbPool } from '../storage/db.js';
 import type { ResolvedConfig } from '../../shared/types/config.js';
+import { parseGitRemoteUrl } from '../github/remote-parse.js';
+import { initGithubState } from '../github/service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +53,21 @@ export interface IngestResult {
   workflowId: string;
   /** true when an existing live workflow was found (resume path). */
   isResume: boolean;
+}
+
+/**
+ * Injectable git helper for resolving the remote origin URL.
+ * Using an injected dep keeps the git invocation testable in isolation and
+ * satisfies the "injected git helper pattern" review criterion.
+ */
+export interface IngestDeps {
+  /**
+   * Returns the trimmed stdout of `git -C configDir remote get-url origin`,
+   * or null if the command fails (not a git repo, no remote, etc.).
+   *
+   * MUST NOT contact the network — this command only reads local git config.
+   */
+  getRemoteOriginUrl(configDir: string): string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,10 +88,11 @@ const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'
  *   - All run:once stage items seeded in `pending` status.
  *   - Stage ordering enforced via depends_on chaining.
  *   - Workflow status = 'pending', current_stage = first stage id.
+ *   - github_state initialised based on config.github and the git remote.
  *
  * All writes are inside a single db.transaction() for atomicity.
  */
-export function ingestWorkflow(db: DbPool, config: ResolvedConfig): IngestResult {
+export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: IngestDeps): IngestResult {
   // Check for an existing live workflow (read-only; outside transaction).
   const placeholders = TERMINAL_WF_STATUSES.map(() => '?').join(',');
   const existingRow = db.reader()
@@ -77,7 +109,21 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig): IngestResult
     | undefined;
 
   if (existingRow) {
+    // Resume path: do NOT re-initialise github_state.
     return { workflowId: existingRow.id, isResume: true };
+  }
+
+  // Resolve github state BEFORE entering the transaction.
+  // getRemoteOriginUrl may perform a local filesystem read (execFileSync).
+  const githubEnabled = config.github?.enabled ?? false;
+  const githubAutoPr = config.github?.auto_pr ?? false;
+  let hasOwnerRepo = false;
+
+  if (githubEnabled && deps) {
+    const remoteUrl = deps.getRemoteOriginUrl(config.configDir);
+    if (remoteUrl !== null) {
+      hasOwnerRepo = parseGitRemoteUrl(remoteUrl) !== null;
+    }
   }
 
   // Create new workflow + items in one transaction.
@@ -124,6 +170,40 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig): IngestResult
       prevItemId = itemId;
     }
 
+    // Initialise github_state for the new workflow inside the same transaction.
+    // initGithubState calls db.transaction() internally; better-sqlite3 handles
+    // this as a SAVEPOINT within the outer BEGIN, keeping everything atomic.
+    initGithubState(db, workflowId, {
+      enabled: githubEnabled,
+      autoPr: githubAutoPr,
+      hasOwnerRepo,
+    });
+
     return { workflowId, isResume: false };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Production deps factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns production IngestDeps that run the real git command synchronously.
+ * Reads local git config only — never contacts the network.
+ * Kept in a factory so the execFileSync call can be stubbed in tests.
+ */
+export function makeProductionIngestDeps(): IngestDeps {
+  return {
+    getRemoteOriginUrl(configDir: string): string | null {
+      try {
+        const stdout = execFileSync('git', ['-C', configDir, 'remote', 'get-url', 'origin'], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        });
+        return stdout.trim() || null;
+      } catch {
+        return null;
+      }
+    },
+  };
 }

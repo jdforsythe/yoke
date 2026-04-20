@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Yoke CLI entry point — runs the TypeScript source via tsx.
+# Works via: ./bin/yoke, npm link, or npx yoke.
+exec "$(dirname "$0")/../node_modules/.bin/tsx" \
+  "$(dirname "$0")/../src/cli/index.ts" "$@"

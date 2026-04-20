@@ -123,6 +123,8 @@ export interface ItemStateProjection {
 
 export interface SessionProjection {
   sessionId: string;
+  /** item_id from the sessions table; null for once-per-workflow sessions. */
+  itemId: string | null;
   phase: string;
   attempt: number;
   startedAt: string;
@@ -170,6 +172,8 @@ export interface StageCompletePayload {
 /** §2.5 */
 export interface SessionStartedPayload {
   sessionId: string;
+  /** item_id the session belongs to; null for once-per-workflow sessions. */
+  itemId?: string | null;
   phase: string;
   attempt: number;
   startedAt: string;
@@ -196,6 +200,15 @@ export interface NoticePayload {
   kind: string;
   message: string;
   persistedAttentionId?: number;
+}
+
+/** §2.4 — lightweight sidebar-list update for a single workflow. */
+export interface WorkflowIndexUpdatePayload {
+  id: string;
+  name: string;
+  status: string;
+  updatedAt: string;
+  unreadEvents: number;
 }
 
 /** §2.10 */

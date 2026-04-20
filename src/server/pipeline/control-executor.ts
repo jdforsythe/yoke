@@ -49,12 +49,14 @@ export type ControlExecutorFn = (
 export type KillSessionFn = (sessionId: string) => void;
 
 /**
- * Emits a workflow-scope WS frame.  The wiring in start.ts forwards this to
+ * Emits a WS frame scoped to a workflow.  Used for both per-item item.state
+ * frames (one per cancelled item, before the terminal workflow.update) and the
+ * final workflow.update frame.  The wiring in start.ts forwards this to
  * WsClientRegistry.broadcast(workflowId, null, frameType, payload).
  */
 export type ControlBroadcastFn = (
   workflowId: string,
-  frameType: 'workflow.update',
+  frameType: 'workflow.update' | 'item.state',
   payload: unknown,
 ) => void;
 
@@ -111,6 +113,7 @@ export function makeControlExecutor(
   writer: Database.Database,
   killSession: KillSessionFn,
   broadcast: ControlBroadcastFn,
+  scheduleIndexUpdate?: (workflowId: string) => void,
 ): ControlExecutorFn {
   // Minimal DbPool-shaped adapter so applyItemTransition can reuse the writer
   // inside its own db.transaction() wrapper. BEGIN/COMMIT nest safely: each
@@ -166,9 +169,14 @@ export function makeControlExecutor(
     // We call it once per item so cascade-block / event emission follow the
     // same path every other transition uses. Idempotent: an item that has
     // raced to a terminal state simply logs a no-op.
+    //
+    // Each per-item item.state broadcast fires immediately after the transition
+    // commits (after applyItemTransition returns), so FeatureBoard can update
+    // item chips without a reload. All item.state frames are emitted before the
+    // terminal workflow.update broadcast below (ordering guarantee).
     let cancelledCount = 0;
     for (const item of items) {
-      applyItemTransition({
+      const result = applyItemTransition({
         db: dbAdapter,
         workflowId,
         itemId: item.id,
@@ -182,6 +190,23 @@ export function makeControlExecutor(
         event: 'user_cancel',
       });
       cancelledCount++;
+
+      // Emit item.state after the transaction commits — not inside it.
+      // Only emit when the item actually transitioned to abandoned; if the item
+      // raced to a terminal state between the SELECT and applyItemTransition,
+      // newState will equal the existing terminal status and we skip the frame.
+      if (result.newState === 'abandoned') {
+        broadcast(workflowId, 'item.state', {
+          itemId: item.id,
+          stageId: item.stage_id,
+          state: {
+            status: 'abandoned',
+            currentPhase: result.newPhase,
+            retryCount: item.retry_count,
+            blockedReason: null,
+          },
+        });
+      }
     }
 
     // ---- Update workflow status ------------------------------------------
@@ -210,6 +235,10 @@ export function makeControlExecutor(
       status: 'abandoned',
       cancelled: true,
     });
+
+    // ---- Schedule workflow.index.update (coalesced) ----------------------
+    // Sidebar chip needs the new 'abandoned' status; debounce handled by caller.
+    scheduleIndexUpdate?.(workflowId);
 
     return { status: 'accepted', cancelledItems: cancelledCount };
   };

@@ -460,6 +460,33 @@ describe('AC-7: stream events are broadcast', () => {
 
     await scheduler.stop();
   });
+
+  it('session.started broadcast payload includes itemId', async () => {
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+    const { scheduler, broadcasts } = buildScheduler({ config, processManager: pm });
+
+    await scheduler.start();
+    const workflowId = scheduler.workflowId!;
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    const startedFrames = broadcasts.filter((b) => b.frameType === 'session.started');
+    expect(startedFrames.length).toBeGreaterThan(0);
+
+    for (const frame of startedFrames) {
+      const p = frame.payload as { sessionId: string; itemId?: string | null; phase: string };
+      expect(p.itemId).toBeDefined();
+      expect(typeof p.itemId).toBe('string');
+    }
+
+    await scheduler.stop();
+  });
 });
 
 // ---------------------------------------------------------------------------

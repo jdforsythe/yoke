@@ -50,6 +50,11 @@ import { JSONPath } from 'jsonpath-plus';
 import type { DbPool } from '../storage/db.js';
 import type { ResolvedConfig } from '../../shared/types/config.js';
 import type { Stage, Phase } from '../../shared/types/config.js';
+import type { PushResult } from '../github/push.js';
+import type { CreatePrInput, CreatePrResult, GithubBroadcastFn } from '../github/service.js';
+import { writeGithubState } from '../github/service.js';
+import { buildPrBody } from '../github/pr-body.js';
+import type { GithubError } from '../github/types.js';
 import type { ProcessManager, SpawnHandle } from '../process/manager.js';
 import type { WorktreeManager } from '../worktree/manager.js';
 import type { RunCommandsOpts, RunCommandsResult, PrePostRunRecord } from '../prepost/runner.js';
@@ -68,7 +73,7 @@ import {
 } from '../pipeline/engine.js';
 import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
-import { ingestWorkflow } from './ingest.js';
+import { ingestWorkflow, makeProductionIngestDeps } from './ingest.js';
 import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
@@ -148,6 +153,40 @@ export type NotifyFn = (opts: {
   pendingAttentionRowId: number;
 }) => void;
 
+/**
+ * Injectable dependencies for the auto-PR path (r2-10).
+ *
+ * All fields are optional — missing fields use production defaults (lazy
+ * dynamic imports) so the Scheduler works without explicit injection.
+ * Override in tests to substitute stubs and capture the async task promise.
+ */
+export interface AutoPrDeps {
+  /**
+   * Run the async push+PR task.
+   * Production default: fire-and-forget (`void task()`).
+   * Override in tests to capture the promise: `(t) => { taskPromise = t(); }`
+   */
+  asyncRunner?: (task: () => Promise<void>) => void;
+  /**
+   * Push the branch to origin.
+   * Production default: calls `pushBranch` from `github/push.ts`.
+   */
+  push?: (branchName: string, worktreePath: string) => Promise<PushResult>;
+  /**
+   * Create the GitHub PR.
+   * Production default: calls `createPr` from `github/service.ts` with
+   * production auth/octokit/gh-cli deps.  Injectable so tests can stub
+   * the full GitHub API surface.
+   */
+  createPr?: (input: CreatePrInput) => Promise<CreatePrResult>;
+  /** Return up to 10 recent commit subjects from the worktree. */
+  getRecentCommits?: (worktreePath: string) => Promise<string[]>;
+  /** Return the note from the last non-harness-injected handoff entry, or null. */
+  getLastHandoffNote?: (configDir: string) => Promise<string | null>;
+  /** Parse owner + repo from the worktree's git remote origin. */
+  getOwnerRepo?: (worktreePath: string) => Promise<{ owner: string; repo: string } | null>;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -175,6 +214,36 @@ function computeRetryBackoffMs(retryCount: number): number {
 const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'];
 
 /**
+ * Build a human-readable message for a pending_attention notice frame from the
+ * kind and payload stored in the DB row.  Exported for unit testing.
+ */
+export function buildAttentionMessage(kind: string, payload: unknown): string {
+  const p =
+    typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {};
+  const stage = typeof p['stage'] === 'string' ? p['stage'] : null;
+  switch (kind) {
+    case 'bootstrap_failed':
+      return stage ? `Bootstrap failed in stage "${stage}"` : 'Bootstrap failed';
+    case 'awaiting_user_retry':
+      return stage ? `Retries exhausted in stage "${stage}"` : 'Retries exhausted — user action required';
+    case 'revisit_limit':
+      return stage ? `Revisit limit reached in stage "${stage}"` : 'Revisit limit reached';
+    case 'stage_needs_approval':
+      return stage ? `Stage "${stage}" requires approval` : 'Stage requires approval';
+    case 'seed_failed': {
+      const msg = typeof p['message'] === 'string' ? p['message'] : null;
+      return msg
+        ? `Seeding failed${stage ? ` in stage "${stage}"` : ''}: ${msg}`
+        : `Seeding failed${stage ? ` in stage "${stage}"` : ''}`;
+    }
+    default:
+      return `Attention required: ${kind}`;
+  }
+}
+
+/**
  * Extract the item's stable ID (the value identified by `items_id` JSONPath)
  * from its serialised data, for use in log labels.  Falls back to the raw
  * item UUID when the stage has no `items_id` or parsing fails.
@@ -189,6 +258,58 @@ function itemLabel(itemId: string, data: string, stage: { items_id?: string }): 
   } catch {
     return itemId;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Production defaults for AutoPrDeps (lazy dynamic imports to avoid bloat)
+// ---------------------------------------------------------------------------
+
+async function _defaultGetOwnerRepo(worktreePath: string): Promise<{ owner: string; repo: string } | null> {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execAsync = promisify(execFile);
+    const { stdout } = await execAsync('git', ['-C', worktreePath, 'remote', 'get-url', 'origin'], { timeout: 10_000 });
+    const { parseGitRemoteUrl } = await import('../github/remote-parse.js');
+    return parseGitRemoteUrl(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+async function _defaultGetRecentCommits(worktreePath: string): Promise<string[]> {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execAsync = promisify(execFile);
+    const { stdout } = await execAsync('git', ['-C', worktreePath, 'log', '--format=%s', '-10'], { timeout: 10_000 });
+    return stdout.trim().split('\n').filter(Boolean).slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
+async function _defaultGetLastHandoffNote(configDir: string): Promise<string | null> {
+  try {
+    const handoffPath = path.join(configDir, 'handoff.json');
+    if (!fs.existsSync(handoffPath)) return null;
+    const raw = fs.readFileSync(handoffPath, 'utf8');
+    const data = JSON.parse(raw) as { entries?: unknown[] };
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    const last = [...entries].reverse().find((e: unknown) => {
+      return typeof e === 'object' && e !== null && !(e as Record<string, unknown>)['harness_injected'];
+    });
+    if (!last) return null;
+    const note = (last as Record<string, unknown>)['note'];
+    return typeof note === 'string' ? note : null;
+  } catch {
+    return null;
+  }
+}
+
+async function _defaultPush(branchName: string, worktreePath: string): Promise<PushResult> {
+  const { pushBranch, makeProductionPushDeps } = await import('../github/push.js');
+  return pushBranch(branchName, worktreePath, makeProductionPushDeps());
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +387,12 @@ export interface SchedulerOpts {
    * Override in tests to control retry timer expiry without real waits.
    */
   now?: () => number;
+  /**
+   * Injectable auto-PR dependencies (r2-10).
+   * If omitted, production defaults are used (lazy dynamic imports).
+   * Inject stubs in tests to control push/createPr behaviour.
+   */
+  autoPr?: AutoPrDeps;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +411,7 @@ export class Scheduler {
   private readonly faultInjector: FaultInjector;
   private readonly notifyFn?: NotifyFn;
   private readonly clockNow: () => number;
+  private readonly autoPrDeps: AutoPrDeps | undefined;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -311,6 +439,14 @@ export class Scheduler {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
+  /**
+   * Per-workflow timers for coalesced workflow.index.update broadcasts.
+   * Keyed by workflowId; replaced on each scheduleIndexUpdate call within
+   * the 500 ms debounce window so rapid status/attention changes produce
+   * a single frame rather than one per transition.
+   */
+  private readonly _indexUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(opts: SchedulerOpts) {
     this.db = opts.db;
     this.config = opts.config;
@@ -335,6 +471,7 @@ export class Scheduler {
     this.pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
+    this.autoPrDeps = opts.autoPr;
   }
 
   // -------------------------------------------------------------------------
@@ -342,23 +479,63 @@ export class Scheduler {
   // -------------------------------------------------------------------------
 
   /**
-   * Thin wrapper around applyItemTransition that fires the optional notify
-   * callback whenever a pending_attention row was inserted (feat-notifications).
+   * Thin wrapper around applyItemTransition that:
+   *   1. Broadcasts a notice frame whenever a pending_attention row was inserted
+   *      (reads kind + payload from DB so call sites never hardcode them).
+   *   2. Fires the optional OS-push notifyFn independently of the WS broadcast.
    *
    * All callers in this file use _applyTransition instead of applyItemTransition
    * directly so that notification dispatch is uniform and not scattered.
+   *
+   * Broadcast order per transition: DB commit → notice frame → item.state frame
+   * (item.state is emitted by the caller via _broadcastItemState after this returns).
    */
   private _applyTransition(
     params: Parameters<typeof applyItemTransition>[0],
   ): ReturnType<typeof applyItemTransition> {
     const result = applyItemTransition(params);
-    if (result.pendingAttentionRowId != null && this.notifyFn) {
-      this.notifyFn({
-        workflowId: params.workflowId,
-        pendingAttentionRowId: result.pendingAttentionRowId,
-      });
+    if (result.pendingAttentionRowId != null) {
+      this._emitAttentionNotice(params.workflowId, result.pendingAttentionRowId);
+      // A pending_attention row was inserted — schedule workflow.index.update so
+      // the sidebar's unreadEvents badge increments without a page reload.
+      this.scheduleIndexUpdate(params.workflowId);
     }
     return result;
+  }
+
+  /**
+   * Reads the pending_attention row and broadcasts a notice frame to all
+   * workflow subscribers.  Also fires the optional OS-push notifyFn.
+   *
+   * Separating this from _applyTransition makes it unit-testable in isolation
+   * (RC: private method with injected broadcastFn).
+   */
+  private _emitAttentionNotice(workflowId: string, pendingAttentionRowId: number): void {
+    const row = this.db
+      .reader()
+      .prepare('SELECT kind, payload FROM pending_attention WHERE id = ?')
+      .get(pendingAttentionRowId) as { kind: string; payload: string } | undefined;
+    if (!row) return;
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      payload = {};
+    }
+
+    const message = buildAttentionMessage(row.kind, payload);
+
+    this.broadcastFn(workflowId, null, 'notice', {
+      severity: 'requires_attention',
+      kind: row.kind,
+      message,
+      persistedAttentionId: pendingAttentionRowId,
+    });
+
+    if (this.notifyFn) {
+      this.notifyFn({ workflowId, pendingAttentionRowId });
+    }
   }
 
   /**
@@ -380,6 +557,48 @@ export class Scheduler {
     if (result.retryMode) this.retryModeFor.set(itemId, result.retryMode);
   }
 
+  /**
+   * Schedule a coalesced workflow.index.update broadcast for the given workflow.
+   * Multiple calls within 500 ms produce a single frame — prevents flooding when
+   * rapid transitions occur (e.g. a stage with many items all completing at once).
+   *
+   * Public so start.ts can share this emitter with the ackAttention and
+   * controlExecutor callbacks, giving a single per-workflow debounce boundary
+   * across all emission sites.
+   */
+  public scheduleIndexUpdate(workflowId: string): void {
+    const existing = this._indexUpdateTimers.get(workflowId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this._indexUpdateTimers.delete(workflowId);
+      this._emitIndexUpdate(workflowId);
+    }, 500);
+    this._indexUpdateTimers.set(workflowId, timer);
+  }
+
+  /**
+   * Query the DB at emission time and broadcast workflow.index.update.
+   * unreadEvents is always computed fresh from pending_attention — never cached.
+   */
+  private _emitIndexUpdate(workflowId: string): void {
+    const wf = this.db.reader()
+      .prepare('SELECT id, name, status, updated_at FROM workflows WHERE id = ?')
+      .get(workflowId) as { id: string; name: string; status: string; updated_at: string } | undefined;
+    if (!wf) return;
+    const countRow = this.db.reader()
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ? AND acknowledged_at IS NULL',
+      )
+      .get(workflowId) as { cnt: number };
+    this.broadcastFn(workflowId, null, 'workflow.index.update', {
+      id: wf.id,
+      name: wf.name,
+      status: wf.status,
+      updatedAt: wf.updated_at,
+      unreadEvents: countRow.cnt,
+    });
+  }
+
   // -------------------------------------------------------------------------
   // start — AC-1
   // -------------------------------------------------------------------------
@@ -392,7 +611,7 @@ export class Scheduler {
     if (this.stopped) throw new Error('Scheduler already stopped');
 
     // Step 1: Ingest workflow + items from config (AC-1).
-    const { workflowId, isResume } = ingestWorkflow(this.db, this.config);
+    const { workflowId, isResume } = ingestWorkflow(this.db, this.config, makeProductionIngestDeps());
     this.workflowId = workflowId;
     console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
 
@@ -487,6 +706,12 @@ export class Scheduler {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+    // Clear any pending index-update debounce timers so they don't fire on a
+    // closed DB after shutdown.
+    for (const timer of this._indexUpdateTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._indexUpdateTimers.clear();
 
     // Collect session IDs for in-flight entries that have a live handle.
     const inFlightSessionIds: string[] = [];
@@ -626,13 +851,39 @@ export class Scheduler {
               stage,
             });
             if (seedResult.kind === 'error') {
+              // Truncate very long error messages to keep the payload human-readable.
+              const truncated = seedResult.message.length > 500
+                ? seedResult.message.slice(0, 500) + '…'
+                : seedResult.message;
               console.error(
                 `[scheduler] per-item seeding failed for stage '${stage.id}':`,
-                seedResult.message,
+                truncated,
               );
+              // Transition placeholder to awaiting_user and insert pending_attention
+              // so the user is notified. The _applyTransition wrapper broadcasts the
+              // notice frame and schedules a workflow.index.update debounce.
+              const failResult = this._applyTransition({
+                db: this.db,
+                workflowId: wf.id,
+                itemId: item.id,
+                sessionId: null,
+                stage: item.stage_id,
+                phase: item.current_phase ?? '',
+                attempt: item.retry_count + 1,
+                event: 'seed_failed',
+                guardCtx: {
+                  customAttentionPayload: {
+                    message: truncated,
+                    stage: item.stage_id,
+                    item_id: item.id,
+                  },
+                },
+              });
+              this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
             }
             // On success: placeholder deleted, real items pending — next tick
-            // picks them up.  On error: placeholder still ready — retry next tick.
+            // picks them up.  On seed_failed: placeholder now in awaiting_user —
+            // no further seeding until user_retry fires (handled in in_progress).
             break;
           }
 
@@ -669,6 +920,8 @@ export class Scheduler {
 
         // ------------------------------------------------------------------
         // in_progress without an active session → spawn (crash resume path)
+        // or re-seed if this is a per-item placeholder after user_retry on
+        // a seed_failed item.
         // ------------------------------------------------------------------
         case 'in_progress': {
           if (this.inFlight.has(item.id)) break;
@@ -676,6 +929,58 @@ export class Scheduler {
 
           const stage = this._findStage(item.stage_id);
           if (!stage) break;
+
+          // Per-item placeholder: re-run seeding instead of spawning a session.
+          // This handles the user_retry path after a seed_failed transition.
+          if (stage.run === 'per-item' && item.data === '{}') {
+            const worktreePath = wf.worktree_path;
+            if (!worktreePath) break;
+
+            // Transition placeholder back to ready so the seeder path runs on
+            // the next tick (we avoid mutating state twice in a single tick).
+            // Re-seed directly here and let the result guide the next state.
+            const seedResult = seedPerItemStage({
+              db: this.db,
+              workflowId: wf.id,
+              placeholderItemId: item.id,
+              worktreePath,
+              stage,
+            });
+            if (seedResult.kind === 'error') {
+              const truncated = seedResult.message.length > 500
+                ? seedResult.message.slice(0, 500) + '…'
+                : seedResult.message;
+              console.error(
+                `[scheduler] per-item re-seeding failed for stage '${stage.id}':`,
+                truncated,
+              );
+              // Re-fire seed_failed to insert a fresh pending_attention row and
+              // notify the user again. The previous pending_attention row from the
+              // first failure remains acknowledged (if the user acked it) or not;
+              // either way a new row is created per retry.
+              const failResult = this._applyTransition({
+                db: this.db,
+                workflowId: wf.id,
+                itemId: item.id,
+                sessionId: null,
+                stage: item.stage_id,
+                phase: item.current_phase ?? '',
+                attempt: item.retry_count + 1,
+                event: 'seed_failed',
+                guardCtx: {
+                  customAttentionPayload: {
+                    message: truncated,
+                    stage: item.stage_id,
+                    item_id: item.id,
+                  },
+                },
+              });
+              this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
+            }
+            // On success: placeholder deleted, real items pending — next tick picks up.
+            // On error: back to awaiting_user — user must retry again.
+            break;
+          }
 
           this.inFlight.set(item.id, 'pending');
           effectiveRunning++;
@@ -1008,17 +1313,9 @@ export class Scheduler {
         itemBlockedReason: item.blocked_reason,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
-      // Surface the failure to the UI. No session.started has been broadcast
-      // yet (it fires after spawn), so a stream.system_notice would have no
-      // host session in the render model — use a workflow-scoped notice
-      // instead, which the AttentionBanner / notification handler can render.
-      this.broadcastFn(wf.id, null, 'notice', {
-        severity: 'requires_attention' as const,
-        kind: 'prompt_assembly_failed',
-        message: `Prompt assembly failed for ${item.stage_id}/${phaseKey}: ${errMsg}`,
-      });
+      // Route through _applyTransition so the centralized emitter broadcasts
+      // a notice frame with persistedAttentionId (AC-4: no bare notice).
       const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
@@ -1028,7 +1325,10 @@ export class Scheduler {
         phase: phaseKey,
         attempt,
         event: 'session_fail',
-        guardCtx: { classifierResult: 'unknown' },
+        // Use 'permanent' so applyPendingSideEffects inserts a pending_attention
+        // row and _emitAttentionNotice broadcasts a notice with persistedAttentionId
+        // (AC-4: prompt_assembly_failed must not emit a bare notice).
+        guardCtx: { classifierResult: 'permanent' },
       });
       this._broadcastItemState(wf.id, item.id, item.stage_id, result);
       await logWriter.close();
@@ -1110,9 +1410,10 @@ export class Scheduler {
     };
     this.inFlight.set(item.id, inFlightEntry);
 
-    // Broadcast session.started.
+    // Broadcast session.started with itemId so the client can upsert itemActiveSession.
     this.broadcastFn(wf.id, sessionId, 'session.started', {
       sessionId,
+      itemId: item.id,
       phase: phaseKey,
       attempt,
       startedAt: new Date().toISOString(),
@@ -1767,6 +2068,11 @@ export class Scheduler {
       applyStageAdvance(this.db, workflowId, nextStage.id);
     } else {
       // Last stage completed — determine final workflow status.
+      // Guard: if the workflow was user-cancelled (abandoned) before the last
+      // stage finished, do not override the abandoned status or trigger auto-PR.
+      const currentWf = this._readWorkflow(workflowId);
+      if (currentWf?.status === 'abandoned') return;
+
       const BLOCKED_STATUSES = ['blocked', 'abandoned'];
       const allItems = this._readWorkflowItems(workflowId);
       const hasBlocked = allItems.some((item) => BLOCKED_STATUSES.includes(item.status));
@@ -1781,7 +2087,114 @@ export class Scheduler {
         status: finalStatus,
         completedAt: new Date().toISOString(),
       });
+
+      // Coalesced index update — sidebar chip needs the new terminal status.
+      this.scheduleIndexUpdate(workflowId);
+
+      // Auto-PR: if github.enabled + auto_pr, push branch and create PR.
+      // Runs on its own promise chain so the scheduler tick is not blocked.
+      if (this.config.github?.enabled && this.config.github?.auto_pr) {
+        this._triggerAutoPr(workflowId);
+      }
     }
+  }
+
+  /**
+   * Fire-and-forget auto-PR task: pushBranch → createPr.
+   *
+   * All errors are caught and written to github_state='failed' — never thrown
+   * out of this method (RC: errors never throw out of _handleStageComplete).
+   * The async task runs on its own promise chain via the injected asyncRunner
+   * (default: fire-and-forget) so the scheduler tick is not blocked (RC-4).
+   */
+  private _triggerAutoPr(workflowId: string): void {
+    const deps = this.autoPrDeps;
+    const asyncRunner = deps?.asyncRunner ?? ((task) => { void task(); });
+
+    asyncRunner(async () => {
+      try {
+        const wf = this._readWorkflow(workflowId);
+        if (!wf?.branch_name || !wf?.worktree_path) {
+          console.warn(`[scheduler] auto-PR: missing branch_name or worktree_path for ${workflowId}`);
+          return;
+        }
+
+        // Resolve owner/repo from the remote URL.
+        const getOwnerRepo = deps?.getOwnerRepo ?? _defaultGetOwnerRepo;
+        const ownerRepo = await getOwnerRepo(wf.worktree_path);
+        if (!ownerRepo) {
+          console.warn(`[scheduler] auto-PR: could not resolve owner/repo for ${workflowId}`);
+          return;
+        }
+
+        // Build PR body from recent commits + last handoff note.
+        const getRecentCommits = deps?.getRecentCommits ?? _defaultGetRecentCommits;
+        const getLastHandoffNote = deps?.getLastHandoffNote ?? _defaultGetLastHandoffNote;
+        const recentCommits = await getRecentCommits(wf.worktree_path);
+        const lastHandoffNote = await getLastHandoffNote(this.config.configDir);
+        const body = buildPrBody({ workflowName: wf.name, recentCommits, lastHandoffNote });
+
+        const ghBroadcast = this._makeGithubBroadcast();
+
+        // Push branch first.
+        const pushFn = deps?.push ?? _defaultPush;
+        const pushResult = await pushFn(wf.branch_name, wf.worktree_path);
+        if (!pushResult.ok) {
+          const error: GithubError = {
+            kind: 'api_failed',
+            message: `git push failed (${pushResult.kind}): ${pushResult.rawStderr}`,
+          };
+          writeGithubState(this.db, workflowId, 'failed', { error }, ghBroadcast);
+          return;
+        }
+
+        // Create PR — createPr writes its own state transitions internally.
+        // When not injected, build the production createPr function inline so
+        // we have access to this.db via the closure.
+        const db = this.db;
+        const createPrFn: (input: CreatePrInput) => Promise<CreatePrResult> = deps?.createPr ?? (async (inp) => {
+          const { createPr } = await import('../github/service.js');
+          const { makeProductionAuthDeps } = await import('../github/auth.js');
+          const { makeProductionPushDeps } = await import('../github/push.js');
+          const { makeOctokitAdapter, makeGhCliAdapter } = await import('../github/pr.js');
+          const pushDeps = makeProductionPushDeps();
+          return createPr(inp, {
+            db,
+            authDeps: makeProductionAuthDeps(),
+            pushGuardDeps: { execGit: pushDeps.execGit },
+            octokitAdapter: makeOctokitAdapter(),
+            ghCliAdapter: makeGhCliAdapter(),
+            broadcast: ghBroadcast,
+          });
+        });
+        const base = this.config.github?.pr_target_branch ?? 'main';
+        const prInput: CreatePrInput = {
+          workflowId,
+          branchName: wf.branch_name,
+          owner: ownerRepo.owner,
+          repo: ownerRepo.repo,
+          base,
+          title: wf.name,
+          body,
+        };
+        await createPrFn(prInput);
+      } catch (err) {
+        console.error('[scheduler] auto-PR: unexpected error:', err);
+        try {
+          const error: GithubError = { kind: 'api_failed', message: String(err) };
+          writeGithubState(this.db, workflowId, 'failed', { error });
+        } catch {
+          // DB may be closed during shutdown — ignore.
+        }
+      }
+    });
+  }
+
+  /** Adapt the scheduler's 4-arg broadcastFn to the 3-arg GithubBroadcastFn shape. */
+  private _makeGithubBroadcast(): GithubBroadcastFn {
+    return (workflowId, frameType, payload) => {
+      this.broadcastFn(workflowId, null, frameType, payload);
+    };
   }
 
   /**

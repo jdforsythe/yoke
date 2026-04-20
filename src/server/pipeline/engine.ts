@@ -115,6 +115,12 @@ export interface GuardContext {
    * If absent or empty, no artifact_writes rows are written.
    */
   artifactWrites?: ArtifactWriteRecord[];
+  /**
+   * Custom payload to store in the pending_attention row instead of the
+   * default {item_id, stage, phase}. Used by seed_failed to include the
+   * human-readable error message from the seeder.
+   */
+  customAttentionPayload?: unknown;
 }
 
 /** Opaque write record from the hook-contract scanner (feat-hook-contract). */
@@ -279,7 +285,11 @@ const PENDING_ATTENTION_LABELS: Record<string, string> = {
   'insert pending_attention': 'awaiting_user_retry',
   'insert pending_attention{kind=revisit_limit}': 'revisit_limit',
   'insert pending_attention{kind=stage_needs_approval}': 'stage_needs_approval',
+  'insert pending_attention{kind=seed_failed}': 'seed_failed',
 };
+
+/** All attention kinds the engine can emit. Exported for UI classification tests. */
+export const KIND_MAP: ReadonlySet<string> = new Set(Object.values(PENDING_ATTENTION_LABELS));
 
 function pendingAttentionKindFromEffects(
   sideEffects: readonly string[],
@@ -854,10 +864,14 @@ function applyPendingSideEffects(
   stage: string,
   phase: string,
   now: string,
+  customPayload?: unknown,
 ): number | null {
   const kind = pendingAttentionKindFromEffects(sideEffects);
   if (kind) {
-    return writePendingAttention(db, workflowId, kind, { item_id: itemId, stage, phase }, now);
+    const payload: Record<string, unknown> = customPayload !== undefined
+      ? (customPayload as Record<string, unknown>)
+      : { item_id: itemId, stage, phase };
+    return writePendingAttention(db, workflowId, kind, payload, now);
   }
   return null;
 }
@@ -1062,6 +1076,7 @@ export function applyItemTransition(
       params.stage,
       params.phase,
       now,
+      ctx.customAttentionPayload,
     );
 
     // Cascade-block dependents in the same transaction (AC-2).

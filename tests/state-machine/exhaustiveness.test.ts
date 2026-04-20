@@ -34,6 +34,7 @@ import { transition } from '../../src/server/state-machine/transitions.js';
 
 const IGNORED_PAIRS = new Set<string>([
   // pending: only deps_satisfied and user_cancel are meaningful
+  'pending:seed_failed',
   'pending:phase_start',
   'pending:phase_advance',
   'pending:stage_complete',
@@ -60,7 +61,7 @@ const IGNORED_PAIRS = new Set<string>([
   'pending:bootstrap_ok',
   'pending:bootstrap_fail',
 
-  // ready: waiting for phase_start; no session or retry events apply
+  // ready: waiting for phase_start; seed_failed and user_cancel defined; all others ignored
   'ready:deps_satisfied',
   'ready:phase_advance',
   'ready:stage_complete',
@@ -86,8 +87,10 @@ const IGNORED_PAIRS = new Set<string>([
   'ready:user_unblock_with_notes',
   'ready:bootstrap_ok',
   'ready:bootstrap_fail',
+  // seed_failed is defined for ready (transitions to awaiting_user) — not listed here
 
   // bootstrapping: only bootstrap_ok, bootstrap_fail, and user_cancel apply
+  'bootstrapping:seed_failed',
   'bootstrapping:deps_satisfied',
   'bootstrapping:phase_start',
   'bootstrapping:phase_advance',
@@ -114,6 +117,7 @@ const IGNORED_PAIRS = new Set<string>([
   'bootstrapping:user_unblock_with_notes',
 
   // bootstrap_failed: stuck until user acts; only user_retry and user_cancel apply
+  'bootstrap_failed:seed_failed',
   'bootstrap_failed:deps_satisfied',
   'bootstrap_failed:phase_start',
   'bootstrap_failed:phase_advance',
@@ -140,8 +144,9 @@ const IGNORED_PAIRS = new Set<string>([
   'bootstrap_failed:bootstrap_ok',
   'bootstrap_failed:bootstrap_fail',
 
-  // in_progress: events fired before/during/after the session are handled;
+  // in_progress: session events handled; seed_failed defined (per-item re-seed path)
   // dependency, approval, and bootstrap events are not applicable mid-session
+  // seed_failed is defined for in_progress — not listed here
   'in_progress:deps_satisfied',
   'in_progress:phase_start',
   'in_progress:phase_advance',
@@ -160,6 +165,7 @@ const IGNORED_PAIRS = new Set<string>([
   'in_progress:bootstrap_fail',
 
   // awaiting_retry: waiting for backoff timer; only backoff, exhaustion, and cancel apply
+  'awaiting_retry:seed_failed',
   'awaiting_retry:deps_satisfied',
   'awaiting_retry:phase_start',
   'awaiting_retry:phase_advance',
@@ -187,6 +193,7 @@ const IGNORED_PAIRS = new Set<string>([
 
   // rate_limited: paused for rate-limit window; only window-elapsed, forced retry,
   // idempotent re-entry, and cancel apply
+  'rate_limited:seed_failed',
   'rate_limited:deps_satisfied',
   'rate_limited:phase_start',
   'rate_limited:phase_advance',
@@ -212,6 +219,7 @@ const IGNORED_PAIRS = new Set<string>([
   'rate_limited:bootstrap_fail',
 
   // awaiting_user: blocked on human action; only retry, block, and cancel apply
+  'awaiting_user:seed_failed',
   'awaiting_user:deps_satisfied',
   'awaiting_user:phase_start',
   'awaiting_user:phase_advance',
@@ -238,6 +246,7 @@ const IGNORED_PAIRS = new Set<string>([
   'awaiting_user:bootstrap_fail',
 
   // blocked: manually blocked; only unblock, cancel, and deps_satisfied (no-op) apply
+  'blocked:seed_failed',
   'blocked:phase_start',
   'blocked:phase_advance',
   'blocked:stage_complete',
@@ -264,6 +273,7 @@ const IGNORED_PAIRS = new Set<string>([
   'blocked:bootstrap_fail',
 
   // complete: terminal; only deps_satisfied (no-op cascade acknowledgement) applies
+  'complete:seed_failed',
   'complete:phase_start',
   'complete:phase_advance',
   'complete:stage_complete',
