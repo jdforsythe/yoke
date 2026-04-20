@@ -147,6 +147,12 @@ export interface StartHandle {
   db: DbPool;
   fastify: FastifyInstance;
   scheduler: Scheduler;
+  /**
+   * Broadcast a server frame to all WS clients subscribed to workflowId.
+   * Exposed so tests and Playwright fixtures can inject frames without running
+   * the full scheduler (e.g. live-attention.spec.ts).
+   */
+  broadcast(workflowId: string, sessionId: string | null, frameType: string, payload: unknown): void;
   /** Clean shutdown: stops scheduler, closes db + fastify. */
   close(): Promise<void>;
 }
@@ -190,14 +196,8 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
   const url = `http://127.0.0.1:${actualPort}`;
 
-  // Wire the real ackAttention handler now that state.registry is available.
-  // The handler uses the writer connection for the UPDATE and broadcasts a
-  // workflow.update frame to subscribed WS clients (AC-1, AC-2, AC-3, RC-1).
-  callbacks.ackAttention = makeAckAttentionFn(db.writer, (workflowId) => {
-    state.registry.broadcast(workflowId, null, 'workflow.update', {
-      attentionAcked: true,
-    });
-  });
+  // ackAttention is wired after the scheduler is constructed (below) so its
+  // callback can call scheduler.scheduleIndexUpdate to coalesce index updates.
 
   // Wire the retryItems handler so POST /api/workflows/:id/retry can fire
   // user_retry transitions via the pipeline engine (RC-3 — no writes in API layer).
@@ -283,11 +283,21 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   // scheduler.killSession to SIGTERM running sessions when a workflow is
   // cancelled (RC-3 — no writes in API layer; all state changes happen in
   // the engine-layer executor).
+  // Now that scheduler is available, wire ackAttention to also schedule a
+  // coalesced workflow.index.update so the sidebar unreadEvents badge updates.
+  callbacks.ackAttention = makeAckAttentionFn(db.writer, (workflowId) => {
+    state.registry.broadcast(workflowId, null, 'workflow.update', {
+      attentionAcked: true,
+    });
+    scheduler.scheduleIndexUpdate(workflowId);
+  });
+
   callbacks.controlExecutor = makeControlExecutor(
     db.writer,
     (sid) => scheduler.killSession(sid),
     (wfId, frameType, payload) =>
       state.registry.broadcast(wfId, null, frameType, payload),
+    (wfId) => scheduler.scheduleIndexUpdate(wfId),
   );
 
   if (!opts.noScheduler) {
@@ -299,6 +309,9 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     db,
     fastify,
     scheduler,
+    broadcast(workflowId: string, sessionId: string | null, frameType: string, payload: unknown) {
+      state.registry.broadcast(workflowId, sessionId, frameType as import('../server/api/frames.js').ServerFrameType, payload);
+    },
     async close() {
       if (!opts.noScheduler) {
         await scheduler.stop();

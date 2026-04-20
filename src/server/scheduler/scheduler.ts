@@ -175,6 +175,30 @@ function computeRetryBackoffMs(retryCount: number): number {
 const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'];
 
 /**
+ * Build a human-readable message for a pending_attention notice frame from the
+ * kind and payload stored in the DB row.  Exported for unit testing.
+ */
+export function buildAttentionMessage(kind: string, payload: unknown): string {
+  const p =
+    typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {};
+  const stage = typeof p['stage'] === 'string' ? p['stage'] : null;
+  switch (kind) {
+    case 'bootstrap_failed':
+      return stage ? `Bootstrap failed in stage "${stage}"` : 'Bootstrap failed';
+    case 'awaiting_user_retry':
+      return stage ? `Retries exhausted in stage "${stage}"` : 'Retries exhausted — user action required';
+    case 'revisit_limit':
+      return stage ? `Revisit limit reached in stage "${stage}"` : 'Revisit limit reached';
+    case 'stage_needs_approval':
+      return stage ? `Stage "${stage}" requires approval` : 'Stage requires approval';
+    default:
+      return `Attention required: ${kind}`;
+  }
+}
+
+/**
  * Extract the item's stable ID (the value identified by `items_id` JSONPath)
  * from its serialised data, for use in log labels.  Falls back to the raw
  * item UUID when the stage has no `items_id` or parsing fails.
@@ -311,6 +335,14 @@ export class Scheduler {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
+  /**
+   * Per-workflow timers for coalesced workflow.index.update broadcasts.
+   * Keyed by workflowId; replaced on each scheduleIndexUpdate call within
+   * the 500 ms debounce window so rapid status/attention changes produce
+   * a single frame rather than one per transition.
+   */
+  private readonly _indexUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(opts: SchedulerOpts) {
     this.db = opts.db;
     this.config = opts.config;
@@ -342,23 +374,63 @@ export class Scheduler {
   // -------------------------------------------------------------------------
 
   /**
-   * Thin wrapper around applyItemTransition that fires the optional notify
-   * callback whenever a pending_attention row was inserted (feat-notifications).
+   * Thin wrapper around applyItemTransition that:
+   *   1. Broadcasts a notice frame whenever a pending_attention row was inserted
+   *      (reads kind + payload from DB so call sites never hardcode them).
+   *   2. Fires the optional OS-push notifyFn independently of the WS broadcast.
    *
    * All callers in this file use _applyTransition instead of applyItemTransition
    * directly so that notification dispatch is uniform and not scattered.
+   *
+   * Broadcast order per transition: DB commit → notice frame → item.state frame
+   * (item.state is emitted by the caller via _broadcastItemState after this returns).
    */
   private _applyTransition(
     params: Parameters<typeof applyItemTransition>[0],
   ): ReturnType<typeof applyItemTransition> {
     const result = applyItemTransition(params);
-    if (result.pendingAttentionRowId != null && this.notifyFn) {
-      this.notifyFn({
-        workflowId: params.workflowId,
-        pendingAttentionRowId: result.pendingAttentionRowId,
-      });
+    if (result.pendingAttentionRowId != null) {
+      this._emitAttentionNotice(params.workflowId, result.pendingAttentionRowId);
+      // A pending_attention row was inserted — schedule workflow.index.update so
+      // the sidebar's unreadEvents badge increments without a page reload.
+      this.scheduleIndexUpdate(params.workflowId);
     }
     return result;
+  }
+
+  /**
+   * Reads the pending_attention row and broadcasts a notice frame to all
+   * workflow subscribers.  Also fires the optional OS-push notifyFn.
+   *
+   * Separating this from _applyTransition makes it unit-testable in isolation
+   * (RC: private method with injected broadcastFn).
+   */
+  private _emitAttentionNotice(workflowId: string, pendingAttentionRowId: number): void {
+    const row = this.db
+      .reader()
+      .prepare('SELECT kind, payload FROM pending_attention WHERE id = ?')
+      .get(pendingAttentionRowId) as { kind: string; payload: string } | undefined;
+    if (!row) return;
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      payload = {};
+    }
+
+    const message = buildAttentionMessage(row.kind, payload);
+
+    this.broadcastFn(workflowId, null, 'notice', {
+      severity: 'requires_attention',
+      kind: row.kind,
+      message,
+      persistedAttentionId: pendingAttentionRowId,
+    });
+
+    if (this.notifyFn) {
+      this.notifyFn({ workflowId, pendingAttentionRowId });
+    }
   }
 
   /**
@@ -378,6 +450,48 @@ export class Scheduler {
     if (result.newState !== 'awaiting_retry') return;
     this.retryAfterAt.set(itemId, this.clockNow() + computeRetryBackoffMs(retryCount));
     if (result.retryMode) this.retryModeFor.set(itemId, result.retryMode);
+  }
+
+  /**
+   * Schedule a coalesced workflow.index.update broadcast for the given workflow.
+   * Multiple calls within 500 ms produce a single frame — prevents flooding when
+   * rapid transitions occur (e.g. a stage with many items all completing at once).
+   *
+   * Public so start.ts can share this emitter with the ackAttention and
+   * controlExecutor callbacks, giving a single per-workflow debounce boundary
+   * across all emission sites.
+   */
+  public scheduleIndexUpdate(workflowId: string): void {
+    const existing = this._indexUpdateTimers.get(workflowId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this._indexUpdateTimers.delete(workflowId);
+      this._emitIndexUpdate(workflowId);
+    }, 500);
+    this._indexUpdateTimers.set(workflowId, timer);
+  }
+
+  /**
+   * Query the DB at emission time and broadcast workflow.index.update.
+   * unreadEvents is always computed fresh from pending_attention — never cached.
+   */
+  private _emitIndexUpdate(workflowId: string): void {
+    const wf = this.db.reader()
+      .prepare('SELECT id, name, status, updated_at FROM workflows WHERE id = ?')
+      .get(workflowId) as { id: string; name: string; status: string; updated_at: string } | undefined;
+    if (!wf) return;
+    const countRow = this.db.reader()
+      .prepare(
+        'SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ? AND acknowledged_at IS NULL',
+      )
+      .get(workflowId) as { cnt: number };
+    this.broadcastFn(workflowId, null, 'workflow.index.update', {
+      id: wf.id,
+      name: wf.name,
+      status: wf.status,
+      updatedAt: wf.updated_at,
+      unreadEvents: countRow.cnt,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -487,6 +601,12 @@ export class Scheduler {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+    // Clear any pending index-update debounce timers so they don't fire on a
+    // closed DB after shutdown.
+    for (const timer of this._indexUpdateTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._indexUpdateTimers.clear();
 
     // Collect session IDs for in-flight entries that have a live handle.
     const inFlightSessionIds: string[] = [];
@@ -1008,17 +1128,9 @@ export class Scheduler {
         itemBlockedReason: item.blocked_reason,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
-      // Surface the failure to the UI. No session.started has been broadcast
-      // yet (it fires after spawn), so a stream.system_notice would have no
-      // host session in the render model — use a workflow-scoped notice
-      // instead, which the AttentionBanner / notification handler can render.
-      this.broadcastFn(wf.id, null, 'notice', {
-        severity: 'requires_attention' as const,
-        kind: 'prompt_assembly_failed',
-        message: `Prompt assembly failed for ${item.stage_id}/${phaseKey}: ${errMsg}`,
-      });
+      // Route through _applyTransition so the centralized emitter broadcasts
+      // a notice frame with persistedAttentionId (AC-4: no bare notice).
       const result = this._applyTransition({
         db: this.db,
         workflowId: wf.id,
@@ -1781,6 +1893,9 @@ export class Scheduler {
         status: finalStatus,
         completedAt: new Date().toISOString(),
       });
+
+      // Coalesced index update — sidebar chip needs the new terminal status.
+      this.scheduleIndexUpdate(workflowId);
     }
   }
 

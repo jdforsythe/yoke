@@ -113,6 +113,7 @@ export function makeControlExecutor(
   writer: Database.Database,
   killSession: KillSessionFn,
   broadcast: ControlBroadcastFn,
+  scheduleIndexUpdate?: (workflowId: string) => void,
 ): ControlExecutorFn {
   // Minimal DbPool-shaped adapter so applyItemTransition can reuse the writer
   // inside its own db.transaction() wrapper. BEGIN/COMMIT nest safely: each
@@ -234,6 +235,10 @@ export function makeControlExecutor(
       status: 'abandoned',
       cancelled: true,
     });
+
+    // ---- Schedule workflow.index.update (coalesced) ----------------------
+    // Sidebar chip needs the new 'abandoned' status; debounce handled by caller.
+    scheduleIndexUpdate?.(workflowId);
 
     return { status: 'accepted', cancelledItems: cancelledCount };
   };
