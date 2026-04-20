@@ -1,0 +1,297 @@
+{
+  "project": "yoke",
+  "round": 2,
+  "created": "2026-04-20T00:00:00Z",
+  "_topological_order": [
+    "r2-01",
+    "r2-03",
+    "r2-04",
+    "r2-05",
+    "r2-07",
+    "r2-08",
+    "r2-09",
+    "r2-12",
+    "r2-02",
+    "r2-06",
+    "r2-10",
+    "r2-11",
+    "r2-13"
+  ],
+  "features": [
+    {
+      "id": "r2-01",
+      "category": "broadcast",
+      "priority": 1,
+      "depends_on": [],
+      "description": "The engine inserts pending_attention rows on many failure paths (bootstrap_failed, retries_exhausted, revisit_limit, diff_check_fail, post-command action, prompt_assembly_failed, session_fail routed to awaiting_user). The scheduler fires notifyFn (OS push) but never broadcasts a WS notice frame with the persisted attention id. As a result the dashboard AttentionBanner is only populated from the initial workflow.snapshot; mid-run insertions are invisible until the user reloads or switches workflows. Fix: add a centralized emitter used by Scheduler._applyTransition. Whenever applyItemTransition returns a non-null pendingAttentionRowId, read the pending_attention row (SELECT kind, payload FROM pending_attention WHERE id = ?) and broadcast a notice frame {severity:'requires_attention', kind, message, persistedAttentionId} to workflow subscribers. Rework the existing scheduler.ts:~1008 prompt_assembly_failed path \u2014 it currently broadcasts without persistedAttentionId \u2014 to route through the centralized emitter. notifyFn and the WS broadcast are independent: both fire, neither gates the other.",
+      "acceptance_criteria": [
+        "tests/scheduler/attention-broadcasts.test.ts asserts every state-machine transition whose side-effects contain 'insert pending_attention' results in a notice frame with matching persistedAttentionId when driven through Scheduler._applyTransition",
+        "tests/notifications/attention-roundtrip.test.ts (landed in round 1) is extended to cover the live path: engine inserts row \u2192 notice frame arrives over WS \u2192 ack clears the row \u2192 workflow.update arrives",
+        "A new Playwright spec src/web/e2e/real/live-attention.spec.ts seeds a failing bootstrap, runs the workflow via the real-backend fixture, and asserts AttentionBanner renders with the correct kind within 2s and without a page reload",
+        "The prompt_assembly_failed path at scheduler.ts emits a notice with persistedAttentionId populated \u2014 not a bare notice"
+      ],
+      "review_criteria": [
+        "Attention kind and payload are read from the pending_attention table at broadcast time, never hardcoded at call sites",
+        "Broadcast order per transition: DB commit \u2192 notice frame \u2192 item.state frame",
+        "notifyFn (OS push) and broadcast happen from the same codepath; disabling notifyFn (by leaving SchedulerOpts.notify undefined) does NOT disable the WS broadcast",
+        "The emitter is a private method of Scheduler or a free function with injected broadcast \u2014 unit-testable in isolation with a fake broadcast callback",
+        "No double-broadcast: a single transition produces at most one notice frame per inserted pending_attention row"
+      ]
+    },
+    {
+      "id": "r2-02",
+      "category": "ui-behavior",
+      "priority": 1,
+      "depends_on": [
+        "r2-01"
+      ],
+      "description": "The AttentionBanner's per-item acknowledge button only POSTs to /api/workflows/:id/attention/:aid/ack. That marks pending_attention.acknowledged_at but does not transition items out of awaiting_user, so the workflow remains stuck even though the banner card is hidden. Fix: classify each pending_attention.kind as retryable or not, and for retryable kinds the button (labelled 'Resume') POSTs the ack call THEN /api/workflows/:id/retry. For round 2, every kind the engine currently emits (bootstrap_failed, awaiting_user_retry, revisit_limit, and seed_failed once r2-06 lands) is retryable. Round 3 will add stage_needs_approval handling \u2014 that kind will NOT be in RETRYABLE_KINDS. The retry call is safe-by-default: if no items are in awaiting_user, it returns {status:'none_awaiting'} and the UI ignores it. The ack call MUST fire before the retry call; if ack fails, retry is not attempted. Optimistic hide of the banner card happens on ack success, not retry success.",
+      "acceptance_criteria": [
+        "src/web/src/components/AttentionBanner/AttentionBanner.tsx exports a RETRYABLE_KINDS set and routes the click accordingly \u2014 'Resume' for retryable kinds, 'Dismiss' for non-retryable",
+        "Unit test tests/web/attentionBanner-kind-classification.test.ts iterates every kind listed in src/server/pipeline/engine.ts KIND_MAP and asserts classification via the set",
+        "A Playwright spec src/web/e2e/real/resume-workflow.spec.ts seeds a retries_exhausted item, clicks Resume, and asserts the item transitions back to in_progress within 2s",
+        "The retry call returning none_awaiting does not surface an error toast \u2014 the banner has already been optimistically hidden"
+      ],
+      "review_criteria": [
+        "Adding a new kind to engine.ts KIND_MAP without classifying it in the UI RETRYABLE_KINDS set fails the exhaustiveness unit test",
+        "ack fires before retry; retry is skipped if ack returns non-2xx",
+        "Optimistic hide triggers on ack success only; retry is fire-and-forget",
+        "The button label is derived from the kind, not hardcoded per banner row"
+      ]
+    },
+    {
+      "id": "r2-03",
+      "category": "broadcast",
+      "priority": 1,
+      "depends_on": [],
+      "description": "workflow.index.update is declared in src/server/api/frames.ts but never broadcast. The sidebar's workflow rows (name, status chip, unreadEvents badge) are populated from GET /api/workflows and patched via this frame type; since nothing emits it, the chip stays on its initial value for the full run. Fix: scheduler broadcasts workflow.index.update on (a) workflows.status changes and (b) unreadEvents count changes. Emission sites: applyWorkflowComplete (scheduler._handleStageComplete), control-executor cancel path, pending_attention insert (via Scheduler._applyTransition wherever pendingAttentionRowId is returned), and ack-attention (a new counterpart broadcast alongside the existing workflow.update). Payload matches WorkflowIndexUpdatePayload {id, name, status, updatedAt, unreadEvents}. unreadEvents = SELECT COUNT(*) FROM pending_attention WHERE workflow_id = ? AND acknowledged_at IS NULL. Coalesce emissions within 500ms per workflow id to avoid flooding.",
+      "acceptance_criteria": [
+        "Emission at every site above; a unit test in tests/scheduler/index-updates.test.ts drives each scenario and asserts the frame",
+        "Coalescing: two emissions within 500ms produce a single frame; test exercises this with fake timers",
+        "src/web/e2e/real/sidebar-live-status.spec.ts seeds a workflow, completes it, and asserts the sidebar chip updates to 'completed' without a page reload",
+        "unreadEvents is computed at emission time from the pending_attention table, not cached in memory",
+        "Cross-workflow isolation: ack on workflow A fires index.update for A only, never for B"
+      ],
+      "review_criteria": [
+        "Coalescing is implemented as a per-workflow debounced emitter, not global",
+        "Payload shape matches WorkflowIndexUpdatePayload exactly \u2014 no extra fields",
+        "The SELECT COUNT query is not run on every tick \u2014 only when an emission is due"
+      ]
+    },
+    {
+      "id": "r2-04",
+      "category": "ui-behavior",
+      "priority": 1,
+      "depends_on": [],
+      "description": "The right-hand stream pane's session id is derived from a single global activeSessionId. It is set to the LAST entry in workflow.snapshot.activeSessions[] on subscribe, then overwritten by every session.started frame regardless of which item started. When multiple items run in parallel (per-item stage with 4 concurrent items), the pane flickers between streams and the user cannot focus on one. Fix: replace the global field with a per-item map itemActiveSession: Map<itemId, {sessionId, phase, startedAt}>. Build it from workflow.snapshot.activeSessions[] (which must carry itemId per entry \u2014 server-side projection update required) and maintain it via session.started (upsert) and session.ended (remove). The pane derives its scope from selectedItemId: items.get(selectedItemId)?.activeSession ?? null. When the selected item has no active session, the pane shows 'Select an item to view its session' or (if the item has past sessions) defaults to the History tab. When the selected item's session ends, the pane freezes on its last frames and shows 'Session ended' \u2014 it does NOT auto-switch to another item's active session.",
+      "acceptance_criteria": [
+        "src/web/src/routes/WorkflowDetailRoute.tsx maintains Map<itemId, ActiveSession> in state; the old activeSessionId field is removed entirely (TypeScript errors where it was read force exhaustive refactor)",
+        "src/server/api/ws.ts workflow.snapshot projection includes itemId on each activeSessions[] entry; tests/api/fastify-ws.test.ts covers the shape",
+        "src/web/e2e/real/parallel-items-stream.spec.ts seeds 3 parallel items, drives session.started for each via the real backend, clicks item A \u2014 asserts A's stream renders; clicks item B within 2s \u2014 asserts B's stream renders and A's state is preserved in the map",
+        "src/web/e2e/real/session-end-no-autoswitch.spec.ts seeds 2 parallel items, selects A, drives A's session.ended \u2014 asserts the pane shows 'Session ended' and does NOT switch to B",
+        "Deep link /workflow/:id/item/:itemId pre-selects the item and shows its session if active",
+        "tests/web/reducer.test.ts covers map set/clear on session.started / session.ended / workflow.snapshot"
+      ],
+      "review_criteria": [
+        "The old activeSessionId field is gone \u2014 no local shim preserved for backwards compat",
+        "Map operations are O(1); no array scans per frame",
+        "ControlMatrix receives the per-item session id, not a global one \u2014 session-scoped actions operate on the right session",
+        "ReviewPanel and LiveStreamPane receive sessionId scoped to selectedItemId, never a different item's",
+        "No polling; the map is maintained solely via WS frames"
+      ]
+    },
+    {
+      "id": "r2-05",
+      "category": "broadcast",
+      "priority": 1,
+      "depends_on": [],
+      "description": "src/server/pipeline/control-executor.ts fires applyItemTransition(user_cancel) for every non-terminal item during workflow cancel, then broadcasts a single workflow.update at the end. Per-item item.state frames are never emitted, so the FeatureBoard continues to show pre-cancel item statuses until the user reloads. Fix: inject a BroadcastFn into makeControlExecutor (currently only killSession and a workflow-scope broadcast are injected). For each item cancelled, emit an item.state frame with {itemId, stageId, state: {status: 'abandoned', currentPhase, retryCount, blockedReason: null}}. Ordering: all item.state frames fire before the terminal workflow.update. Items already in a terminal state (skipped during cancel) do NOT receive a redundant item.state frame.",
+      "acceptance_criteria": [
+        "makeControlExecutor signature takes a BroadcastFn and emits per-item item.state frames on each transition",
+        "tests/api/control-execute.test.ts extended to assert the full ordered frame sequence: item.state \u00d7 N (where N = count of non-terminal items), then workflow.update \u00d7 1",
+        "src/web/e2e/real/cancel-item-frames.spec.ts seeds a running workflow with 3 in-progress items, clicks Cancel, and asserts every item's chip flips to 'abandoned' without a reload",
+        "A workflow with zero non-terminal items (only terminal ones) produces only the workflow.update frame, no item.state frames"
+      ],
+      "review_criteria": [
+        "Ordering: item.state frames fire before the terminal workflow.update",
+        "The broadcast callback is injected \u2014 no direct WsClientRegistry access in control-executor",
+        "An already-terminal item skipped during the cancel loop does NOT produce a redundant item.state frame",
+        "Broadcast happens AFTER the user_cancel applyItemTransition commit \u2014 not inside the transaction"
+      ]
+    },
+    {
+      "id": "r2-06",
+      "category": "engine",
+      "priority": 2,
+      "depends_on": [
+        "r2-01"
+      ],
+      "description": "src/server/scheduler/per-item-seeder.ts returns {kind:'error', message} when the items_from manifest cannot be read, parsed, or projected. scheduler.ts currently only logs to console; the placeholder item retries silently on every tick forever. A malformed manifest produces a stuck workflow with no signal to the user. Fix: add a new state-machine event seed_failed to the Event union in src/server/state-machine/states.ts; add a transition in transitions.ts covering (ready, seed_failed) with side-effect ['insert pending_attention{kind=seed_failed}']. The scheduler converts seedResult.kind === 'error' into applyItemTransition(seed_failed) which inserts the row and broadcasts a notice via r2-01's centralized emitter. Attention payload includes the message from seedResult. user_retry on a seed_failed / awaiting_user item re-runs seeding on the next tick.",
+      "acceptance_criteria": [
+        "seed_failed event added to Event union; tests/state-machine/exhaustiveness.test.ts automatically picks it up",
+        "TRANSITIONS table covers (appropriate_state, seed_failed) with the pending_attention side effect",
+        "tests/scheduler/per-item-seeder-error.test.ts asserts: seed error \u2192 pending_attention inserted with kind=seed_failed \u2192 notice frame broadcast \u2192 placeholder item in awaiting_user \u2192 NO further seed attempts until ack+retry \u2192 after user_retry \u2192 seed runs again",
+        "The CLI yoke status command surfaces the failed workflow clearly",
+        "A Playwright spec seeds a malformed manifest file, boots the backend, and asserts the banner appears with kind=seed_failed",
+        "pending_attention.payload contains the seeder error message (truncated if very long)"
+      ],
+      "review_criteria": [
+        "The seed-error path no longer tight-loops \u2014 verified by a test that drives 10 ticks and asserts seeding was attempted exactly once per tick BEFORE attention fired, then zero further attempts after",
+        "user_retry on a seed_failed item actually re-runs seeding, not just transitions state",
+        "Attention payload is human-readable; don't dump raw stack traces"
+      ]
+    },
+    {
+      "id": "r2-07",
+      "category": "ui-behavior",
+      "priority": 1,
+      "depends_on": [],
+      "description": "src/web/src/components/ControlMatrix/ControlMatrix.tsx RULES use status vocabulary ('failed', 'paused', 'cancelled', 'complete') that does not match the engine's WorkflowStatus union (pending, in_progress, completed, completed_with_blocked, abandoned) or the State union (pending, ready, bootstrapping, bootstrap_failed, in_progress, awaiting_retry, rate_limited, awaiting_user, blocked, complete, abandoned). Rules for retry/pause/resume/rerun-phase/unblock always return false. Separately, 7 of 10 actions have no server-side executor \u2014 clicking them returns HTTP 400. Fix: rewrite RULES over the real unions (imported from src/shared/types/, landed in round 1); introduce const SUPPORTED_ACTIONS = new Set(['cancel', 'retry']) and hide any action whose key is not in the set at render time. Retry button visible when any item in the workflow is in awaiting_user OR awaiting_retry.",
+      "acceptance_criteria": [
+        "Every RULES entry references only status values from the imported WorkflowStatus and State unions",
+        "SUPPORTED_ACTIONS = new Set(['cancel', 'retry']); only these actions render",
+        "Unit test tests/web/controlMatrix.test.ts iterates every ControlPayload['action'] \u00d7 every State value and asserts rule output matches a truth table in the test",
+        "Retry button appears when any item in the workflow is in awaiting_user or awaiting_retry"
+      ],
+      "review_criteria": [
+        "Removing a state from the WorkflowStatus or State union causes TypeScript errors wherever it was switched on",
+        "Adding a new action to SUPPORTED_ACTIONS is a one-line change (and the truth table test catches missing rule entries)",
+        "'retry' POSTs to /api/workflows/:id/retry (workflow-scoped); round 2 does not add per-item retry",
+        "Hidden actions are not rendered at all \u2014 no disabled-but-visible buttons"
+      ]
+    },
+    {
+      "id": "r2-08",
+      "category": "engine",
+      "priority": 1,
+      "depends_on": [],
+      "description": "src/server/github/service.ts exports initGithubState() but no production code calls it. Every workflow row has github_state = NULL; the UI's GithubButton reads null and renders nothing. Fix: call initGithubState from src/server/scheduler/ingest.ts after the workflow INSERT, inside the same transaction. Resolve owner/repo by running `git -C <configDir> remote get-url origin` and parsing the URL. Handle SSH (git@github.com:owner/repo.git) and HTTPS (https://github.com/owner/repo.git), with or without trailing .git and / suffixes, case-insensitive on the host. Resume path (isResume=true) does NOT re-init. Offline-safe: parsing never makes network calls.",
+      "acceptance_criteria": [
+        "initGithubState is called from ingestWorkflow; every new workflow has non-null github_state",
+        "Remote URL parsing covered by tests in tests/github/remote-parse.test.ts: SSH, HTTPS, with/without .git, trailing slash, case variations, malformed (\u2192 unconfigured)",
+        "Malformed remote \u2192 'unconfigured' status, NOT a thrown error (ingest must not fail on this)",
+        "tests/scheduler/ingest.test.ts asserts all three init paths: disabled (github.enabled=false), unconfigured (github.enabled=true, no remote), idle (github.enabled=true, remote parsed)",
+        "Resume path: a second ingest against the same workflow does not re-call initGithubState"
+      ],
+      "review_criteria": [
+        "No dependency on the github remote being reachable at ingest \u2014 the git command never contacts origin",
+        "git remote invocation uses the injected git helper pattern, not raw child_process.exec",
+        "Parser is a pure function in a standalone module (src/server/github/remote-parse.ts) \u2014 unit-testable without a repo",
+        "Resume detection uses the existing isResume flag returned by ingestWorkflow"
+      ]
+    },
+    {
+      "id": "r2-09",
+      "category": "engine",
+      "priority": 1,
+      "depends_on": [],
+      "description": "No production code pushes branches to origin. src/server/github/push-guard.ts only checks whether a branch is pushed; if not, it returns ok:false. Nothing actually pushes. Fix: add src/server/github/push.ts exporting pushBranch(branchName: string, worktreePath: string, deps: { execGit }): Promise<PushResult>. Runs `git -C <worktreePath> push -u origin <branchName>` via injected execGit. Classify errors by stderr substring match: auth_failed ('authentication', 'permission denied', 'could not read Username', 'could not read Password'); non_fast_forward ('non-fast-forward', 'updates were rejected', 'fetch first'); network_failed ('could not resolve', 'network is unreachable', 'timeout', 'connection refused'); other (anything else). Returns {ok:true} or {ok:false, kind, message, rawStderr}.",
+      "acceptance_criteria": [
+        "src/server/github/push.ts exports pushBranch with the specified signature",
+        "tests/github/push.test.ts covers the success path and all four error classifications (using a stub execGit that returns canned stderr for each)",
+        "No other `git push` invocation exists in the codebase \u2014 grep proves it",
+        "pushBranch never invokes --force"
+      ],
+      "review_criteria": [
+        "Error classification is structural \u2014 match on specific stderr substrings, don't invent reasons from exit codes alone",
+        "Respects pre-push hooks (no --no-verify or --no-gpg-sign flags)",
+        "Works against worktree path, not configDir \u2014 the branch lives in the worktree",
+        "The rawStderr field is included for debugging but never surfaced in user-facing messages"
+      ]
+    },
+    {
+      "id": "r2-10",
+      "category": "engine",
+      "priority": 1,
+      "depends_on": [
+        "r2-08",
+        "r2-09",
+        "r2-12"
+      ],
+      "description": "Extend Scheduler._handleStageComplete so when the FINAL stage completes with finalStatus \u2208 {completed, completed_with_blocked} AND config.github.enabled AND config.github.auto_pr, the scheduler runs pushBranch \u2192 createPr in sequence. Title = workflow.name. Body = last 10 commit subjects prefixed with 'Auto-generated by yoke on <ISO timestamp>' + a 'Recent handoff note' section from the latest non-harness-injected handoff entry if present. Push or PR failures write 'failed' state via _writeGithubState; they do NOT retry and do NOT throw. Abandoned workflows do NOT trigger. completed_with_blocked DOES trigger. Executed asynchronously so the scheduler is not blocked more than 10s (use an injected async runner for test determinism).",
+      "acceptance_criteria": [
+        "Integration test in tests/scheduler/auto-pr-on-complete.test.ts: workflow with github.enabled=true, auto_pr=true completes \u2192 pushBranch called \u2192 createPr called \u2192 workflows.github_pr_number non-null",
+        "github.auto_pr=false \u2192 no push or PR (asserted via call counts on stubs)",
+        "github.enabled=false \u2192 same",
+        "Abandoned workflow \u2192 no PR attempt",
+        "completed_with_blocked \u2192 PR IS attempted",
+        "Push failure \u2192 github_state='failed'; no PR creation attempted",
+        "Push success + PR failure \u2192 github_state='failed'; branch remains pushed",
+        "Timeout: integration test asserts completion within 10s",
+        "PR body builder is unit-tested as a pure function in tests/github/pr-body.test.ts"
+      ],
+      "review_criteria": [
+        "Errors never throw out of _handleStageComplete \u2014 caught and written to github_state",
+        "The PR body builder is pure; takes {workflowName, recentCommits, lastHandoffNote} and returns a string",
+        "Reuses the existing createPr function from src/server/github/service.ts \u2014 no forked PR-creation logic",
+        "Async path does not hold a scheduler tick \u2014 runs on its own promise chain"
+      ]
+    },
+    {
+      "id": "r2-11",
+      "category": "api-feature",
+      "priority": 1,
+      "depends_on": [
+        "r2-09",
+        "r2-12"
+      ],
+      "description": "Add POST /api/workflows/:id/github/create-pr to src/server/api/server.ts. Accepts body {commandId: string} and is idempotent (uses the existing IdempotencyStore). Delegates to an injected CreatePrExecutorFn following the same pattern as ackAttention / retryItems / controlExecutor (no SQLite writes in the API layer). Executor validates: workflow exists (404), workflow status \u2208 terminal set (409 otherwise), github_state \u2208 {idle, failed} (409 otherwise). On accepted path: runs pushBranch then createPr, returns {status:'created', prNumber, prUrl, usedPath}. Cached response replays byte-for-byte on second invocation with same commandId. UI: GithubButton adds 'Create PR' when (workflowStatus \u2208 terminal AND githubState.status \u2208 {idle, failed}). Button transitions to spinner on workflow.update with githubState.status='creating' (fired by r2-12). Final 'created' state renders 'PR #N' link.",
+      "acceptance_criteria": [
+        "Endpoint in src/server/api/server.ts following the same injection pattern as /retry and /attention/ack \u2014 no SQLite writes in the API layer",
+        "tests/api/github-create-pr.test.ts covers: 200 happy path, 409 non-terminal, 409 already created, 409 creating in progress, 404 unknown workflow, idempotent replay",
+        "src/web/e2e/real/create-pr-manual.spec.ts seeds a completed workflow, clicks Create PR, asserts WS sequence {creating \u2192 created} and final button text 'PR #N'",
+        "Double-click with different commandIds returns 409",
+        "Double-click with same commandId returns cached response \u2014 test asserts byte-equality"
+      ],
+      "review_criteria": [
+        "Same injection pattern as ackAttention / retryItems / controlExecutor",
+        "Reuses the round-2 createPr function \u2014 no forked logic",
+        "409 response body includes current github_state",
+        "Idempotency cache stores exact response body for byte-for-byte replay",
+        "Button visibility rule is a pure function of {workflowStatus, githubState.status} \u2014 unit-tested"
+      ]
+    },
+    {
+      "id": "r2-12",
+      "category": "broadcast",
+      "priority": 1,
+      "depends_on": [],
+      "description": "src/server/github/service.ts _writeGithubState commits the DB transaction but never broadcasts. UI subscribers to workflow.update never see github state transitions live. Fix: _writeGithubState takes an injected BroadcastFn. After db.transaction() returns, it emits broadcast(workflowId, 'workflow.update', {githubState: {status, prNumber?, prUrl?, prState?, error?, lastCheckedAt}}). Broadcast happens AFTER the transaction commits, so a rollback suppresses the broadcast.",
+      "acceptance_criteria": [
+        "_writeGithubState accepts a BroadcastFn and emits workflow.update after every commit",
+        "tests/github/service.test.ts extended with a recording broadcast stub asserting fire count and payload shape for every state transition",
+        "src/web/e2e/real/pr-button-live.spec.ts asserts the button transitions idle \u2192 Creating PR spinner \u2192 PR #N in response to WS frames, without a page reload",
+        "Test: if db.transaction callback throws (rollback), no broadcast fires"
+      ],
+      "review_criteria": [
+        "Broadcast happens AFTER db.transaction() returns \u2014 transaction rollback suppresses the broadcast",
+        "Payload shape matches the GithubStatePayload projection used by the UI \u2014 no extra fields",
+        "BroadcastFn is injected through GithubServiceDeps, not a module-level import"
+      ]
+    },
+    {
+      "id": "r2-13",
+      "category": "config",
+      "priority": 2,
+      "depends_on": [
+        "r2-08",
+        "r2-09",
+        "r2-10",
+        "r2-11",
+        "r2-12"
+      ],
+      "description": "Add a github section to the active pipeline config (.yoke.yml) and .yoke-round-3.yml. Section: {enabled: true, auto_pr: true, pr_target_branch: master, auth_order: ['env:GITHUB_TOKEN', 'gh:auth:token']}. This card lands the config change for auditability: round 2's exit state must have github wired in the self-host pipeline.",
+      "acceptance_criteria": [
+        ".yoke.yml contains the github section with enabled=true, auto_pr=true, pr_target_branch=master, auth_order=[env:GITHUB_TOKEN, gh:auth:token]",
+        ".yoke-round-3.yml contains the same section",
+        "pnpm typecheck still passes",
+        "tests/scheduler/ingest.test.ts confirms the config is parsed without warnings"
+      ],
+      "review_criteria": [
+        "pr_target_branch is master",
+        "auth_order lists env:GITHUB_TOKEN first",
+        "Both config files are kept in sync"
+      ]
+    }
+  ]
+}

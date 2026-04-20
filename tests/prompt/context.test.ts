@@ -496,7 +496,46 @@ describe('buildPromptContext — once-stage excludes per-item variables', () => 
 });
 
 // ---------------------------------------------------------------------------
-// § 6  End-to-end: context feeds assemblePrompt correctly
+// § 6  pre-02: stage.items_from threading
+// ---------------------------------------------------------------------------
+
+describe('buildPromptContext — stage.items_from (pre-02)', () => {
+  it('stage.items_from equals the passed-in itemsFrom value', async () => {
+    const ctx = await buildPromptContext({
+      workflow: WORKFLOW,
+      stage: { id: 'implementation', run: 'per-item', itemsFrom: 'docs/idea/round-2-features.json' },
+      worktreePath: tmpDir,
+      git: STUB_GIT,
+    });
+    const stage = ctx['stage'] as Record<string, unknown>;
+    expect(stage['items_from']).toBe('docs/idea/round-2-features.json');
+  });
+
+  it('stage.items_from is "" when itemsFrom is undefined', async () => {
+    const ctx = await buildPromptContext({
+      workflow: WORKFLOW,
+      stage: { id: 'implementation', run: 'per-item' },
+      worktreePath: tmpDir,
+      git: STUB_GIT,
+    });
+    const stage = ctx['stage'] as Record<string, unknown>;
+    expect(stage['items_from']).toBe('');
+  });
+
+  it('stage.items_from is present for once-stage too', async () => {
+    const ctx = await buildPromptContext({
+      workflow: WORKFLOW,
+      stage: { id: 'plan', run: 'once', itemsFrom: 'docs/idea/plan-items.json' },
+      worktreePath: tmpDir,
+      git: STUB_GIT,
+    });
+    const stage = ctx['stage'] as Record<string, unknown>;
+    expect(stage['items_from']).toBe('docs/idea/plan-items.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// § 7  End-to-end: context feeds assemblePrompt correctly
 // ---------------------------------------------------------------------------
 
 describe('buildPromptContext + assemblePrompt — end-to-end', () => {

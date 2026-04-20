@@ -1,0 +1,112 @@
+{
+  "project": "yoke",
+  "round": 3,
+  "created": "2026-04-20T00:00:00Z",
+  "_topological_order": [
+    "r3-01",
+    "r3-02",
+    "r3-03",
+    "r3-04",
+    "r3-05",
+    "r3-06"
+  ],
+  "features": [
+    {
+      "id": "r3-01",
+      "category": "build",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Root tsconfig.build.json excludes src/web as a workaround for a JSX config conflict. Proper fix: switch to TypeScript project references so the root build composes server + web workspaces correctly, OR scope the root tsconfig's include to src/server, src/cli, src/shared and drop the exclude line entirely. Option 2 is the smaller change and is acceptable. The chosen approach must be documented in a comment at the top of tsconfig.build.json.",
+      "acceptance_criteria": [
+        "No `exclude` of src/web in tsconfig.build.json",
+        "pnpm build succeeds from repo root",
+        "pnpm --filter web build still succeeds",
+        "pnpm typecheck still covers both server and web",
+        "tsconfig.build.json has a top-of-file comment documenting the chosen approach"
+      ],
+      "review_criteria": [
+        "Decision (project references vs scoped include) documented",
+        "No regression in CI jobs that consume these build commands"
+      ]
+    },
+    {
+      "id": "r3-02",
+      "category": "ui-behavior",
+      "priority": 3,
+      "depends_on": [],
+      "description": "The current POST /api/workflows/:id/retry endpoint is workflow-scoped \u2014 it fires user_retry on ALL awaiting_user items in the workflow. Round 2's r2-07 aligned the UI's retry button to this scope. If per-item retry UX is desired, add POST /api/workflows/:id/items/:itemId/retry and a per-item UI entry point. Otherwise, document the workflow-scope decision inline so future contributors don't re-litigate. This card captures the decision.",
+      "acceptance_criteria": [
+        "Either option implemented and tested end-to-end",
+        "UI label and server endpoint scope match",
+        "tests/api/ covers the chosen path"
+      ],
+      "review_criteria": [
+        "Decision documented in a comment near the Retry button definition in ControlMatrix.tsx"
+      ]
+    },
+    {
+      "id": "r3-03",
+      "category": "ui-behavior",
+      "priority": 3,
+      "depends_on": [],
+      "description": "src/web/src/routes/WorkflowDetailRoute.tsx hardcodes activeSessionPhase === 'review' || 'pre_review' to activate ReviewPanel. Open-source users with phases named qa, audit, verify, etc. don't get the ReviewPanel. Replace with runtime detection: examine the active session's block stream for Task tool_use calls. Optional config override: add phases[name].ui.renderer = 'review' | 'stream' to docs/design/schemas/yoke-config.schema.json so a user can pin the renderer explicitly.",
+      "acceptance_criteria": [
+        "A phase named 'audit' that produces Task tool_use calls renders ReviewPanel",
+        "A review phase without Task calls falls back to LiveStreamPane",
+        "Unit test on the selector predicate (tests/web/reviewPanelDetection.test.ts)",
+        "Existing review-panel.spec.ts still green",
+        "docs/design/schemas/yoke-config.schema.json documents the optional override"
+      ],
+      "review_criteria": [
+        "Detection reacts within one frame of the first Task tool_use arriving \u2014 no polling",
+        "Explicit config override takes precedence over autodetection",
+        "Schema update is backwards-compatible (optional field)"
+      ]
+    },
+    {
+      "id": "r3-04",
+      "category": "ui-behavior",
+      "priority": 4,
+      "depends_on": [],
+      "description": "src/web/src/components/FeatureBoard/FeatureBoard.tsx falls back `item.displayTitle ?? item.id` where item.id is a SQLite UUID. Fallback should be the stable id extracted by the seeder from items_id JSONPath. Add stableId: string | null to ItemProjection; populate from src/server/scheduler/per-item-seeder.ts (and null for once-stage placeholders in ingest). Fallback chain: displayTitle ?? stableId ?? 'Seeding\u2026' for placeholders or ?? item.id if truly nothing available. Add items.stable_id TEXT column via migration 0004.",
+      "acceptance_criteria": [
+        "Migration 0004_item_stable_id.sql adds stable_id column with a partial index",
+        "Seeder writes stable_id when seeding per-item rows",
+        "ItemProjection carries stableId",
+        "FeatureBoard fallback chain is displayTitle ?? stableId ?? 'Seeding\u2026' for placeholders, ?? item.id otherwise",
+        "Unit test asserts the precedence order"
+      ],
+      "review_criteria": [
+        "Migration is forward-only; existing items without stable_id have NULL, not empty string",
+        "Once-stage placeholders render 'Seeding\u2026' or stage id, never the UUID"
+      ]
+    },
+    {
+      "id": "r3-05",
+      "category": "test-infra",
+      "priority": 4,
+      "depends_on": [],
+      "description": "src/web/e2e/control-matrix.spec.ts failed intermittently during round 1 verification. The flake was ruled out as unrelated to that round's changes but never root-caused. Reproduce with `pnpm --filter web test:e2e control-matrix.spec.ts --repeat-each=20`; identify the race (likely a WS frame dispatch vs DOM assertion); replace timing-dependent assertions with page.waitForResponse or WS-frame-received waits.",
+      "acceptance_criteria": [
+        "Spec passes 20/20 consecutive runs locally",
+        "No page.waitForTimeout(N) calls remain in the spec"
+      ],
+      "review_criteria": [
+        "Root cause identified and documented in the commit message or handoff note"
+      ]
+    },
+    {
+      "id": "r3-06",
+      "category": "meta",
+      "priority": 5,
+      "depends_on": [],
+      "description": "Placeholder for issues surfaced during round-2 pipeline execution that are not critical but should be tracked. Do not implement speculatively \u2014 this is a sentinel entry. When round-2 completes, triage emergent issues; if any rise to the level of a card, add them to this manifest under a new id (r3-07, r3-08, ...) and re-run round 3.",
+      "acceptance_criteria": [
+        "This card is explicitly struck (verdict PASS with note 'sentinel entry \u2014 no implementation required') by the reviewer if no emergent work exists, OR it is converted into one-or-more concrete cards with AC/RC before round 3 executes"
+      ],
+      "review_criteria": [
+        "Sentinel treatment is acceptable only if the round-2 execution review confirms no emergent blocking work"
+      ]
+    }
+  ]
+}

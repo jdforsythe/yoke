@@ -350,7 +350,101 @@ describe('replaceTemplateVars — engine edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
-// § 8  Full prompt assembly (end-to-end, no I/O)
+// § 8  pre-02: {{stage.items_from}} substitution
+// ---------------------------------------------------------------------------
+
+describe('assemblePrompt — pre-02 {{stage.items_from}}', () => {
+  it('{{stage.items_from}} resolves to the passed-in path string', () => {
+    const ctx: PromptContext = {
+      stage: { items_from: 'docs/idea/round-2-features.json' },
+    };
+    expect(assemblePrompt('Read `{{stage.items_from}}`', ctx)).toBe(
+      'Read `docs/idea/round-2-features.json`',
+    );
+  });
+
+  it('{{stage.items_from}} is "" when not set → empty substitution', () => {
+    const ctx: PromptContext = {
+      stage: { items_from: '' },
+    };
+    expect(assemblePrompt('path: {{stage.items_from}}', ctx)).toBe('path: ');
+  });
+
+  it('{{stage.items_from}} missing entirely → [MISSING:stage.items_from]', () => {
+    expect(assemblePrompt('{{stage.items_from}}', {})).toBe('[MISSING:stage.items_from]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// § 9  Render-smoke: self-host prompt files
+// ---------------------------------------------------------------------------
+
+describe('assemblePrompt — render-smoke: self-host-implement.md', () => {
+  it('renders without [MISSING:...] for a full context', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const templatePath = path.resolve(here, '../../prompts/self-host-implement.md');
+    const template = fs.readFileSync(templatePath, 'utf8');
+
+    const ctx: PromptContext = {
+      workflow_name: 'add-auth',
+      stage: { items_from: 'docs/idea/round-2-features.json' },
+      item_id: 'feat-001',
+      item: {
+        id: 'feat-001',
+        description: 'Login feature',
+        acceptance_criteria: ['AC-1: works'],
+        review_criteria: ['RC-1: no plaintext'],
+        depends_on: [],
+      },
+      architecture_md: '# Architecture',
+      git_log_recent: 'abc123 commit\n',
+      user_injected_context: '',
+      handoff: '[]',
+    };
+
+    const result = assemblePrompt(template, ctx);
+    expect(result).not.toContain('[MISSING:stage.items_from]');
+    expect(result).toContain('docs/idea/round-2-features.json');
+  });
+});
+
+describe('assemblePrompt — render-smoke: self-host-review.md', () => {
+  it('renders without [MISSING:...] for a full context', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const templatePath = path.resolve(here, '../../prompts/self-host-review.md');
+    const template = fs.readFileSync(templatePath, 'utf8');
+
+    const ctx: PromptContext = {
+      workflow_name: 'add-auth',
+      stage: { items_from: 'docs/idea/round-2-features.json' },
+      item_id: 'feat-001',
+      item: {
+        id: 'feat-001',
+        description: 'Login feature',
+        acceptance_criteria: ['AC-1: works'],
+        review_criteria: ['RC-1: no plaintext'],
+        depends_on: [],
+      },
+      architecture_md: '# Architecture',
+      git_log_recent: 'abc123 commit\n',
+      user_injected_context: '',
+      handoff: '[]',
+    };
+
+    const result = assemblePrompt(template, ctx);
+    expect(result).not.toContain('[MISSING:stage.items_from]');
+    expect(result).toContain('docs/idea/round-2-features.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// § 10  Full prompt assembly (end-to-end, no I/O)
 // ---------------------------------------------------------------------------
 
 describe('assemblePrompt — end-to-end full prompt example', () => {

@@ -138,8 +138,8 @@ export interface GitHelper {
 export interface PromptContextInputs {
   /** Workflow row from SQLite. */
   workflow: WorkflowRow;
-  /** Current stage configuration (id and run mode). */
-  stage: { id: string; run: 'once' | 'per-item' };
+  /** Current stage configuration (id, run mode, and optional manifest path). */
+  stage: { id: string; run: 'once' | 'per-item'; itemsFrom?: string };
   /** Item row from SQLite. Present only in per-item stage phases. */
   item?: ItemRow;
   /** Absolute path to the worktree directory. */
@@ -214,6 +214,7 @@ export async function buildPromptContext(inputs: PromptContextInputs): Promise<P
   const ctx: PromptContext = {
     workflow_name: workflow.name,
     stage_id: stage.id,
+    stage: { items_from: stage.itemsFrom ?? '' },
     architecture_md,
     git_log_recent,
     user_injected_context: userInjectedContext,

@@ -107,6 +107,7 @@ export type PromptAssemblerFn = (opts: {
   itemCurrentPhase: string | null;
   itemRetryCount: number;
   itemBlockedReason: string | null;
+  stageItemsFrom?: string;
 }) => Promise<string>;
 
 /** Injectable pre/post runner function (maps to runCommands from prepost/runner.ts). */
@@ -998,6 +999,7 @@ export class Scheduler {
         workflowName: wf.name,
         stageId: item.stage_id,
         stageRun: stage.run,
+        stageItemsFrom: stage.items_from,
         itemId: item.id,
         itemData: item.data,
         itemStatus: item.status,
