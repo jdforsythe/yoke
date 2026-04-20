@@ -1410,9 +1410,10 @@ export class Scheduler {
     };
     this.inFlight.set(item.id, inFlightEntry);
 
-    // Broadcast session.started.
+    // Broadcast session.started with itemId so the client can upsert itemActiveSession.
     this.broadcastFn(wf.id, sessionId, 'session.started', {
       sessionId,
+      itemId: item.id,
       phase: phaseKey,
       attempt,
       startedAt: new Date().toISOString(),
