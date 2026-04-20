@@ -16,13 +16,15 @@
  * parallel per-item sessions never bleed into each other.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
-import { dispatch, dispatchTextDelta, reset } from '@/store/renderStore';
+import { dispatch, dispatchTextDelta, reset, subscribe as subscribeRenderStore, getSessionBlocksSnapshot } from '@/store/renderStore';
 import { setAttentionCount } from '@/store/attentionStore';
 import { buildFromSnapshot, upsert, removeBySessionId } from '@/store/itemSessionMap';
 import type { ActiveSession } from '@/store/itemSessionMap';
+import { shouldUseReviewPanel } from '@/store/reviewPanelDetection';
+import type { RenderBlock } from '@/store/types';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
@@ -42,6 +44,14 @@ import type {
   ServerFrame,
   ControlPayload,
 } from '@/ws/types';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// Stable empty blocks reference returned by the render-store subscription when
+// no session is active. Object.freeze prevents accidental mutation.
+const EMPTY_RENDER_BLOCKS: readonly RenderBlock[] = Object.freeze([]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -131,6 +141,20 @@ export function WorkflowDetailRoute() {
       return getClient().sendControl(action, opts);
     },
     [],
+  );
+
+  // Subscribe to the render store so Task tool_use blocks can be detected within
+  // one frame of arrival — no polling (RC-1, r3-03).
+  // _activeSessionId is derived from current state before any early return so
+  // this hook is always called unconditionally (React hooks rule).
+  const _activeSessionId =
+    selectedItemId && state.itemActiveSession.has(selectedItemId)
+      ? state.itemActiveSession.get(selectedItemId)!.sessionId
+      : null;
+  const activeSessionBlocks = useSyncExternalStore(
+    subscribeRenderStore,
+    () =>
+      _activeSessionId ? getSessionBlocksSnapshot(_activeSessionId) : EMPTY_RENDER_BLOCKS,
   );
 
   // If no snapshot arrives within 8 s, treat the workflow ID as invalid.
@@ -393,8 +417,9 @@ export function WorkflowDetailRoute() {
   const endedSessionId: string | null =
     selectedItemId ? itemEndedSession.get(selectedItemId) ?? null : null;
 
-  const isReviewPhase =
-    activeSession?.phase === 'review' || activeSession?.phase === 'pre_review';
+  // RC-2: explicit config override (phases[name].ui.renderer) takes precedence;
+  // absent until the server projects it, so autodetection always runs for now.
+  const useReviewPanel = shouldUseReviewPanel(activeSessionBlocks);
   // Show tab bar when an item is selected or any per-item session is active.
   const showTabBar = !!(selectedItemId || itemActiveSession.size > 0);
 
@@ -515,7 +540,7 @@ export function WorkflowDetailRoute() {
 
               {/* Stream output */}
               <div className="flex-1 min-h-0">
-                {isReviewPhase ? (
+                {useReviewPanel ? (
                   <ReviewPanel sessionId={activeSession.sessionId} phase={activeSession.phase} />
                 ) : (
                   <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
