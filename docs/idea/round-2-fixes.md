@@ -10,18 +10,7 @@
      to the agent.
      ═══════════════════════════════════════════════════════════════════ -->
 
-## [USER] Step 1 — Commit remaining files and open PR
-
-The JSON manifests are already committed. Commit the yml files and push:
-
-```bash
-git add .yoke.yml .yoke-round-3.yml
-git commit -m "chore: add round-2/3 pipeline configs"
-git push -u origin prework/round-2-setup
-gh pr create --base master --title "pre-work: items_from plumbing + prompt rewrites for round 2"
-```
-
-## [USER] Step 2 — Run the agent
+## [USER] Step 1 — Run the agent
 
 Open a **fresh** Claude Code session on `prework/round-2-setup`.
 Delete the USER SECTION (everything above this line), then paste the remainder into the session.
