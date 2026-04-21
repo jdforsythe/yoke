@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { loadConfig } from '../server/config/loader.js';
+import { loadTemplate } from '../server/config/loader.js';
 import { ConfigLoadError } from '../server/config/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -171,50 +171,57 @@ export function checkGitRepo(
   }
 }
 
-/** 5. .yoke.yml valid */
-export function checkConfig(configPath: string): DoctorCheck {
+/** 5. .yoke/templates/default.yml valid */
+export function checkConfig(configDir: string): DoctorCheck {
+  const templateName = 'default';
+  const templatePath = `${configDir}/.yoke/templates/${templateName}.yml`;
   try {
-    loadConfig(configPath);
+    loadTemplate(configDir, templateName);
     return {
-      name: '.yoke.yml valid',
+      name: '.yoke/templates valid',
       passed: true,
-      message: `${configPath} loaded and validated`,
+      message: `${templatePath} loaded and validated`,
     };
   } catch (err) {
     if (err instanceof ConfigLoadError) {
       let remediation: string;
       switch (err.detail.kind) {
         case 'not_found':
-          remediation = `Create ${configPath} by running: yoke init`;
+          remediation = `Create ${templatePath} by running: yoke init`;
+          break;
+        case 'migration_error':
+          remediation =
+            `Move ${configDir}/.yoke.yml to ${configDir}/.yoke/templates/default.yml\n` +
+            `and rename the top-level 'project:' key to 'template:'.`;
           break;
         case 'parse_error':
           remediation =
-            `Fix YAML syntax in ${configPath}.\n` +
+            `Fix YAML syntax in ${templatePath}.\n` +
             `Check for indentation errors or unquoted special characters.`;
           break;
         case 'version_error':
-          remediation = `Set version: "1" (a quoted string) at the top of ${configPath}.`;
+          remediation = `Set version: "1" (a quoted string) at the top of ${templatePath}.`;
           break;
         case 'validation_error':
           remediation =
-            `Fix the schema violations listed above in ${configPath}.\n` +
+            `Fix the schema violations listed above in ${templatePath}.\n` +
             `Refer to docs/design/schemas/yoke-config.schema.json for the full schema.`;
           break;
         default:
-          remediation = `Review ${configPath} and fix the reported error.`;
+          remediation = `Review ${templatePath} and fix the reported error.`;
       }
       return {
-        name: '.yoke.yml valid',
+        name: '.yoke/templates valid',
         passed: false,
         message: err.message,
         remediation,
       };
     }
     return {
-      name: '.yoke.yml valid',
+      name: '.yoke/templates valid',
       passed: false,
       message: `Unexpected error: ${(err as Error).message}`,
-      remediation: `Check ${configPath} for issues.`,
+      remediation: `Check ${templatePath} for issues.`,
     };
   }
 }
@@ -224,15 +231,15 @@ export function checkConfig(configPath: string): DoctorCheck {
 // ---------------------------------------------------------------------------
 
 export interface RunChecksOptions {
-  /** Path to .yoke.yml. Default: <cwd>/.yoke.yml */
-  configPath?: string;
+  /** Repo root containing the .yoke/ folder. Default: cwd */
+  configDir?: string;
   cwd?: string;
 }
 
 /** Run all five doctor checks and return results. */
 export async function runChecks(opts: RunChecksOptions = {}): Promise<DoctorCheck[]> {
   const cwd = opts.cwd ?? process.cwd();
-  const configPath = opts.configPath ?? path.join(cwd, '.yoke.yml');
+  const configDir = opts.configDir ?? cwd;
 
   const sqliteCheck = await checkSqlite();
 
@@ -241,7 +248,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<DoctorChec
     sqliteCheck,
     checkGit(),
     checkGitRepo(cwd),
-    checkConfig(configPath),
+    checkConfig(configDir),
   ];
 }
 
@@ -273,10 +280,10 @@ export function register(program: Command): void {
   program
     .command('doctor')
     .description('Check Node >= 20, SQLite, git >= 2.20, and .yoke.yml validity')
-    .option('-c, --config <path>', 'Path to .yoke.yml', '.yoke.yml')
-    .action(async (opts: { config: string }) => {
-      const configPath = path.resolve(opts.config);
-      const checks = await runChecks({ configPath });
+    .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
+    .action(async (opts: { configDir: string }) => {
+      const configDir = path.resolve(opts.configDir);
+      const checks = await runChecks({ configDir });
 
       console.log(formatDoctorOutput(checks));
 

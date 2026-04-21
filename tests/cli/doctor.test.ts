@@ -25,6 +25,13 @@ function removeTmpDir(d: string): void {
   fs.rmSync(d, { recursive: true, force: true });
 }
 
+/** Write a template to <tmpDir>/.yoke/templates/default.yml */
+function writeDefaultTemplate(tmpDir: string, content: string): void {
+  const templatesDir = path.join(tmpDir, '.yoke', 'templates');
+  fs.mkdirSync(templatesDir, { recursive: true });
+  fs.writeFileSync(path.join(templatesDir, 'default.yml'), content, 'utf8');
+}
+
 const MINIMAL_CONFIG = `version: "1"
 template:
   name: test-project
@@ -48,14 +55,11 @@ phases:
 describe('checkNode()', () => {
   it('passes on the current Node.js (must be >= 20 in CI)', () => {
     const result = checkNode();
-    // This test environment must use Node >= 20 — it will fail otherwise,
-    // which is intentional: Yoke itself requires Node 20.
     expect(result.passed).toBe(true);
     expect(result.message).toContain('Node.js');
   });
 
   it('reports failure for Node 18', () => {
-    // Temporarily override process.versions.node
     const original = process.versions.node;
     Object.defineProperty(process.versions, 'node', {
       configurable: true,
@@ -120,7 +124,6 @@ describe('checkSqlite()', () => {
 
   it('has actionable remediation text even on success path (structure check)', async () => {
     const result = await checkSqlite();
-    // On success, no remediation needed.
     expect(result.remediation).toBeUndefined();
   });
 });
@@ -132,8 +135,6 @@ describe('checkSqlite()', () => {
 describe('checkGit()', () => {
   it('passes on the current git (must be >= 2.20 in CI)', () => {
     const result = checkGit();
-    // If git is not installed or too old, this test will fail — matching the
-    // doctor's own assertion about the environment.
     expect(result.passed).toBe(true);
     expect(result.message).toContain('git version');
   });
@@ -167,12 +168,10 @@ describe('checkGit()', () => {
 
 describe('checkGitRepo()', () => {
   it('passes when the directory is inside a git repository', () => {
-    // Inject a no-op executor to simulate success (no-throw = git repo found).
     const passExec: GitRepoExecutor = (_cwd: string) => { /* success */ };
     const result = checkGitRepo('/some/repo', passExec);
     expect(result.passed).toBe(true);
     expect(result.name).toBe('git repository');
-    // RC-2: message includes the directory path.
     expect(result.message).toContain('/some/repo');
   });
 
@@ -183,10 +182,8 @@ describe('checkGitRepo()', () => {
     const result = checkGitRepo('/tmp/not-a-repo', failExec);
     expect(result.passed).toBe(false);
     expect(result.name).toBe('git repository');
-    // RC-2: message includes the directory and the failing command.
     expect(result.message).toContain('/tmp/not-a-repo');
     expect(result.message).toContain('git rev-parse --show-toplevel');
-    // AC-2: actionable fix hint.
     expect(result.remediation).toBeTruthy();
     expect(result.remediation).toContain('git init');
   });
@@ -203,8 +200,6 @@ describe('checkGitRepo()', () => {
   });
 
   it('passes against the real process.cwd() (must be inside a git repo in CI)', () => {
-    // This test uses the real git executor. The test suite itself runs from
-    // inside a git repository, so this should pass.
     const result = checkGitRepo(process.cwd());
     expect(result.passed).toBe(true);
   });
@@ -218,49 +213,50 @@ describe('checkConfig()', () => {
   let tmpDir: string;
   beforeEach(() => {
     tmpDir = makeTmpDir();
-    // Prompt template so loadConfig resolves paths without error.
+    // Prompt template so loadTemplate resolves paths without error.
     const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
     fs.mkdirSync(promptsDir, { recursive: true });
     fs.writeFileSync(path.join(promptsDir, 'implement.md'), '# Implement\n', 'utf8');
   });
   afterEach(() => removeTmpDir(tmpDir));
 
-  it('passes for a valid .yoke.yml', () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
-    const result = checkConfig(configPath);
+  it('passes for a valid default template', () => {
+    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
+    const result = checkConfig(tmpDir);
     expect(result.passed).toBe(true);
-    expect(result.message).toContain(configPath);
+    expect(result.message).toContain(tmpDir);
   });
 
-  it('fails with not_found when file is missing', () => {
-    const configPath = path.join(tmpDir, 'nonexistent.yml');
-    const result = checkConfig(configPath);
+  it('fails with not_found when template file is missing', () => {
+    const result = checkConfig(tmpDir);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('yoke init');
   });
 
+  it('fails with migration_error when root .yoke.yml exists', () => {
+    fs.writeFileSync(path.join(tmpDir, '.yoke.yml'), MINIMAL_CONFIG, 'utf8');
+    const result = checkConfig(tmpDir);
+    expect(result.passed).toBe(false);
+    expect(result.remediation).toContain('.yoke/templates/');
+  });
+
   it('fails with parse_error and actionable remediation for invalid YAML', () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, '{ this is: [bad yaml\n', 'utf8');
-    const result = checkConfig(configPath);
+    writeDefaultTemplate(tmpDir, '{ this is: [bad yaml\n');
+    const result = checkConfig(tmpDir);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('indentation');
   });
 
   it('fails with version_error and actionable remediation', () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, 'version: "2"\ntemplate:\n  name: x\n', 'utf8');
-    const result = checkConfig(configPath);
+    writeDefaultTemplate(tmpDir, 'version: "2"\ntemplate:\n  name: x\n');
+    const result = checkConfig(tmpDir);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('version: "1"');
   });
 
   it('fails with validation_error and schema reference remediation', () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    // Missing required fields.
-    fs.writeFileSync(configPath, 'version: "1"\ntemplate:\n  name: x\n', 'utf8');
-    const result = checkConfig(configPath);
+    writeDefaultTemplate(tmpDir, 'version: "1"\ntemplate:\n  name: x\n');
+    const result = checkConfig(tmpDir);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('schema');
   });
@@ -281,29 +277,26 @@ describe('runChecks()', () => {
   afterEach(() => removeTmpDir(tmpDir));
 
   it('returns exactly 5 checks', async () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
-    const checks = await runChecks({ configPath });
+    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
+    const checks = await runChecks({ configDir: tmpDir });
     expect(checks).toHaveLength(5);
   });
 
   it('check names include all five categories', async () => {
-    const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
-    const checks = await runChecks({ configPath });
+    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
+    const checks = await runChecks({ configDir: tmpDir });
     const names = checks.map((c) => c.name);
     expect(names).toContain('Node.js >= 20');
     expect(names).toContain('SQLite accessible');
     expect(names).toContain('git >= 2.20');
     expect(names).toContain('git repository');
-    expect(names).toContain('.yoke.yml valid');
+    expect(names).toContain('.yoke/templates valid');
   });
 
-  it('config check fails when no .yoke.yml', async () => {
-    const checks = await runChecks({ configPath: path.join(tmpDir, '.yoke.yml') });
-    const configCheck = checks.find((c) => c.name === '.yoke.yml valid')!;
+  it('config check fails when no default template exists', async () => {
+    const checks = await runChecks({ configDir: tmpDir });
+    const configCheck = checks.find((c) => c.name === '.yoke/templates valid')!;
     expect(configCheck.passed).toBe(false);
-    // AC: actionable remediation text per failed check.
     expect(configCheck.remediation).toBeTruthy();
     expect(configCheck.remediation!.length).toBeGreaterThan(10);
   });
