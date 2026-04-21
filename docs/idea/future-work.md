@@ -92,3 +92,26 @@ Each entry should answer: **what** is deferred, **where** in the codebase it liv
 
 **Context (so this is picked up cleanly later).** Design conversation 2026-04-21 established: templates are static YAML, workflows are DB instances with user-supplied names and UUIDs (no template-based dedup), server startup pauses in-flight workflows rather than auto-resuming, and `.yoke.yml` at repo root is fully replaced by `.yoke/templates/*.yml`. The brainstorm stage was extracted from that conversation as a future-work item once templates are in place.
 
+## Prompt shown at top of session logs
+
+The session logs, when you choose a stage and they show in the right pane, need the initial prompt (with replacements injected) that was sent to the session for context (and debugging, to ensure replacements worked).
+
+## Nomenclature
+
+In the dashboard, the stages are called "Templates", and the search says "Search items...". In the config we call them "stages" and they have "phases" which will correspond 1:1 with agent sessions.
+
+We need to be consistent with the naming.
+
+The list view should be grouped/categorized by "stage" and the list items will remain 1:1 with stages, but should expand to show the individual phases/sessions (sessions is probably best here because if it goes through retries we want to be able to see *all* the sessions; so they should be labelled by the phase and ordered chronologically, and include rows for failures, like post command logs on failure with a failure row and describing that it triggered a goto implement, for instance).
+
+The search can still say "Search items..." and should search the stages and phases/sessions (title/id/description, not log content).
+
+## Graph View
+
+We have a dashboard with a workflow list. When a workflow is selected, we show a list of sessions, and when a session is selected we show the logs. These are all in panes/panels.
+
+We want a secondary view of the workflow. It should be similar in layout to something like n8n - an active box-and-arrow workflow diagram. Similar to the list dashboard view, we'd show which are in-progress/complete/pending by color and tag. a button or selecting a session could show the logs in a pane to the right (same way we do now, but hide it if none are selected). clicking outside a session on the "canvas" would de-select. with this diagram, we could easily show the topological dependency order, the stages with the phases/sessions, pre/post commands, and goto arrows (e.g. dotted if they're not "continue") to visualize the entire pipeline config for the user. This should provide all the same functionality as the session list view. The diagram should update with what *actually* happened - for instance if a review fails and it needs to goto the implement, that should *add* a new implement/review/post command stage to the canvas with an arrow showing the goto, or if it's clean enough just an arrow back and a second session in the existing stage/phase. This is an example based on our default pipeline config, but it should work for any config. Essentially the diagram starts as a visualization of the configured pipeline but updates in real time with the progress to become a diagram of what *actually* happened, and when it's finished, all optional paths that didn't get touched (gotos that didn't happen, etc) get removed, so it can be stored as a permanent artifact. it should be serializable as JSON so it can be stored in the db with a reference to the workflow id, so when viewing old workflows it can be loaded, or when continuing paused workflows it can be loaded and continued.
+
+## List view depends_on
+
+We should add some information in the list view from the depends_on (so e.g. if my concurrency limit is 4, why are only 2 sessions working? i need to see the blockers to understand). the list view and the graph view need to show the description for the session/feature config.
