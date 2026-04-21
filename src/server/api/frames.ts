@@ -21,6 +21,7 @@ export type ServerFrameType =
   | 'workflow.snapshot'
   | 'workflow.update'
   | 'workflow.index.update'
+  | 'workflow.created'
   | 'item.state'
   | 'item.data'
   | 'stage.started'

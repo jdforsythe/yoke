@@ -203,6 +203,20 @@ export class WsClientRegistry {
     }
   }
 
+  /**
+   * Broadcasts a frame to ALL connected clients regardless of their workflow
+   * subscriptions. Used for global notifications such as 'workflow.created'
+   * where no client is yet subscribed to the new workflow.
+   */
+  broadcastAll(frameType: ServerFrameType, payload: unknown): void {
+    const frame = makeFrame(frameType, payload, { seq: 0 });
+    for (const [socket] of this.clients) {
+      if (socket.readyState === socket.OPEN) {
+        socket.send(JSON.stringify(frame));
+      }
+    }
+  }
+
   /** Number of currently registered sockets. Useful for tests. */
   get size(): number {
     return this.clients.size;
