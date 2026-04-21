@@ -435,6 +435,25 @@ export interface WorkflowRow {
 }
 
 /**
+ * Mock GET /api/templates.
+ *
+ * Returns the given templates array. Pass an empty array to trigger the
+ * template picker's empty-state UI.
+ */
+export async function mockTemplatesApi(
+  page: Page,
+  templates: Array<{ name: string; description: string | null }> = [],
+): Promise<void> {
+  await page.route('**/api/templates', (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ templates }),
+    });
+  });
+}
+
+/**
  * Mock GET /api/workflows* (list endpoint + any sub-paths).
  *
  * Returns the given workflows array with sensible defaults for timestamps.
