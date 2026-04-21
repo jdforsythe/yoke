@@ -23,8 +23,9 @@ import path from 'node:path';
 import type { ExecFileException } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
-import { loadTemplate } from '../server/config/loader.js';
+import { listTemplates, loadTemplate } from '../server/config/loader.js';
 import { ConfigLoadError } from '../server/config/errors.js';
+import { createWorkflow, makeProductionIngestDeps } from '../server/scheduler/ingest.js';
 import { openDbPool, type DbPool } from '../server/storage/db.js';
 import { applyMigrations } from '../server/storage/migrate.js';
 import { createServer } from '../server/api/server.js';
@@ -217,6 +218,54 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   callbacks.archiveWorkflow = makeArchiveWorkflowFn(db.writer, (workflowId) => {
     state.registry.broadcast(workflowId, null, 'workflow.update', { archived: true });
   });
+
+  // Wire GET /api/templates: list available templates in .yoke/templates/.
+  // Errors (e.g. missing directory) return an empty list rather than failing.
+  callbacks.listTemplates = () => {
+    try {
+      return listTemplates(configDir).map((t) => ({
+        name: t.name,
+        description: t.description,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  // Wire POST /api/workflows: load a template by name, create a workflow row.
+  // The DB write is inside createWorkflow (RC-3). The broadcast is in the route handler.
+  const ingestDeps = makeProductionIngestDeps();
+  callbacks.createWorkflow = ({ templateName, name }) => {
+    let templateConfig: import('../shared/types/config.js').ResolvedConfig;
+    try {
+      templateConfig = loadTemplate(configDir, templateName);
+    } catch (err) {
+      if (err instanceof ConfigLoadError) {
+        if (err.detail.kind === 'not_found') {
+          return { status: 'template_not_found' };
+        }
+        return { status: 'template_error', message: err.message };
+      }
+      throw err;
+    }
+
+    const { workflowId } = createWorkflow(db, templateConfig, { name }, ingestDeps);
+
+    // Query existing workflows from the same template for the soft-collision hint.
+    const existingRows = db
+      .reader()
+      .prepare(
+        'SELECT name FROM workflows WHERE template_name = ? AND id != ? ORDER BY created_at DESC',
+      )
+      .all(templateName, workflowId) as Array<{ name: string }>;
+
+    return {
+      status: 'created',
+      workflowId,
+      name,
+      sameTemplateNames: existingRows.map((r) => r.name),
+    };
+  };
 
   // Write server discovery file.
   const serverJson = path.join(yokeDir, 'server.json');
