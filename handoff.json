@@ -1331,6 +1331,78 @@
         "browserWs.waitForEvent('framereceived') resolves on the FIRST frame received after it is set up — if any other WS frame (heartbeat, index.update) arrives before the workflowUpdateFrame or itemStateFrame, the wait resolves early and the DOM assertion may still race. In practice the test WS is silent between snapshot delivery and the explicit send(), so this window is zero. If heartbeat frames are ever enabled in tests, each waitForEvent call should filter by frame content.",
         "The controlSession fallback in WorkflowDetailRoute picks activeSessions[0] when no per-item session exists. If the snapshot contains multiple once-per-workflow sessions (unexpected in practice), only the first is used — ControlMatrix renders with that sessionId."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "b2e63005-3d08-4a36-8d34-ae76bfd0c62f",
+      "ts": "2026-04-21T13:30:00Z",
+      "note": "Implemented t-01 migration for template support columns. Created src/server/storage/migrations/0005_templates.sql (not 0004 — that number is already taken by 0004_item_stable_id.sql from the r3-04 stable-id feature). The migration adds two nullable TEXT columns to workflows: paused_at (for scheduler startup-pause and explicit user pause in t-06) and template_name (denormalized pointer to the source template file, purely informational). Both columns default to NULL so existing workflow rows are unaffected. An index idx_workflows_paused_at on workflows(paused_at) is created to support the scheduler's hot-path tick query (WHERE paused_at IS NULL AND status NOT IN terminal). Updated tests/storage/schema.test.ts: (1) updated the exact workflows column list from 19 to 21 entries, (2) updated the column count assertion from 19 to 21, (3) added a new 'migration 0005' describe block with 7 tests covering: columns exist on fresh DB, existing rows receive NULL for both new columns, version 5 recorded in schema_migrations, idx_workflows_paused_at exists in sqlite_master, paused_at accepts TEXT and NULL, template_name accepts TEXT, and EXPLAIN QUERY PLAN uses the new index for the IS NULL filter. All 1543 Vitest tests pass; pnpm typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/server/storage/migrations/0005_templates.sql",
+        "tests/storage/schema.test.ts"
+      ],
+      "deferred_criteria": [
+        "AC-1 names the file '0004_templates.sql' but that number was already taken by 0004_item_stable_id.sql (added in r3-04). The file was created as 0005_templates.sql instead. All other ACs are fully satisfied: the migration applies cleanly on empty DB and on DB with prior rows, it is forward-only, the index is created, tests cover both fresh and prior-migrations paths, applyMigrations picks it up automatically via directory scan, and pnpm test passes."
+      ],
+      "known_risks": [
+        "The AC spec says 0004_templates.sql but the file is 0005_templates.sql. The reviewer should accept this as the correct adaptation given the pre-existing 0004_item_stable_id.sql migration — using 0004 would break the forward-only guard in applyMigrations.",
+        "paused_at uses TEXT affinity (not TIMESTAMP) to match the existing schema convention (all date/time columns are TEXT) and satisfy the 'all types are TEXT or INTEGER' schema test assertion.",
+        "The EXPLAIN QUERY PLAN test asserts the index name appears in the query plan detail string. If SQLite's query planner changes its plan (e.g. decides a full scan is cheaper on an empty table), the test may fail in edge cases. In practice the index is always used for IS NULL scans with this predicate pattern."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "9d05aa53-9748-47ba-b14a-ff12929064d4",
+      "ts": "2026-04-21T13:35:00Z",
+      "note": "Implemented t-02 in full. Three changes landed in one commit (1ebbf65): (1) docs/design/schemas/yoke-config.schema.json: renamed the top-level 'project' property to 'template', added an optional 'description' field for the template picker UI, updated the 'required' array from ['version','project','pipeline','phases'] to ['version','template','pipeline','phases'], and preserved additionalProperties:false so any document still carrying the old 'project:' key produces a clear AJV error naming the unknown property. (2) src/shared/types/config.ts: renamed the Project interface to Template (adding optional description?: string), and updated RawConfig.project -> RawConfig.template. ResolvedConfig inherits the rename via the existing 'type ResolvedConfig = RawConfig & {...}' intersection. resolve.ts required no changes — it never references the project/template field. (3) src/server/scheduler/ingest.ts: replaced both occurrences of config.project.name with config.template.name (the resume-path SELECT and the new-workflow INSERT). All 16 test fixture files updated: inline ResolvedConfig objects used 'project: { name: ... }' and were updated to 'template: { name: ... }'; YAML string literals in tests/config/loader.test.ts, tests/cli/doctor.test.ts, and tests/cli/start.test.ts were updated from 'project:' to 'template:'; the cfg.project.name assertion in loader.test.ts was updated to cfg.template.name. No scheduler.ts or other production file references remained. pnpm test: 1543/1543 pass. pnpm typecheck: exits 0 for both root and web packages. The root .yoke.yml is NOT migrated per spec (t-03 handles the templates-directory work); a stale .yoke.yml using 'project:' will now fail AJV validation with a readable unknown-key error.",
+      "intended_files": [
+        "docs/design/schemas/yoke-config.schema.json",
+        "src/shared/types/config.ts",
+        "src/server/scheduler/ingest.ts",
+        "tests/config/loader.test.ts",
+        "tests/config/resolve.test.ts",
+        "tests/cli/doctor.test.ts",
+        "tests/cli/start.test.ts",
+        "tests/notifications/attention-roundtrip.test.ts",
+        "tests/pipeline/retry-ladder-e2e.test.ts",
+        "tests/scheduler/attention-broadcasts.test.ts",
+        "tests/scheduler/auto-pr-on-complete.test.ts",
+        "tests/scheduler/crash-recovery.test.ts",
+        "tests/scheduler/index-updates.test.ts",
+        "tests/scheduler/ingest.test.ts",
+        "tests/scheduler/per-item-seeder-error.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [
+        "Root .yoke.yml migration: per spec, the root .yoke.yml is intentionally NOT migrated in t-02. A stale copy using 'project:' will fail AJV validation with a readable 'unknown key' error. Migration is t-03's responsibility (templates-directory work)."
+      ],
+      "known_risks": [
+        "The Project interface is removed and replaced with Template. Any external tooling or documentation that imports Project from src/shared/types/config.ts will get a compile error. Only internal code is affected — no external consumers exist in this repo.",
+        "The root .yoke.yml (if present and using the old 'project:' key) will fail AJV validation on startup, producing a ConfigLoadError. This is documented behavior per spec — t-03 migrates it. The error message names the unknown key ('project') which is the AC requirement for readable AJV errors."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "41b1e8f0-3204-4c27-bd56-d1cdf85c8ea0",
+      "ts": "2026-04-21T00:00:00.000Z",
+      "note": "Replaced loadConfig(path) with listTemplates(configDir) and loadTemplate(configDir, name). Added migration_error kind to ConfigErrorDetail. Both functions check for root .yoke.yml and throw migration_error. loadTemplate passes configDir (repo root) to resolveConfig, preserving path-resolution semantics. All call sites updated: start.ts (configPath→configDir), doctor.ts (checkConfig signature, check name, migration_error remediation), realBackend.ts, and check-api-contract.js (MINIMAL_CONFIG template: key, .yoke/templates/ path). Created .yoke/templates/default.yml from old .yoke.yml content, deleted root .yoke.yml. Updated .gitignore to use .yoke/* glob (not directory) so .yoke/templates/ can be unignored. All 1553 tests pass; typecheck passes.",
+      "intended_files": [
+        "src/server/config/errors.ts",
+        "src/server/config/loader.ts",
+        "tests/config/loader.test.ts",
+        "src/cli/start.ts",
+        "tests/cli/start.test.ts",
+        "src/cli/doctor.ts",
+        "tests/cli/doctor.test.ts",
+        "src/web/e2e/fixtures/realBackend.ts",
+        "scripts/check-api-contract.js",
+        ".yoke/templates/default.yml",
+        ".gitignore"
+      ],
+      "deferred_criteria": []
     }
   ]
 }
