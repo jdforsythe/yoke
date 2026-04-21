@@ -245,7 +245,12 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
   const reader = db.reader();
 
   const wf = reader
-    .prepare('SELECT id, name, status, current_stage, created_at, recovery_state FROM workflows WHERE id = ?')
+    .prepare(
+      `SELECT id, name, status, current_stage, created_at, recovery_state,
+              github_state, github_pr_number, github_pr_url, github_pr_state,
+              github_error, github_last_checked_at
+         FROM workflows WHERE id = ?`,
+    )
     .get(workflowId) as {
       id: string;
       name: string;
@@ -253,9 +258,17 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
       current_stage: string | null;
       created_at: string;
       recovery_state: string | null;
+      github_state: string | null;
+      github_pr_number: number | null;
+      github_pr_url: string | null;
+      github_pr_state: string | null;
+      github_error: string | null;
+      github_last_checked_at: string | null;
     } | undefined;
 
   if (!wf) return null;
+
+  const githubState = buildGithubStateProjection(wf);
 
   // Parse pipeline to get stages.
   const pipelineRow = reader
@@ -370,13 +383,62 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
       currentStage: wf.current_stage,
       createdAt: wf.created_at,
       recoveryState: wf.recovery_state ? JSON.parse(wf.recovery_state) : null,
-      githubState: null,
+      githubState,
     },
     stages,
     items,
     activeSessions,
     pendingAttention,
   };
+}
+
+/**
+ * Shape the workflows.github_* columns into the GithubState the client expects.
+ * Mirrors the broadcast payload built in writeGithubState (github/service.ts).
+ * Returns null when github_state is NULL (pre-github-migration rows only).
+ */
+const GITHUB_STATUSES = new Set([
+  'disabled',
+  'unconfigured',
+  'idle',
+  'creating',
+  'created',
+  'failed',
+]);
+
+const GITHUB_PR_STATES = new Set(['open', 'merged', 'closed']);
+
+function buildGithubStateProjection(row: {
+  github_state: string | null;
+  github_pr_number: number | null;
+  github_pr_url: string | null;
+  github_pr_state: string | null;
+  github_error: string | null;
+  github_last_checked_at: string | null;
+}): Record<string, unknown> | null {
+  if (!row.github_state || !GITHUB_STATUSES.has(row.github_state)) return null;
+
+  const out: Record<string, unknown> = { status: row.github_state };
+  if (row.github_pr_number != null) out.prNumber = row.github_pr_number;
+  if (row.github_pr_url) out.prUrl = row.github_pr_url;
+  if (row.github_pr_state && GITHUB_PR_STATES.has(row.github_pr_state)) {
+    out.prState = row.github_pr_state;
+  }
+  if (row.github_last_checked_at) out.lastCheckedAt = row.github_last_checked_at;
+  if (row.github_error) {
+    try {
+      const parsed = JSON.parse(row.github_error) as
+        | { kind: 'api_failed'; message: string }
+        | { kind: 'auth_failed'; attempts: Array<{ source: string; reason: string }> };
+      out.error =
+        parsed.kind === 'api_failed'
+          ? parsed.message
+          : parsed.attempts.map((a) => `${a.source}: ${a.reason}`).join('; ');
+    } catch {
+      out.error = row.github_error;
+    }
+  }
+  return out;
 }
 
 /** Derive stage status from item rows for that stage. */

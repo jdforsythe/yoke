@@ -1,0 +1,245 @@
+{
+  "project": "yoke",
+  "round": "templates",
+  "created": "2026-04-21T00:00:00Z",
+  "_context": "Templates refactor: replace single-auto-loaded .yoke.yml with a catalog of pipeline templates at .yoke/templates/*.yml. Server starts idle; user picks a template + names an instance to create a workflow. Multiple concurrent workflows from the same template are supported. Existing non-terminal workflows are paused at startup and require explicit Continue. Brainstorm/interactive stage type is out of scope and documented in docs/idea/future-work.md.",
+  "_topological_order": [
+    "t-01",
+    "t-02",
+    "t-03",
+    "t-04",
+    "t-05",
+    "t-06",
+    "t-07",
+    "t-08",
+    "t-09",
+    "t-10"
+  ],
+  "features": [
+    {
+      "id": "t-01",
+      "category": "db",
+      "priority": 2,
+      "depends_on": [],
+      "description": "Add SQLite migration 0004_templates.sql that introduces two new columns on the workflows table: `paused_at TIMESTAMP NULL` (set on explicit user pause or at server startup for non-terminal workflows) and `template_name TEXT NULL` (denormalized pointer to the source template file name, purely informational; the authoritative pipeline definition remains the `pipeline` JSON snapshot). Both columns are nullable so the forward-only migration applies cleanly to existing rows. No change to the `status` enum, no change to the existing `name` column's type (user-supplied names go into it unchanged). Include an index on (paused_at) to speed the scheduler's 'find tickable workflows' query.",
+      "acceptance_criteria": [
+        "New file src/server/storage/migrations/0004_templates.sql exists and applies cleanly on an empty DB",
+        "Migration applies cleanly on a DB that already contains existing workflow rows — existing rows have NULL for both new columns",
+        "Migration is forward-only (no DROP / no data rewrites)",
+        "Index on workflows(paused_at) is created",
+        "tests/storage/migrate.test.ts (or equivalent) covers applying 0004 on a fresh DB and on a DB with prior migrations applied",
+        "applyMigrations() picks up the new file automatically via the existing directory scan",
+        "pnpm test passes"
+      ],
+      "review_criteria": [
+        "Columns are both nullable; no NOT NULL that would break existing rows",
+        "No changes to existing migrations (forward-only discipline)",
+        "Index covers the scheduler hot-path query (WHERE paused_at IS NULL AND status NOT IN terminal)"
+      ]
+    },
+    {
+      "id": "t-02",
+      "category": "config",
+      "priority": 2,
+      "depends_on": [],
+      "description": "Rename the top-level `project` block to `template` in docs/design/schemas/yoke-config.schema.json and add an optional `description` field used for the template picker UI. The block is: `template: { name: string (required, minLength 1), description?: string }`. additionalProperties stays false so encountering the old `project:` key produces a clear AJV error. Update shared TypeScript types (src/shared/types/config.ts) RawConfig and ResolvedConfig to reflect the rename. Update src/server/config/resolve.ts. Update every call site that reads `config.project.name` to read `config.template.name` (ingest.ts, scheduler.ts, worktree manager, prompt assembler inputs, test fixtures). The root .yoke.yml is NOT migrated in this feature — that's the templates-directory work in t-03. During t-02 the root .yoke.yml will temporarily fail validation if a stale copy exists; document the error and let t-03 move it.",
+      "acceptance_criteria": [
+        "docs/design/schemas/yoke-config.schema.json uses `template` (not `project`), with `name` required and `description` optional",
+        "RawConfig and ResolvedConfig in src/shared/types/config.ts renamed project -> template (+ description)",
+        "src/server/config/resolve.ts updated; all references pass typecheck",
+        "All production call sites (ingest.ts, scheduler.ts, any other) read config.template.name",
+        "Every .yoke.yml fixture in tests/ uses `template:` not `project:`",
+        "AJV error message for a document with `project:` key is readable (names the unknown key)",
+        "pnpm typecheck clean; pnpm test passes"
+      ],
+      "review_criteria": [
+        "No grep hits remain for `config.project` outside of migration / backward-compat notes",
+        "Description field is optional at the schema level; pipelines without description still load",
+        "JSON schema additionalProperties: false is preserved on the renamed block"
+      ]
+    },
+    {
+      "id": "t-03",
+      "category": "config",
+      "priority": 2,
+      "depends_on": ["t-02"],
+      "description": "Replace single-file config loading with a templates directory. Move src/server/config/loader.ts's public API from `loadConfig(path)` to two functions: `listTemplates(configDir): TemplateSummary[]` (returns {name, description, path} for every `.yoke/templates/*.yml` file in the config directory) and `loadTemplate(configDir, name): ResolvedConfig` (validates + resolves a single template file). Both functions reuse the existing AJV schema and resolver. If the root .yoke.yml file exists, error out with a clear message telling the user to move it into `.yoke/templates/` — do NOT auto-migrate silently. The stable ResolvedConfig.configDir contract is preserved (it's the repo root, the directory containing the `.yoke/` folder). Delete the root .yoke.yml from this repo as part of this feature AND create `.yoke/templates/default.yml` that mirrors the ongoing workflow (using `template:` schema from t-02, items_from pointing at docs/idea/templates-features.json). All call sites of loadConfig get updated — start.ts receives the templateName via a new CLI flag (see t-10) OR we defer that wire-up to t-10 and leave start.ts temporarily non-functional pending t-05 (scheduler no longer auto-ingests anyway after t-05).",
+      "acceptance_criteria": [
+        "listTemplates(configDir) returns every *.yml file in .yoke/templates with {name, description, path}",
+        "loadTemplate(configDir, name) validates + resolves one template; throws ConfigLoadError on not_found/validation_error consistent with existing error shapes",
+        "A .yoke.yml at the repo root produces a clear migration error ('.yoke.yml at repo root is no longer supported; move it to .yoke/templates/<name>.yml')",
+        "Existing loadConfig export is removed (or kept as a deprecated thin wrapper if tests rely on it — but prefer removal)",
+        "Root .yoke.yml in this repo is deleted and replaced by .yoke/templates/default.yml (equivalent pipeline content using template: schema)",
+        ".yoke/templates/default.yml's items_from points at docs/idea/templates-features.json so this workflow can continue to run",
+        "Unit tests in tests/config/ cover: listTemplates happy path, loadTemplate happy path, loadTemplate missing file, root .yoke.yml rejection",
+        "pnpm test passes; existing loader tests updated to call loadTemplate"
+      ],
+      "review_criteria": [
+        "listTemplates reads descriptions cheaply (YAML parse is fine; no AJV validation at list time — list should tolerate an invalid template file by skipping it with a warning, not throwing)",
+        "loadTemplate errors preserve the existing ConfigLoadError kind discriminant (not_found / parse_error / version_error / validation_error)",
+        "No implicit fallback to root .yoke.yml — the file is either rejected clearly or absent"
+      ]
+    },
+    {
+      "id": "t-04",
+      "category": "engine",
+      "priority": 2,
+      "depends_on": ["t-01", "t-02", "t-03"],
+      "description": "Replace ingestWorkflow with createWorkflow. The new function signature is `createWorkflow(db, template, { name }): { workflowId }` — it ALWAYS inserts a new workflow row, regardless of whether another live workflow exists for the same template. The dedup query (SELECT id FROM workflows WHERE name=? OR name LIKE ? AND configDir=? AND status NOT IN terminal) is deleted entirely: with user-supplied instance names, concurrent workflows from the same template are expected. The inserted row uses the user-supplied `name` verbatim (not prefixed with template name); `template_name` column is populated from the template block. The `pipeline` JSON snapshot (full stages array) continues to be written so the workflow is self-contained. initGithubState still runs for fresh workflows. Remove the call from scheduler.start() — createWorkflow is now called from an API handler (to be wired in t-07). Keep the per-item manifest ingestion logic (seeding items for run:once stages, chaining depends_on across stages) — only the outer `has this workflow already been ingested?` idempotency check is removed.",
+      "acceptance_criteria": [
+        "src/server/scheduler/ingest.ts renamed internally or replaced; public export is now createWorkflow (or the file is renamed — either works if imports are updated)",
+        "The dedup SELECT query against existing live workflows is removed",
+        "createWorkflow always inserts; two calls with the same template produce two distinct workflow rows with distinct UUIDs",
+        "workflows.name column uses the user-supplied name verbatim (no `${template}-${uuid8}` formatting)",
+        "workflows.template_name is populated from template.name on insert",
+        "workflows.pipeline JSON snapshot still captures the full stages array",
+        "initGithubState still runs inside the same transaction for fresh workflows",
+        "scheduler.start() no longer calls ingestWorkflow / createWorkflow (it's moved to the API handler for t-07; start() for now just runs crash recovery + tick loop on existing rows)",
+        "Tests in tests/scheduler/ingest.test.ts updated: two back-to-back createWorkflow calls from the same template produce two rows",
+        "All existing ingest tests pass with updated signatures"
+      ],
+      "review_criteria": [
+        "createWorkflow is pure w.r.t. arguments — no hidden fs reads (git remote resolution still uses injected IngestDeps)",
+        "No lingering references to the removed dedup query anywhere in the codebase",
+        "workflow row is fully constructed inside a single db.transaction() (atomicity preserved)"
+      ]
+    },
+    {
+      "id": "t-05",
+      "category": "engine",
+      "priority": 1,
+      "depends_on": ["t-04"],
+      "description": "Refactor Scheduler from single-workflow to multi-workflow. Kill the cached `this.workflowId: string | null` field (scheduler.ts:420). All methods that currently rely on the cached workflowId must either (a) accept workflowId as a parameter or (b) derive it from the item/session context they're operating on. The tick loop, today implicitly scoped to one workflow, becomes: on each tick, SELECT all non-terminal non-paused workflows, and for each, run the existing per-workflow tick logic. Retry timers are keyed by {workflowId, itemId} (or just itemId if uuids guarantee uniqueness — verify). Crash recovery (buildCrashRecovery) is called per workflow or once across all workflows — pick the simpler option. scheduler.start() no longer ingests (t-04 removed that); it just runs crash recovery, arms existing retry timers, and starts the tick loop. Worktree management becomes per-workflow: each workflow has its own worktree_path column and dedicated branch; the naming scheme moves from `${base_dir}/${templateName}-${uuid8}` to `${base_dir}/${workflowId}` (workflowId is already unique). Update test doubles and existing tests for the new signatures.",
+      "acceptance_criteria": [
+        "Scheduler.workflowId field is removed",
+        "Scheduler.start() does not call createWorkflow / ingestWorkflow",
+        "Tick loop iterates all non-terminal non-paused workflows per tick (query uses paused_at IS NULL AND status NOT IN terminal)",
+        "Retry timers, session kill, and pending_attention dispatch are correctly scoped per workflow (no cross-contamination between concurrent workflows in tests)",
+        "Worktree path uses workflowId as the primary key (e.g. .worktrees/<uuid> or .worktrees/<slug-uuid8>); branch name includes workflowId's uuid8 prefix",
+        "New integration test: create two workflows from the same template concurrently, advance both items independently, assert no interference",
+        "Existing single-workflow tests continue to pass",
+        "pnpm test and pnpm typecheck pass"
+      ],
+      "review_criteria": [
+        "No remaining `this.workflowId` in scheduler.ts",
+        "Tick loop query uses an index-friendly predicate (paused_at IS NULL AND status IN (...)) — confirm the t-01 index helps",
+        "Two concurrent workflows from the same template do not share state (retry counters, pending_attention rows, worktree paths) in the integration test",
+        "Crash recovery correctly handles stale sessions across multiple workflows — no session is double-recovered"
+      ]
+    },
+    {
+      "id": "t-06",
+      "category": "engine",
+      "priority": 1,
+      "depends_on": ["t-01", "t-05"],
+      "description": "Implement pause / continue semantics at the engine level and at server-startup. (1) Extend controlExecutor (src/server/pipeline/control-executor.ts) to accept 'pause' and 'continue' actions: pause sets workflows.paused_at = CURRENT_TIMESTAMP; continue sets paused_at = NULL. Broadcast a 'workflow.update' WS frame on each so the UI can re-render. This resolves the existing future-work.md 'Pause / resume control actions not implemented' entry — strike it through in that file with a pointer to this card. (2) Scheduler startup pause behavior: in Scheduler.start(), BEFORE arming timers or starting the tick loop, run `UPDATE workflows SET paused_at = CURRENT_TIMESTAMP WHERE paused_at IS NULL AND status NOT IN ('completed', 'abandoned', 'completed_with_blocked')`. This ensures any workflow that was running before a server restart comes back paused and requires an explicit user Continue. The tick loop already respects paused_at (from t-05), so paused workflows simply don't tick. (3) Crash recovery still runs — stale sessions are still transitioned to awaiting_retry/awaiting_user — but the workflow is paused so the transitions don't immediately trigger re-spawning.",
+      "acceptance_criteria": [
+        "controlExecutor accepts action: 'pause' and sets paused_at = now(); returns 200",
+        "controlExecutor accepts action: 'continue' and sets paused_at = NULL; returns 200",
+        "Paused workflows are skipped by the scheduler tick loop (verified by test: pause → wait → no new sessions spawned; continue → next tick spawns)",
+        "Scheduler.start() pauses all non-terminal non-paused workflows before the first tick",
+        "WS frame 'workflow.update' is broadcast on pause and on continue with the paused_at value",
+        "Crash recovery transitions stale sessions correctly even when the workflow is paused post-restart",
+        "docs/idea/future-work.md 'Pause / resume control actions not implemented' entry struck through with note 'implemented in templates refactor t-06'",
+        "Tests in tests/pipeline/control-executor.test.ts cover pause and continue",
+        "Integration test: restart a mock server with an in-progress workflow → workflow is paused → no items advance until control action 'continue'"
+      ],
+      "review_criteria": [
+        "Pause/continue are idempotent (pausing an already-paused workflow is a no-op success)",
+        "Race safety: if a session is in flight when pause fires, the in-flight session completes but the next tick does not spawn a successor until continue",
+        "WS frame payload is consistent with other workflow.update frames (no new frame type needed — reuse workflow.update with a relevant field change)"
+      ]
+    },
+    {
+      "id": "t-07",
+      "category": "api",
+      "priority": 2,
+      "depends_on": ["t-03", "t-04"],
+      "description": "Add two HTTP endpoints to the Fastify server (src/server/api/http.ts or server.ts). (1) `GET /api/templates` returns {templates: [{name, description}]} by calling listTemplates(configDir). If a template file has a parse or validation error it is logged and omitted (list never fails the request). (2) `POST /api/workflows` with body {templateName: string, name: string} creates a new workflow by calling loadTemplate + createWorkflow. Returns 201 with {workflowId, name}. Validates: templateName must match an existing template file; name must be non-empty after trim; name should not be required to be unique but the response returns the list of existing workflow names with the same template so the UI can warn (soft collision). On success, broadcast a 'workflow.created' WS frame so any connected client can update its sidebar. Pause/continue endpoints are NOT added here — they're already wired through controlExecutor's POST /api/workflows/:id/control route (with actions pause/continue from t-06).",
+      "acceptance_criteria": [
+        "GET /api/templates returns {templates: Array<{name, description?}>} 200",
+        "GET /api/templates with no templates dir or empty dir returns {templates: []} 200 (not 500)",
+        "GET /api/templates skips files with parse/validation errors and logs a warning (does not fail the request)",
+        "POST /api/workflows with valid body creates a workflow and returns 201 {workflowId, name}",
+        "POST /api/workflows with unknown templateName returns 404 with a clear error",
+        "POST /api/workflows with empty name (or whitespace-only) returns 400",
+        "POST /api/workflows broadcasts 'workflow.created' frame on success",
+        "API tests in tests/api/ cover the happy paths and validation errors",
+        "Fastify request schemas (if using the existing Ajv-on-routes pattern) enforce the body shape"
+      ],
+      "review_criteria": [
+        "No writes to state directly in route handlers — goes through createWorkflow (RC-3 pattern)",
+        "Errors use the existing error response envelope used by sibling endpoints",
+        "Listing does not accidentally fail the whole response due to one bad template"
+      ]
+    },
+    {
+      "id": "t-08",
+      "category": "ui",
+      "priority": 3,
+      "depends_on": ["t-07"],
+      "description": "Replace the placeholder WorkflowListRoute with a template picker landing screen and wire up a new-workflow modal. The route lists templates (from GET /api/templates) as cards showing name + description. Clicking a card opens a modal with a single text input for the workflow instance name (required, validated non-empty on blur/submit) and a Create button. Submit calls POST /api/workflows {templateName, name}, and on 201 navigates to `/workflows/:workflowId`. Sidebar continues to show the workflow list from existing data sources. Include an empty state (no templates found — copy: 'Create a template file in .yoke/templates/*.yml to get started'). Add a Playwright e2e test that lists templates, opens the modal, creates a workflow, and lands on its detail route. Use the existing store / WS subscription patterns rather than inventing new ones.",
+      "acceptance_criteria": [
+        "WorkflowListRoute fetches GET /api/templates on mount and renders one card per template",
+        "Each card shows the template name and description (if present)",
+        "Clicking a card opens a modal prompting for an instance name",
+        "Modal Create button is disabled while the name is empty/whitespace; submits to POST /api/workflows on valid input",
+        "On success the UI navigates to /workflows/:workflowId",
+        "Empty state when no templates returned (GET returned [])",
+        "Error state when GET /api/templates fails (500 etc.) with a retry affordance",
+        "Playwright test in src/web/e2e/ covers the list → modal → create → detail-route flow",
+        "pnpm --filter web test:e2e passes"
+      ],
+      "review_criteria": [
+        "Modal is accessible (focus trap, escape closes, labelled input)",
+        "No duplicate-name enforcement in UI beyond a soft warning — multiple workflows with the same name is not a validation error",
+        "UI uses existing fetch/store patterns; no new global state unless necessary"
+      ]
+    },
+    {
+      "id": "t-09",
+      "category": "ui",
+      "priority": 3,
+      "depends_on": ["t-06"],
+      "description": "Add a paused banner to WorkflowDetailRoute. When the current workflow has paused_at != null (from the existing workflow.update WS frames / detail fetch), render a prominent banner at the top of the detail route: 'This workflow is paused. Click Continue to resume.' with a Continue button. The button POSTs to the control endpoint with action: 'continue' and optimistically hides the banner on success (authoritative update arrives via the workflow.update WS frame). Also wire a pause affordance — either a small button in the ControlMatrix or a kebab-menu item — that sends action: 'pause'. This component is distinct from the existing crash-recovery banner and other attention banners; stacking order should match existing UI conventions. Playwright test: start a workflow → server restart simulation → banner appears → click Continue → banner disappears and item advances.",
+      "acceptance_criteria": [
+        "WorkflowDetailRoute renders a paused banner when paused_at != null",
+        "Banner has a visible Continue button",
+        "Clicking Continue sends POST /api/workflows/:id/control with {action: 'continue'} and hides the banner on success (or on receipt of workflow.update frame — whichever arrives first)",
+        "Pause affordance exists somewhere reasonable (ControlMatrix or kebab) and fires action: 'pause'",
+        "Banner does not flicker on reconnection (WS re-sync doesn't briefly clear then restore the banner)",
+        "Playwright test: paused workflow shows banner; click Continue; banner disappears; item begins advancing (mock scheduler tick)",
+        "pnpm --filter web test:e2e passes"
+      ],
+      "review_criteria": [
+        "Banner stacks correctly alongside existing attention banners (no overlap, priority order documented if it matters)",
+        "Continue action is idempotent client-side (double-clicks don't produce two requests, or at least the second is deduped)",
+        "Copy is specific and actionable — no 'Resume' vs 'Continue' inconsistency across the UI"
+      ]
+    },
+    {
+      "id": "t-10",
+      "category": "cli",
+      "priority": 3,
+      "depends_on": ["t-03", "t-05", "t-06", "t-08", "t-09"],
+      "description": "Final wire-up and documentation. (1) `yoke init` scaffolds .yoke/templates/default.yml (content: a minimal valid template with template.name and a placeholder single-phase pipeline the user will edit). Remove the old root-.yoke.yml scaffolding path. (2) `yoke start` no longer takes a --config flag pointing at a single file — it takes an optional --config-dir (default: cwd) and the templates are discovered under .yoke/templates/. (3) Update docs/design/architecture.md to describe the template/workflow split, remove references to project.name, and add a section on templates + workflow instances. (4) Update README.md with the new user flow: yoke init → edit template → yoke start → open UI → pick template → name workflow → run. (5) Update docs/design/prompt-template-spec.md examples to use template.name instead of project.name. (6) Remove or strike the existing docs/idea/future-work.md entry for pause/resume if not already struck in t-06. (7) Add a short migration note to CHANGELOG or a dedicated docs/idea/migration-templates-refactor.md describing how an existing user moves their .yoke.yml into .yoke/templates/.",
+      "acceptance_criteria": [
+        "yoke init creates .yoke/templates/default.yml (not .yoke.yml)",
+        "yoke init output instructs the user to edit .yoke/templates/default.yml",
+        "yoke start --config-dir flag works (if provided, points at a directory; defaults to cwd)",
+        "yoke start no longer accepts --config <file>; old flag produces a clear deprecation error",
+        "docs/design/architecture.md describes template vs workflow-instance split and the startup-pause behavior",
+        "README.md reflects the new flow end-to-end",
+        "docs/design/prompt-template-spec.md examples use template.name",
+        "docs/idea/migration-templates-refactor.md exists with a concrete 'move .yoke.yml → .yoke/templates/<name>.yml + rename project: to template:' walkthrough",
+        "No grep hits for project.name in user-facing docs",
+        "Smoke test in tests/cli/ or tests/e2e/: fresh temp directory + yoke init + yoke start → server runs, no workflows, GET /api/templates returns one template (default)"
+      ],
+      "review_criteria": [
+        "README describes templates and instance naming clearly enough that a new user can get running without reading design docs",
+        "Migration doc is actionable: a user with an existing .yoke.yml can follow it step-by-step",
+        "No orphan references to project.name / .yoke.yml / loadConfig in docs"
+      ]
+    }
+  ]
+}

@@ -1,13 +1,13 @@
 version: "1"
 
 project:
-  name: yoke-round-3
+  name: yoke-round-2
 
 pipeline:
   stages:
-    - id: round-3-fixes
+    - id: round-2-fixes
       run: per-item
-      items_from: docs/idea/fixes-round-3-features.json
+      items_from: docs/idea/fixes-round-2-features.json
       items_list: "$.features"
       items_id: "$.id"
       items_depends_on: "$.depends_on"
@@ -97,7 +97,7 @@ phases:
 
 worktrees:
   base_dir: .worktrees
-  branch_prefix: yoke-r3/
+  branch_prefix: yoke-r2/
   bootstrap:
     commands:
       - "pnpm install"

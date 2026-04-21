@@ -116,9 +116,12 @@ export function makeOctokitAdapter(): OctokitAdapter {
 /**
  * Creates a production GhCliAdapter that calls `gh pr create`.
  *
- * gh pr create --json number,url returns a JSON object with { number, url }.
- * Kept separate so tests never import child_process.
+ * gh pr create has no --json flag (that's view/list only); on success it
+ * prints the PR URL on stdout (possibly with preamble). We extract the last
+ * GitHub pull URL from stdout and parse the trailing number out of it.
  */
+const GH_PR_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/g;
+
 export function makeGhCliAdapter(): GhCliAdapter {
   return {
     async createPr(input: PrInput): Promise<PrResult> {
@@ -134,19 +137,23 @@ export function makeGhCliAdapter(): GhCliAdapter {
         '--title', input.title,
         '--body', input.body ?? '',
         '--repo', `${input.owner}/${input.repo}`,
-        '--json', 'number,url',
       ];
 
+      let stdout: string;
       try {
-        const { stdout } = await execFileAsync('gh', args, { timeout: 30_000 });
-        const parsed = JSON.parse(stdout.trim()) as { number: number; url: string };
-        return { prNumber: parsed.number, prUrl: parsed.url };
+        ({ stdout } = await execFileAsync('gh', args, { timeout: 30_000 }));
       } catch (err: unknown) {
         const e = err as NodeJS.ErrnoException & { stderr?: string; stdout?: string };
-        // Try to parse JSON even from partial output on failure.
         const detail = e.stderr?.trim() || e.message;
         throw new Error(`gh pr create failed: ${detail}`);
       }
+
+      const matches = [...stdout.matchAll(GH_PR_URL_RE)];
+      const last = matches[matches.length - 1];
+      if (!last) {
+        throw new Error(`gh pr create: no PR URL in output: ${stdout.trim()}`);
+      }
+      return { prUrl: last[0], prNumber: Number(last[1]) };
     },
   };
 }

@@ -1049,6 +1049,17 @@ export function applyItemTransition(
        WHERE id = ?
     `).run(newState, newPhase, newRetryCount, newBlockedReason, now, params.itemId);
 
+    // Promote workflow status from 'pending' to 'in_progress' the first time
+    // any item enters an active execution state.
+    if (
+      (newState === 'in_progress' || newState === 'bootstrapping') &&
+      workflow.status === 'pending'
+    ) {
+      db.prepare(
+        `UPDATE workflows SET status = 'in_progress', updated_at = ? WHERE id = ?`,
+      ).run(now, params.workflowId);
+    }
+
     // Write events row for EVERY transition (RC-5, AC-6).
     writeEvent(db, {
       ts: now,
