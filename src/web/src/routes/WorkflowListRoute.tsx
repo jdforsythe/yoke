@@ -221,6 +221,7 @@ function NewWorkflowModal({
     >
       {/* Backdrop — click to close */}
       <div
+        data-testid="modal-backdrop"
         className="absolute inset-0 bg-black/60"
         onClick={onClose}
         aria-hidden="true"
