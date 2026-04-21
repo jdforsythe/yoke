@@ -519,7 +519,20 @@ export function register(program: Command): void {
     .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
     .option('-p, --port <number>', 'Server port', '7777')
     .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
-    .action(async (opts: { configDir: string; port: string; scheduler: boolean }) => {
+    // --config was removed in the templates refactor (t-03/t-10). Templates are
+    // now discovered automatically under .yoke/templates/. Keeping the option
+    // registered so Commander can produce a clear error instead of "unknown option".
+    .option('--config <file>', '[removed] use --config-dir instead')
+    .action(async (opts: { configDir: string; port: string; scheduler: boolean; config?: string }) => {
+      if (opts.config !== undefined) {
+        console.error(
+          'Error: --config is no longer supported.\n' +
+          'Templates are now discovered automatically under .yoke/templates/.\n' +
+          'Use --config-dir <path> to specify the repo root (default: current directory).\n' +
+          '\n  Example: yoke start --config-dir /path/to/repo',
+        );
+        process.exit(1);
+      }
       const configDir = path.resolve(opts.configDir);
       const port = parseInt(opts.port, 10);
       // commander maps --no-scheduler to opts.scheduler === false
