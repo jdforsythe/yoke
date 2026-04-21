@@ -142,7 +142,7 @@ test('status filter sends status param and shows filtered empty state', async ({
   await setupWs(page);
   await page.route('**/api/workflows**', (route) => {
     const url = route.request().url();
-    const isFiltered = url.includes('status=complete');
+    const isFiltered = url.includes('status=completed');
     void route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -159,8 +159,8 @@ test('status filter sends status param and shows filtered empty state', async ({
   // Initial load shows the workflow
   await expect(page.getByText(WF_NAME)).toBeVisible();
 
-  // Change filter to 'complete' — expect the filtered-empty message
-  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('complete');
+  // Change filter to 'completed' — expect the filtered-empty message
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('completed');
   await expect(page.getByText('No workflows match the current filters.')).toBeVisible();
 });
 
@@ -230,7 +230,7 @@ test('empty state shows correct message based on whether filters are active', as
   await expect(page.getByText('No workflows yet.')).toBeVisible();
 
   // Activate a filter → "No workflows match the current filters."
-  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('failed');
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('abandoned');
   await expect(page.getByText('No workflows match the current filters.')).toBeVisible();
 
   // Reset filter → "No workflows yet." again
@@ -247,9 +247,9 @@ test('status filter param is reflected in URL query string', async ({ page }) =>
   await mockWorkflowsApi(page);
   await page.goto('/');
 
-  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('paused');
+  await page.getByRole('combobox', { name: 'Filter by status' }).selectOption('abandoned');
 
-  await expect(page).toHaveURL(/status=paused/);
+  await expect(page).toHaveURL(/status=abandoned/);
 });
 
 // ---------------------------------------------------------------------------
