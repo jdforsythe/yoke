@@ -1,9 +1,9 @@
 /**
  * Structured error types for the config loader.
  *
- * Every failure from loadConfig() is a ConfigLoadError; callers narrow
- * on `detail.kind` to handle specific failure classes rather than
- * pattern-matching error messages.
+ * Every failure from loadTemplate() / listTemplates() is a ConfigLoadError;
+ * callers narrow on `detail.kind` to handle specific failure classes rather
+ * than pattern-matching error messages.
  */
 
 /** Simplified AJV error shape retained on ConfigLoadError for programmatic use. */
@@ -18,15 +18,17 @@ export type ConfigErrorDetail =
   | { kind: 'not_found'; message: string; path: string }
   | { kind: 'parse_error'; message: string }
   | { kind: 'version_error'; message: string; received: unknown }
-  | { kind: 'validation_error'; message: string; errors: ValidationError[] };
+  | { kind: 'validation_error'; message: string; errors: ValidationError[] }
+  | { kind: 'migration_error'; message: string };
 
 /**
- * Thrown by loadConfig() for every failure class:
+ * Thrown by loadTemplate() / listTemplates() for every failure class:
  *
- *   not_found        — file missing or unreadable (ENOENT, EACCES, …)
+ *   not_found        — template file missing or unreadable (ENOENT, EACCES, …)
  *   parse_error      — empty file or YAML syntax error
  *   version_error    — missing `version` field or version !== "1"
  *   validation_error — AJV schema violation (unknown key, wrong type, …)
+ *   migration_error  — .yoke.yml at repo root detected; user must migrate
  */
 export class ConfigLoadError extends Error {
   readonly detail: ConfigErrorDetail;
