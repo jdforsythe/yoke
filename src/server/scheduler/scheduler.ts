@@ -78,7 +78,7 @@ import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
 import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
-import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
+import type { RateLimitDetectedEvent, StreamSystemNoticeEvent, StreamUsageEvent } from '../process/stream-json.js';
 import { classify } from '../state-machine/classifier.js';
 import { FixtureWriter } from '../process/fixture-writer.js';
 import { readRecordMarker, clearRecordMarker } from '../process/record-marker.js';
@@ -402,6 +402,53 @@ export interface SchedulerOpts {
    * the startup-pause does not interfere with their expected workflow flow.
    */
   skipStartupPause?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// System-notice translation
+//
+// Claude Code emits `system` events (subtype: init, task_started,
+// task_notification, status, compact_boundary, …) as stream.system_notice
+// parser events with shape { type, subtype, data }.  The WS reducer expects
+// { severity, source, message } so we translate here before broadcasting.
+// ---------------------------------------------------------------------------
+
+function translateSystemNotice(
+  ev: StreamSystemNoticeEvent,
+): { severity: 'info' | 'warn' | 'error'; source: 'harness'; message: string; extra?: unknown } {
+  const data = ev.data as Record<string, unknown>;
+  switch (ev.subtype) {
+    case 'init': {
+      const model = typeof data['model'] === 'string' ? data['model'] : 'unknown';
+      return { severity: 'info', source: 'harness', message: `Session initialized — model: ${model}` };
+    }
+    case 'task_started': {
+      const desc = typeof data['description'] === 'string' ? data['description'] : ev.subtype;
+      return { severity: 'info', source: 'harness', message: `Subagent started: ${desc}` };
+    }
+    case 'task_notification': {
+      const summary = typeof data['summary'] === 'string' ? data['summary'] : '';
+      const status = typeof data['status'] === 'string' ? data['status'] : '';
+      const msg = summary ? `Subagent complete: ${summary}` : `Subagent ${status}`;
+      return { severity: status === 'error' ? 'error' : 'info', source: 'harness', message: msg };
+    }
+    case 'status': {
+      const st = typeof data['status'] === 'string' ? data['status'] : 'unknown';
+      return { severity: 'info', source: 'harness', message: `Context ${st}…` };
+    }
+    case 'compact_boundary': {
+      const meta = data['compact_metadata'];
+      if (meta !== null && typeof meta === 'object' && !Array.isArray(meta)) {
+        const m = meta as Record<string, unknown>;
+        const pre = typeof m['pre_tokens'] === 'number' ? m['pre_tokens'].toLocaleString() : '?';
+        const post = typeof m['post_tokens'] === 'number' ? m['post_tokens'].toLocaleString() : '?';
+        return { severity: 'info', source: 'harness', message: `Context compacted — ${pre} → ${post} tokens` };
+      }
+      return { severity: 'info', source: 'harness', message: 'Context compacted' };
+    }
+    default:
+      return { severity: 'info', source: 'harness', message: `System: ${ev.subtype}`, extra: ev.data };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,7 +1548,7 @@ export class Scheduler {
     parser.on('stream.tool_use',     (ev) => this.broadcastFn(wf.id, sessionId, 'stream.tool_use',     ev));
     parser.on('stream.tool_result',  (ev) => this.broadcastFn(wf.id, sessionId, 'stream.tool_result',  ev));
     parser.on('stream.usage',        (ev) => this.broadcastFn(wf.id, sessionId, 'stream.usage',        ev));
-    parser.on('stream.system_notice',(ev) => this.broadcastFn(wf.id, sessionId, 'stream.system_notice',ev));
+    parser.on('stream.system_notice',(ev) => this.broadcastFn(wf.id, sessionId, 'stream.system_notice', translateSystemNotice(ev)));
 
     // Feed stdout lines to parser; tee to fixture writer in capture mode.
     handle.on('stdout_line', (line: string) => {
