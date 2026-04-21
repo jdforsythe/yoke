@@ -146,7 +146,7 @@ describe('AC-1: all seven tables present after migration 0001', () => {
     ]);
   });
 
-  it('items has exactly 13 columns', () => {
+  it('items has exactly 14 columns', () => {
     const db = makeDb();
     const names = colNames(db, 'items');
     db.close();
@@ -155,6 +155,8 @@ describe('AC-1: all seven tables present after migration 0001', () => {
       'depends_on', 'retry_count', 'retry_window_start',
       'created_by_session_id', 'last_updated_by_session_id',
       'blocked_reason', 'updated_at',
+      // migration 0004: stable_id for per-item seeded rows
+      'stable_id',
     ]);
   });
 
@@ -453,7 +455,7 @@ describe('AC-6: no extra columns in any table', () => {
     const db = makeDb();
     const counts: Record<string, number> = {
       workflows: 19,  // 12 original + 6 github_state columns (migration 0002) + archived_at (migration 0003)
-      items: 13,
+      items: 14,  // 13 original + stable_id (migration 0004)
       sessions: 22,
       events: 12,
       artifact_writes: 5,

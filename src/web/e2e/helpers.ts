@@ -71,6 +71,8 @@ export interface SnapshotOpts {
   }>;
   activeSessions?: Array<{
     sessionId: string;
+    /** item_id from the sessions table; null for once-per-workflow sessions. */
+    itemId?: string | null;
     phase: string;
     attempt: number;
     startedAt: string;

@@ -28,6 +28,7 @@ function makeItem(status: string): ItemProjection {
     state: { status, currentPhase: null, retryCount: 0, blockedReason: null },
     displayTitle: null,
     displaySubtitle: null,
+    stableId: null,
   };
 }
 
@@ -202,10 +203,18 @@ const ACTION_TRUTH_TABLE: Record<ControlPayload['action'], Record<State, boolean
 // ---------------------------------------------------------------------------
 
 describe('SUPPORTED_ACTIONS', () => {
-  it('contains exactly cancel and retry', () => {
+  it('contains all expected actions', () => {
     expect(SUPPORTED_ACTIONS.has('cancel')).toBe(true);
     expect(SUPPORTED_ACTIONS.has('retry')).toBe(true);
-    expect(SUPPORTED_ACTIONS.size).toBe(2);
+    expect(SUPPORTED_ACTIONS.has('pause')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('resume')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('skip')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('unblock')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('inject-context')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('rerun-phase')).toBe(true);
+    expect(SUPPORTED_ACTIONS.has('approve-stage')).toBe(true);
+    // Every ControlPayload action should be in SUPPORTED_ACTIONS (9 total).
+    expect(SUPPORTED_ACTIONS.size).toBe(9);
   });
 
   it('RULES contains an entry for every action in ACTION_TRUTH_TABLE', () => {

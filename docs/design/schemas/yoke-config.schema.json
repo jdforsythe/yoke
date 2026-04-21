@@ -178,6 +178,18 @@
         "post": {
           "type": "array",
           "items": { "$ref": "#/$defs/prepostCommand" }
+        },
+        "ui": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Dashboard rendering hints for this phase. When absent, the dashboard autodetects the renderer by inspecting the live block stream.",
+          "properties": {
+            "renderer": {
+              "type": "string",
+              "enum": ["review", "stream"],
+              "description": "Pin the stream-pane renderer for this phase. 'review' forces ReviewPanel (subagent task list); 'stream' forces LiveStreamPane (raw token output). When omitted the dashboard autodetects: any Task tool_use call in the block stream activates ReviewPanel."
+            }
+          }
         }
       }
     },

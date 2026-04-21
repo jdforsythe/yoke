@@ -1,5 +1,5 @@
 /**
- * E2E smoke tests for ReviewPanel (feat-review-panel).
+ * E2E smoke tests for ReviewPanel (feat-review-panel + r3-03).
  *
  * Covers:
  *  - AC-1: review-phase sessions render in ReviewPanel, not standard stream pane
@@ -10,6 +10,10 @@
  *  - AC-6: expanding a subagent row shows nested stream output
  *  - AC-7: non-Task tool calls in a review session render with ToolCallRenderer
  *  - AC-8: collapsing/expanding subagent rows does not disrupt scroll position
+ *
+ *  r3-03: detection is Task tool_use based — phase name alone does not control
+ *  the renderer. A phase named "audit" with Task calls gets ReviewPanel; a review
+ *  phase with no Task calls gets LiveStreamPane.
  */
 
 import { test, expect } from '@playwright/test';
@@ -28,11 +32,25 @@ import {
 // ---------------------------------------------------------------------------
 
 const SESS = 'sess-review-test-1';
+// Item associated with the review session (required for per-item session map).
+const ITEM_ID = 'item-review-1';
+const ITEM_TITLE = 'Review Item';
 
-function reviewSession() {
+function reviewItem() {
+  return {
+    id: ITEM_ID,
+    stageId: 'stage-1',
+    displayTitle: ITEM_TITLE,
+    displaySubtitle: null,
+    state: { status: 'in_progress', currentPhase: 'review', retryCount: 0, blockedReason: null },
+  };
+}
+
+function reviewSession(phase = 'review') {
   return {
     sessionId: SESS,
-    phase: 'review',
+    itemId: ITEM_ID,
+    phase,
     attempt: 1,
     startedAt: new Date().toISOString(),
     parentSessionId: null,
@@ -44,42 +62,44 @@ test.beforeEach(async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// AC-1: review-phase session routes to ReviewPanel
+// AC-1: Task-based detection routes correctly
 // ---------------------------------------------------------------------------
 
-test('AC-1: review-phase session renders ReviewPanel summary header', async ({ page }) => {
+test('AC-1: session with Task tool_use renders ReviewPanel summary header', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-ac1', 'Task', { description: 'Review check' }, 3));
   });
   await page.goto(`/workflow/${WF_ID}`);
 
+  // Select the item to activate its session pane
+  await page.getByText(ITEM_TITLE).click();
+
   // ReviewPanel summary header — only ReviewPanel renders this, not LiveStreamPane
-  // Use exact: true to avoid matching "Review check" task description or system notice text
   await expect(page.getByText('Review', { exact: true })).toBeVisible();
   await expect(page.getByText('1 subagents')).toBeVisible();
 });
 
-test('AC-1: implement-phase session does not render ReviewPanel summary header', async ({ page }) => {
+test('AC-1: session with no Task tool_use falls back to LiveStreamPane (r3-03 AC-2)', async ({ page }) => {
+  // No Task calls → LiveStreamPane regardless of phase name (was: hardcoded 'implement' → stream)
   await setupWs(page, (ws) => {
     ws.send(snapshotFrame({
-      activeSessions: [{
-        sessionId: SESS,
-        phase: 'implement',
-        attempt: 1,
-        startedAt: new Date().toISOString(),
-        parentSessionId: null,
-      }],
+      activeSessions: [reviewSession('implement')],
+      items: [reviewItem()],
     }));
     ws.send(sessionStartedFrame(SESS, 'implement', 1, 2));
-    // Task tool_use in an implement-phase session — should render via ToolCallRenderer, not ReviewPanel
-    ws.send(streamToolUseFrame(SESS, 'tool-impl', 'Task', { description: 'Impl Task' }, 3));
+    // Non-Task tool call — must NOT activate ReviewPanel (r3-03 detection is Task-based)
+    ws.send(streamToolUseFrame(SESS, 'tool-bash', 'Bash', { command: 'ls' }, 3));
   });
   await page.goto(`/workflow/${WF_ID}`);
 
-  // Summary header is ReviewPanel-specific — must NOT appear in LiveStreamPane
-  await expect(page.getByText('1 subagents')).not.toBeVisible();
+  await page.getByText(ITEM_TITLE).click();
+
+  // Summary header is ReviewPanel-specific — must NOT appear when no Task blocks present
+  await expect(page.getByText(/subagents/)).not.toBeVisible();
+  // Non-Task tool name appears via standard ToolCallRenderer in LiveStreamPane
+  await expect(page.getByText('Bash')).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -88,11 +108,13 @@ test('AC-1: implement-phase session does not render ReviewPanel summary header',
 
 test('AC-2: Task tool_use renders collapsible subagent row with task description', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-ac2', 'Task', { description: 'Verify auth logic' }, 3));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // Task description appears in the collapsed row header
   await expect(page.getByText('Verify auth logic')).toBeVisible();
@@ -104,11 +126,13 @@ test('AC-2: Task tool_use renders collapsible subagent row with task description
 
 test('AC-2: task description extracted from input.prompt field', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-prompt', 'Task', { prompt: 'Run lint checks' }, 3));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await expect(page.getByText('Run lint checks')).toBeVisible();
 });
@@ -119,12 +143,14 @@ test('AC-2: task description extracted from input.prompt field', async ({ page }
 
 test('AC-3: Task row with ok tool_result shows passed count in summary', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-ok', 'Task', { description: 'Passing task' }, 3));
     ws.send(streamToolResultFrame(SESS, 'tool-ok', 'ok', 'All checks passed', 4));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await expect(page.getByText('Passing task')).toBeVisible();
   // Summary shows ✓ 1 for passed
@@ -133,12 +159,14 @@ test('AC-3: Task row with ok tool_result shows passed count in summary', async (
 
 test('AC-3: Task row with error tool_result shows failed count in summary', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-err', 'Task', { description: 'Failing task' }, 3));
     ws.send(streamToolResultFrame(SESS, 'tool-err', 'error', 'Lint errors found', 4));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await expect(page.getByText('Failing task')).toBeVisible();
   // Summary shows ✗ 1 for failed
@@ -147,11 +175,13 @@ test('AC-3: Task row with error tool_result shows failed count in summary', asyn
 
 test('AC-3: Task row with pending status shows pending count in summary', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-pend', 'Task', { description: 'Pending task' }, 3, 'pending'));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await expect(page.getByText('Pending task')).toBeVisible();
   // Summary shows … 1 for pending/running
@@ -164,13 +194,15 @@ test('AC-3: Task row with pending status shows pending count in summary', async 
 
 test('AC-4: multiple Task rows render in invocation order', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-a', 'Task', { description: 'Alpha task' }, 3));
     ws.send(streamToolUseFrame(SESS, 'tool-b', 'Task', { description: 'Beta task' }, 4));
     ws.send(streamToolUseFrame(SESS, 'tool-c', 'Task', { description: 'Gamma task' }, 5));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // All three task rows are visible
   await expect(page.getByText('Alpha task')).toBeVisible();
@@ -194,7 +226,7 @@ test('AC-4: multiple Task rows render in invocation order', async ({ page }) => 
 
 test('AC-5: summary shows correct total, passed, failed, pending counts', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     // 1 pending, 1 running, 1 ok, 1 error = 4 total; 2 pending+running, 1 ok, 1 error
     ws.send(streamToolUseFrame(SESS, 't-pend', 'Task', { description: 'Pending' }, 3, 'pending'));
@@ -205,6 +237,8 @@ test('AC-5: summary shows correct total, passed, failed, pending counts', async 
     ws.send(streamToolResultFrame(SESS, 't-err', 'error', 'failed', 8));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await expect(page.getByText('4 subagents')).toBeVisible();
   await expect(page.getByText(/✓\s*1/)).toBeVisible();
@@ -227,7 +261,7 @@ test('AC-5: summary updates as results arrive after initial render', async ({ pa
         const f = JSON.parse(msg.toString()) as { type: string };
         if (f.type === 'subscribe') {
           subscribed = true;
-          ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+          ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
           ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
           ws.send(streamToolUseFrame(SESS, 't-dyn', 'Task', { description: 'Dynamic task' }, 3));
         }
@@ -236,6 +270,9 @@ test('AC-5: summary updates as results arrive after initial render', async ({ pa
   });
 
   await page.goto(`/workflow/${WF_ID}`);
+
+  // Select item first
+  await page.getByText(ITEM_TITLE).click();
 
   // Initially: 1 subagent, pending
   await expect(page.getByText('1 subagents')).toBeVisible();
@@ -255,12 +292,14 @@ test('AC-5: summary updates as results arrive after initial render', async ({ pa
 
 test('AC-6: expanding a subagent row reveals its output', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-exp', 'Task', { description: 'Expandable task' }, 3));
     ws.send(streamToolResultFrame(SESS, 'tool-exp', 'ok', 'Output text here', 4));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // Output is hidden while row is collapsed
   await expect(page.getByText('Output text here')).not.toBeVisible();
@@ -274,12 +313,14 @@ test('AC-6: expanding a subagent row reveals its output', async ({ page }) => {
 
 test('AC-6: collapsing an expanded row hides its output', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-coll', 'Task', { description: 'Collapsible task' }, 3));
     ws.send(streamToolResultFrame(SESS, 'tool-coll', 'ok', 'Hidden output', 4));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // Expand
   await page.getByText('Collapsible task').click();
@@ -292,11 +333,13 @@ test('AC-6: collapsing an expanded row hides its output', async ({ page }) => {
 
 test('AC-6: row with running status shows "Running…" when expanded with no output yet', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-run', 'Task', { description: 'In-flight task' }, 3, 'running'));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   await page.getByText('In-flight task').click();
 
@@ -309,28 +352,32 @@ test('AC-6: row with running status shows "Running…" when expanded with no out
 
 test('AC-7: non-Task tool call in review session renders with ToolCallRenderer', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     ws.send(streamToolUseFrame(SESS, 'tool-read', 'ReadFile', { path: '/foo.ts' }, 3));
   });
   await page.goto(`/workflow/${WF_ID}`);
 
+  await page.getByText(ITEM_TITLE).click();
+
   // Standard ToolCallRenderer shows the tool name
   await expect(page.getByText('ReadFile')).toBeVisible();
 
-  // No summary header — ReadFile is not a Task block
+  // No summary header — ReadFile is not a Task block, so LiveStreamPane renders
   await expect(page.getByText(/subagents/)).not.toBeVisible();
 });
 
 test('AC-7: non-Task tool call is excluded from subagent count', async ({ page }) => {
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     // One Task + one non-Task
     ws.send(streamToolUseFrame(SESS, 'tool-task', 'Task', { description: 'Real task' }, 3));
     ws.send(streamToolUseFrame(SESS, 'tool-bash', 'Bash', { command: 'ls' }, 4));
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // Summary counts only Task blocks
   await expect(page.getByText('1 subagents')).toBeVisible();
@@ -348,7 +395,7 @@ test('AC-8: expand/collapse does not disrupt scroll position', async ({ page }) 
   await page.setViewportSize({ width: 900, height: 400 });
 
   await setupWs(page, (ws) => {
-    ws.send(snapshotFrame({ activeSessions: [reviewSession()] }));
+    ws.send(snapshotFrame({ activeSessions: [reviewSession()], items: [reviewItem()] }));
     ws.send(sessionStartedFrame(SESS, 'review', 1, 2));
     // Send tool_use first (seq 3–17), then tool_result (seq 18–32) to keep
     // HWM monotonically increasing so no frame is dropped by deduplication.
@@ -360,6 +407,8 @@ test('AC-8: expand/collapse does not disrupt scroll position', async ({ page }) 
     }
   });
   await page.goto(`/workflow/${WF_ID}`);
+
+  await page.getByText(ITEM_TITLE).click();
 
   // All 15 rows are rendered (collapsed); use exact match to avoid substring conflicts
   await expect(page.getByText('Scroll task 1', { exact: true })).toBeVisible();

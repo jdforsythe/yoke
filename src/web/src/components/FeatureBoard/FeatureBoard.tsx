@@ -36,6 +36,7 @@ import {
 import { useParams } from 'react-router-dom';
 import type { ItemProjection, StageProjection } from '@/ws/types';
 import { itemStatusClass, ITEM_STATUS_OPTIONS } from './itemStatus';
+import { resolveItemDisplayName } from './displayName';
 
 function fuzzyMatch(item: ItemProjection, query: string): boolean {
   if (!query) return true;
@@ -248,6 +249,8 @@ export function FeatureBoard({
     const isHighlighted = highlightedItems.has(item.id);
     const data = itemData[item.id];
     const isExpanded = itemDataExpanded.has(item.id);
+    const stage = stages.find((s) => s.id === item.stageId);
+    const displayName = resolveItemDisplayName(item, stage?.run);
 
     return (
       <div
@@ -281,7 +284,7 @@ export function FeatureBoard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-xs font-medium text-gray-100 truncate">
-                {item.displayTitle ?? item.id}
+                {displayName}
               </span>
               {(item.state.retryCount ?? 0) > 0 && (
                 <span className="text-[10px] px-1 py-0.5 rounded bg-orange-600/30 text-orange-300">

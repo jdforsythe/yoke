@@ -90,7 +90,7 @@ const RERUN_ELIGIBLE: Record<State, boolean> = {
 
 export const RULES: Record<ControlPayload['action'], RuleFn> = {
   pause: (ctx) => ctx.workflowStatus === 'in_progress',
-  resume: () => false,
+  resume: (ctx) => ctx.workflowStatus === 'paused',
   cancel: (ctx) => !(TERMINAL_WF[ctx.workflowStatus as WorkflowStatus] ?? false),
   skip: (ctx) =>
     !!ctx.selectedItem &&
@@ -117,6 +117,13 @@ export const RULES: Record<ControlPayload['action'], RuleFn> = {
 // ---------------------------------------------------------------------------
 
 export const SUPPORTED_ACTIONS: Set<ControlPayload['action']> = new Set([
+  'pause',
+  'resume',
   'cancel',
+  'skip',
   'retry',
+  'unblock',
+  'inject-context',
+  'rerun-phase',
+  'approve-stage',
 ]);

@@ -45,6 +45,15 @@ const ACTION_META: Record<ControlPayload['action'], ActionMeta> = {
     confirmMessage: 'Skip this item?',
     requiresItemId: true,
   },
+  // Retry is intentionally workflow-scoped: POST /api/workflows/:id/retry fires
+  // user_retry on ALL awaiting_user items in the workflow, not just the selected
+  // item.  This matches the server endpoint scope (see src/server/pipeline/retry-items.ts).
+  //
+  // Per-item retry was considered during r3-02 and deliberately not implemented:
+  // the single-button UX is simpler and covers the common case where all blocked
+  // items share the same root cause and should resume together.  If per-item
+  // retry is ever needed, add POST /api/workflows/:id/items/:itemId/retry on the
+  // server and a per-item action entry point here (requiresItemId: true).
   retry: { label: 'Retry' },
   unblock: { label: 'Unblock', requiresItemId: true },
   'inject-context': { label: 'Inject context' },

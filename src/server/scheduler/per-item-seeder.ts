@@ -230,8 +230,8 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
     const insertStmt = writer.prepare(`
       INSERT INTO items
         (id, workflow_id, stage_id, data, status, current_phase,
-         depends_on, retry_count, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+         depends_on, retry_count, stable_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `);
 
     for (const rec of records) {
@@ -252,6 +252,7 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
         'pending',
         firstPhase,
         dependsOn,
+        rec.stableId,
         now,
       );
     }
