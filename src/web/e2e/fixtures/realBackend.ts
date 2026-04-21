@@ -50,12 +50,12 @@ export interface BackendHandle {
 }
 
 /**
- * Minimal .yoke.yml that passes loadConfig validation.
+ * Minimal template that passes loadTemplate validation.
  * noScheduler: true means prompt_template is never read at runtime,
  * so the dummy path is fine.
  */
 const MINIMAL_CONFIG = `version: "1"
-project:
+template:
   name: e2e-test
 pipeline:
   stages:
@@ -76,13 +76,14 @@ export const test = base.extend<{ backend: BackendHandle }>({
     const tempDir = path.join(os.tmpdir(), `yoke-e2e-${randomUUID()}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
-    const configPath = path.join(tempDir, '.yoke.yml');
-    fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
+    const templatesDir = path.join(tempDir, '.yoke', 'templates');
+    fs.mkdirSync(templatesDir, { recursive: true });
+    fs.writeFileSync(path.join(templatesDir, 'default.yml'), MINIMAL_CONFIG, 'utf8');
 
     let handle: Awaited<ReturnType<typeof startServer>> | null = null;
     try {
       handle = await startServer({
-        configPath,
+        configDir: tempDir,
         port: 0,            // OS-assigned port — no collisions between parallel tests
         noScheduler: true,  // no items advance, no worktree ops, no git needed
         _gitCheck: async () => {}, // bypass git-repo guard for temp dirs
