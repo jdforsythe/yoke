@@ -2,8 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { startServer, GitRepoRequiredError } from '../../src/cli/start.js';
 import { ConfigLoadError } from '../../src/server/config/errors.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const tsxBin = path.resolve(__dirname, '../../node_modules/.bin/tsx');
+const cliEntry = path.resolve(__dirname, '../../src/cli/index.ts');
 
 /** No-op git check: bypasses the git-repo guard for tests that run outside a git repo. */
 const noopGitCheck = async (_dir: string): Promise<void> => { /* passthrough */ };
@@ -149,5 +155,25 @@ describe('yoke start — startServer()', () => {
 
     await handle.close();
     expect(fs.existsSync(serverJsonPath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --config deprecation error (AC-4: exercises the Commander action layer)
+// ---------------------------------------------------------------------------
+
+describe('yoke start --config deprecation error', () => {
+  it('exits 1 with a clear deprecation message when --config is passed', () => {
+    // Invoke via a child process to exercise the Commander action (which calls
+    // process.exit(1)) without killing the test runner.
+    const result = spawnSync(tsxBin, [cliEntry, 'start', '--config', 'somefile.yml'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+
+    expect(result.status).toBe(1);
+    const output = (result.stderr ?? '') + (result.stdout ?? '');
+    expect(output).toContain('--config is no longer supported');
+    expect(output).toContain('--config-dir');
   });
 });
