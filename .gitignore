@@ -5,7 +5,9 @@ dist/
 *.db-wal
 *.db-shm
 .worktrees/
-.yoke/
+.yoke/*
+!.yoke/templates/
+!.yoke/templates/**
 handoff.json
 handoff-*.json
 review-verdict.json

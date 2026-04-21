@@ -1,7 +1,8 @@
 version: "1"
 
-project:
+template:
   name: yoke-templates
+  description: "Yoke workflow templates feature pipeline"
 
 pipeline:
   stages:
