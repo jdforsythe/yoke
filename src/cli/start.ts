@@ -252,12 +252,13 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
     const { workflowId } = createWorkflow(db, templateConfig, { name }, ingestDeps);
 
     // Query existing workflows from the same template for the soft-collision hint.
+    // template_name in the DB stores config.template.name (the YAML name), not the file name.
     const existingRows = db
       .reader()
       .prepare(
         'SELECT name FROM workflows WHERE template_name = ? AND id != ? ORDER BY created_at DESC',
       )
-      .all(templateName, workflowId) as Array<{ name: string }>;
+      .all(templateConfig.template.name, workflowId) as Array<{ name: string }>;
 
     return {
       status: 'created',
