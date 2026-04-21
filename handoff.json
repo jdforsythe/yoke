@@ -1483,6 +1483,24 @@
         "skipStartupPause defaults to false (production behavior). Any future test that constructs new Scheduler({}) directly and calls start() will need to add skipStartupPause:true or accept that workflows it inserts will be paused immediately. The pattern is established but not enforced by the type system.",
         "The startup-pause UPDATE runs inside start() synchronously before _scheduleTick() is called. If start() is called while a previous scheduler tick is already in progress (i.e., stop()+start() without awaiting the tick drain), there is a brief window where the UPDATE could race with a running tick. In practice, stop() awaits the current tick via the tick lock, so this is not a real race, but it is not formally documented."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "3da50f41-d533-4f89-bbd6-bd88a72ab05d",
+      "ts": "2026-04-21T19:00:00Z",
+      "note": "Implemented t-08 in full. WorkflowListRoute.tsx: complete replacement with template picker grid (GET /api/templates, loading/error/empty states) and NewWorkflowModal (POST /api/workflows, validation, focus trap, Escape/backdrop close, navigate to /workflow/:id on 201). WorkflowList.tsx: added workflow.created WS frame handler to prepend newly created workflows to sidebar. ws/types.ts: added workflow.created to ServerFrameType union and WorkflowCreatedPayload interface. workflow-create.spec.ts: 8 Playwright tests split into real-backend (happy path: list→modal→create→detail route, all ACs 1-5) and mocked (edge cases: whitespace validation, Escape, blur error, empty state, error+retry, description render, backdrop click). Key fix: listTemplates uses filename as template name (not YAML template.name), so real backend test uses template-card-default. Backdrop click test uses position:{x:10,y:10} to avoid the centered dialog panel intercepting. All 8 e2e tests pass; 1594 unit tests pass; typecheck exits 0.",
+      "intended_files": [
+        "src/web/e2e/real/workflow-create.spec.ts",
+        "src/web/src/routes/WorkflowListRoute.tsx",
+        "src/web/src/components/WorkflowList/WorkflowList.tsx",
+        "src/web/src/ws/types.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "Mock tests in mockTest.describe use base @playwright/test (no backend fixture), so they rely entirely on page.route() stubs. If a test forgets to mock a required endpoint, the test will fail with a network error rather than a helpful assertion failure.",
+        "The backdrop click test uses a fixed coordinate offset (10,10) to avoid the centered dialog panel. If the viewport size changes or a future layout wraps the modal differently, this offset may need adjustment. Using data-testid=modal-backdrop with position is more robust than positional guessing."
+      ]
     }
   ]
 }
