@@ -1418,6 +1418,47 @@
         "tests/scheduler/crash-recovery.test.ts"
       ],
       "deferred_criteria": []
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "33a9fdca-1792-4e1d-a862-9117a4271695",
+      "ts": "2026-04-21T14:25:00Z",
+      "note": "Implemented t-05 (multi-workflow scheduler refactor) in full. Three changes committed in two commits: (1) Removed cached this.workflowId field from Scheduler — it was already unused; the tick loop was already multi-workflow capable via _processWorkflows() which queries all non-terminal workflows per tick. (2) Added AND paused_at IS NULL predicate to the _processWorkflows() SQL query so explicitly-paused workflows (t-06 feature) are skipped without state-machine intervention; leverages the idx_workflows_paused_at index added by migration 0005. (3) Changed makeWorktreeDirName in branch.ts from slug-uuid8 format to returning the raw workflowId UUID as the directory name — each workflow now gets .worktrees/<uuid> ensuring collision-free per-workflow isolation even when two workflows share the same user-supplied name or template. Branch names retain the yoke/slug-uuid8 format for git UI readability. Updated branch.test.ts with 4 tests for the new single-argument makeWorktreeDirName signature and manager.test.ts to assert the UUID directory name. Added two new integration tests in scheduler.test.ts under 't-05: two concurrent workflows from same template': (a) creates two workflows from the same template config, runs them concurrently, asserts both reach completed, their worktree paths are distinct UUID directories, and all item.state broadcasts are scoped to the correct workflowId with no cross-contamination between the two; (b) verifies a workflow with paused_at set is never spawned by the tick loop. Retry timers (retryAfterAt, retryModeFor) are keyed by itemId which is a UUID — globally unique across workflows — so no change needed. Crash recovery (buildCrashRecovery) was already called once and returns per-workflow recovery infos, which is the correct approach. All 1557 Vitest tests pass; pnpm typecheck exits 0.",
+      "intended_files": [
+        "src/server/scheduler/scheduler.ts",
+        "src/server/worktree/branch.ts",
+        "src/server/worktree/manager.ts",
+        "tests/worktree/branch.test.ts",
+        "tests/worktree/manager.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "makeWorktreeDirName now returns just the UUID, so existing worktrees created with the old slug-uuid8 naming (from any prior run) will not be found by the new path. Since worktrees are only created for new workflows (never resumed by path lookup in the current code), this is a forward-only change and does not affect existing DB rows.",
+        "The concurrent test uses a per-workflow worktree manager stub that creates actual directories under tmpDir/wts/<uuid>. These are cleaned up by the afterEach fs.rmSync. If the test is killed mid-run, the directories may be left in os.tmpdir().",
+        "The paused_at IS NULL predicate is wired but there is no API to set paused_at yet (t-06 adds that). The scheduler test sets it via db.writer directly. The t-06 implementation will need to use db.writer or an engine function to set/clear paused_at."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "09d1b1f6-140c-4086-91c2-5bad276e130d",
+      "ts": "2026-04-21T14:35:00Z",
+      "note": "Implemented t-07 in full. Four changes across four commits: (1) src/server/api/frames.ts — added 'workflow.created' to ServerFrameType union. (2) src/server/api/ws.ts — added broadcastAll() to WsClientRegistry that sends a frame to all connected clients regardless of subscription (required since newly-created workflows have no subscribers yet). (3) src/server/api/server.ts — added ListTemplatesFn, CreateWorkflowFn, CreateWorkflowResult types; added listTemplates? and createWorkflow? to ServerCallbacks; added GET /api/templates (returns {templates:[{name,description}]} from the callback, empty list if unconfigured) and POST /api/workflows (validates templateName/name, delegates DB write to createWorkflow callback (RC-3), broadcasts workflow.created via registry.broadcastAll() from the route handler closure, returns 201 {workflowId,name,sameTemplateNames}). (4) src/cli/start.ts — added imports for listTemplates, createWorkflow, makeProductionIngestDeps; wired callbacks.listTemplates (wraps listTemplates(configDir) with catch→[] for safety) and callbacks.createWorkflow (calls loadTemplate then createWorkflow from ingest.ts; queries existing workflows by config.template.name for soft-collision detection; ConfigLoadError.not_found → template_not_found result, other errors → template_error). Tests in tests/api/workflows-create.test.ts cover all 9 ACs: 6 GET /api/templates cases, 8 POST /api/workflows cases including WS broadcast assertion (real WebSocket client connected to a listening Fastify instance receives workflow.created within 2s). All 1576 Vitest tests pass; pnpm typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/server/api/frames.ts",
+        "src/server/api/ws.ts",
+        "src/server/api/server.ts",
+        "src/cli/start.ts",
+        "tests/api/workflows-create.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "template_name in the workflows table stores config.template.name (the YAML template.name field) rather than the template file name. The soft-collision query in callbacks.createWorkflow uses config.template.name for the WHERE clause to match what's in the DB. If two template files have the same YAML template.name but different filenames, they will be treated as the same template for collision detection. In practice, template file names should match the YAML template name.",
+        "broadcastAll() sends to all registered sockets regardless of subscription. If a large number of clients are connected and many workflows are created rapidly, this could produce a burst of workflow.created frames. In practice, the server is single-user (localhost), so this is not a concern.",
+        "The POST /api/workflows route does not use Fastify JSON schema validation (Ajv-on-routes). It uses the same manual validation pattern as all other routes in server.ts. The AC says 'if using the existing Ajv-on-routes pattern' — the existing pattern is manual validation, so this is correct."
+      ]
     }
   ]
 }
