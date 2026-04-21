@@ -1,15 +1,19 @@
 /**
- * Unit tests for ingestWorkflow (src/server/scheduler/ingest.ts).
+ * Unit tests for createWorkflow (src/server/scheduler/ingest.ts).
  *
  * Coverage:
- *   - Fresh ingest creates name as `${projectName}-${workflowId.slice(0,8)}`
- *   - Two consecutive fresh ingests against the same project produce distinct names
- *   - Resume path (live workflow exists) returns the same workflowId without
- *     changing the name (stable suffix for the lifetime of a workflow)
+ *   - Two back-to-back createWorkflow calls from the same template produce two
+ *     distinct workflow rows with distinct UUIDs (no dedup / resume path)
+ *   - User-supplied name is stored verbatim (no suffix appended)
+ *   - template_name column is populated from config.template.name
+ *   - pipeline JSON snapshot captures the full stages array
+ *   - depends_on chaining across stages is preserved
  *   - github_state init: disabled (github.enabled=false)
  *   - github_state init: unconfigured (github.enabled=true, no remote URL)
  *   - github_state init: idle (github.enabled=true, valid remote URL parsed)
- *   - Resume path does not re-call initGithubState (github_state preserved)
+ *   - github_state init: unconfigured when deps omitted
+ *   - github_state init: unconfigured when remote URL malformed
+ *   - Full github config (pr_target_branch + auth_order) accepted without throw
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -20,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { DbPool } from '../../src/server/storage/db.js';
-import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
+import { createWorkflow } from '../../src/server/scheduler/ingest.js';
 import type { IngestDeps } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 
@@ -41,11 +45,11 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeConfig(projectName = 'yoke', configDir?: string, extra?: Partial<ResolvedConfig>): ResolvedConfig {
+function makeConfig(templateName = 'yoke', configDir?: string, extra?: Partial<ResolvedConfig>): ResolvedConfig {
   return {
     version: '1',
     configDir: configDir ?? tmpDir,
-    template: { name: projectName },
+    template: { name: templateName },
     pipeline: {
       stages: [
         { id: 'stage-one', run: 'once', phases: ['phase-a'] },
@@ -62,81 +66,135 @@ function makeConfig(projectName = 'yoke', configDir?: string, extra?: Partial<Re
   };
 }
 
-function getWorkflowRow(workflowId: string): { id: string; name: string; github_state: string | null } {
+function getWorkflowRow(workflowId: string): {
+  id: string;
+  name: string;
+  template_name: string | null;
+  pipeline: string;
+  github_state: string | null;
+} {
   return db.reader()
-    .prepare('SELECT id, name, github_state FROM workflows WHERE id = ?')
-    .get(workflowId) as { id: string; name: string; github_state: string | null };
+    .prepare('SELECT id, name, template_name, pipeline, github_state FROM workflows WHERE id = ?')
+    .get(workflowId) as {
+      id: string;
+      name: string;
+      template_name: string | null;
+      pipeline: string;
+      github_state: string | null;
+    };
 }
 
 // ---------------------------------------------------------------------------
-// Existing name-suffix tests (unchanged behaviour)
+// AC: always inserts — no dedup
 // ---------------------------------------------------------------------------
 
-describe('ingestWorkflow — name suffix', () => {
-  it('formats name as ${projectName}-${first8charsOfUUID}', () => {
-    const config = makeConfig('yoke');
-    const { workflowId } = ingestWorkflow(db, config);
-    const row = getWorkflowRow(workflowId);
-
-    expect(row.name).toMatch(/^yoke-[0-9a-f]{8}$/);
-    expect(row.name).toBe(`yoke-${workflowId.slice(0, 8)}`);
-  });
-
-  it('produces distinct names for two consecutive fresh ingests', () => {
+describe('createWorkflow — always inserts a new row', () => {
+  it('creates a distinct workflow row on each call with the same template', () => {
     const config = makeConfig('yoke');
 
-    // First ingest creates a new workflow.
-    const first = ingestWorkflow(db, config);
-    expect(first.isResume).toBe(false);
+    const first = createWorkflow(db, config, { name: 'my-run-1' });
+    const second = createWorkflow(db, config, { name: 'my-run-2' });
 
-    // Move the first workflow to a terminal state so the second is fresh too.
-    db.writer
-      .prepare("UPDATE workflows SET status = 'completed' WHERE id = ?")
-      .run(first.workflowId);
-
-    // Second ingest creates another new workflow.
-    const second = ingestWorkflow(db, config);
-    expect(second.isResume).toBe(false);
-    expect(second.workflowId).not.toBe(first.workflowId);
+    expect(first.workflowId).toBeTruthy();
+    expect(second.workflowId).toBeTruthy();
+    expect(first.workflowId).not.toBe(second.workflowId);
 
     const firstRow = getWorkflowRow(first.workflowId);
     const secondRow = getWorkflowRow(second.workflowId);
 
-    expect(firstRow.name).not.toBe(secondRow.name);
-    expect(firstRow.name).toBe(`yoke-${first.workflowId.slice(0, 8)}`);
-    expect(secondRow.name).toBe(`yoke-${second.workflowId.slice(0, 8)}`);
+    expect(firstRow).toBeDefined();
+    expect(secondRow).toBeDefined();
   });
 
-  it('resume path returns same workflowId and does not change the name', () => {
+  it('two calls from the same template with the same name produce two distinct rows', () => {
     const config = makeConfig('yoke');
 
-    const { workflowId: originalId } = ingestWorkflow(db, config);
-    const originalRow = getWorkflowRow(originalId);
+    const first = createWorkflow(db, config, { name: 'duplicate-name' });
+    const second = createWorkflow(db, config, { name: 'duplicate-name' });
 
-    // Second call against the same live workflow should resume.
-    const { workflowId: resumedId, isResume } = ingestWorkflow(db, config);
+    expect(first.workflowId).not.toBe(second.workflowId);
 
-    expect(isResume).toBe(true);
-    expect(resumedId).toBe(originalId);
+    const allRows = db.reader()
+      .prepare('SELECT id FROM workflows WHERE name = ?')
+      .all('duplicate-name') as { id: string }[];
 
-    const resumedRow = getWorkflowRow(resumedId);
-    expect(resumedRow.name).toBe(originalRow.name);
+    // Both rows must exist — no dedup removes the second insert.
+    expect(allRows).toHaveLength(2);
   });
 });
 
 // ---------------------------------------------------------------------------
-// github_state init paths (AC: all three paths covered)
+// AC: name stored verbatim, template_name populated
 // ---------------------------------------------------------------------------
 
-describe('ingestWorkflow — github_state initialisation', () => {
+describe('createWorkflow — name and template_name columns', () => {
+  it('stores user-supplied name verbatim (no suffix appended)', () => {
+    const config = makeConfig('my-template');
+    const { workflowId } = createWorkflow(db, config, { name: 'my-feature-run' });
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.name).toBe('my-feature-run');
+  });
+
+  it('populates template_name from config.template.name', () => {
+    const config = makeConfig('awesome-template');
+    const { workflowId } = createWorkflow(db, config, { name: 'run-1' });
+    const row = getWorkflowRow(workflowId);
+
+    expect(row.template_name).toBe('awesome-template');
+  });
+
+  it('pipeline snapshot captures the full stages array', () => {
+    const config = makeConfig('yoke', undefined, {
+      pipeline: {
+        stages: [
+          { id: 's1', run: 'once', phases: ['phase-a'] },
+          { id: 's2', run: 'once', phases: ['phase-a'] },
+        ],
+      },
+    });
+    const { workflowId } = createWorkflow(db, config, { name: 'snapshot-test' });
+    const row = getWorkflowRow(workflowId);
+    const pipeline = JSON.parse(row.pipeline) as { stages: { id: string }[] };
+
+    expect(pipeline.stages).toHaveLength(2);
+    expect(pipeline.stages[0].id).toBe('s1');
+    expect(pipeline.stages[1].id).toBe('s2');
+  });
+
+  it('chains depends_on across stages (stage N+1 depends on stage N item)', () => {
+    const config = makeConfig('yoke', undefined, {
+      pipeline: {
+        stages: [
+          { id: 's1', run: 'once', phases: ['phase-a'] },
+          { id: 's2', run: 'once', phases: ['phase-a'] },
+        ],
+      },
+    });
+    const { workflowId } = createWorkflow(db, config, { name: 'chain-test' });
+    const items = db.reader()
+      .prepare('SELECT id, stage_id, depends_on FROM items WHERE workflow_id = ? ORDER BY rowid')
+      .all(workflowId) as { id: string; stage_id: string; depends_on: string | null }[];
+
+    expect(items).toHaveLength(2);
+    expect(items[0].depends_on).toBeNull();
+    const deps = JSON.parse(items[1].depends_on!);
+    expect(deps).toEqual([items[0].id]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// github_state init paths
+// ---------------------------------------------------------------------------
+
+describe('createWorkflow — github_state initialisation', () => {
   it('sets github_state=disabled when github.enabled=false', () => {
     const config = makeConfig('yoke', undefined, {
       github: { enabled: false, auto_pr: true },
     });
-    // Even with a valid remote URL, disabled flag wins.
     const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
 
-    const { workflowId } = ingestWorkflow(db, config, deps);
+    const { workflowId } = createWorkflow(db, config, { name: 'run' }, deps);
     const row = getWorkflowRow(workflowId);
 
     expect(row.github_state).toBe('disabled');
@@ -146,21 +204,20 @@ describe('ingestWorkflow — github_state initialisation', () => {
     const config = makeConfig('yoke', undefined, {
       github: { enabled: true, auto_pr: true },
     });
-    // getRemoteOriginUrl returns null — git remote not configured.
     const deps: IngestDeps = { getRemoteOriginUrl: () => null };
 
-    const { workflowId } = ingestWorkflow(db, config, deps);
+    const { workflowId } = createWorkflow(db, config, { name: 'run' }, deps);
     const row = getWorkflowRow(workflowId);
 
     expect(row.github_state).toBe('unconfigured');
   });
 
-  it('sets github_state=unconfigured when deps not provided (no git helper)', () => {
+  it('sets github_state=unconfigured when deps not provided', () => {
     const config = makeConfig('yoke', undefined, {
       github: { enabled: true, auto_pr: true },
     });
-    // No deps passed — falls back to hasOwnerRepo=false → unconfigured.
-    const { workflowId } = ingestWorkflow(db, config);
+
+    const { workflowId } = createWorkflow(db, config, { name: 'run' });
     const row = getWorkflowRow(workflowId);
 
     expect(row.github_state).toBe('unconfigured');
@@ -172,7 +229,7 @@ describe('ingestWorkflow — github_state initialisation', () => {
     });
     const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
 
-    const { workflowId } = ingestWorkflow(db, config, deps);
+    const { workflowId } = createWorkflow(db, config, { name: 'run' }, deps);
     const row = getWorkflowRow(workflowId);
 
     expect(row.github_state).toBe('idle');
@@ -182,39 +239,15 @@ describe('ingestWorkflow — github_state initialisation', () => {
     const config = makeConfig('yoke', undefined, {
       github: { enabled: true, auto_pr: true },
     });
-    // Malformed URL — parseGitRemoteUrl returns null → hasOwnerRepo=false.
     const deps: IngestDeps = { getRemoteOriginUrl: () => 'not-a-valid-git-url' };
 
-    const { workflowId } = ingestWorkflow(db, config, deps);
+    const { workflowId } = createWorkflow(db, config, { name: 'run' }, deps);
     const row = getWorkflowRow(workflowId);
 
     expect(row.github_state).toBe('unconfigured');
   });
 
-  it('resume path does not re-call initGithubState (github_state preserved)', () => {
-    const config = makeConfig('yoke', undefined, {
-      github: { enabled: true, auto_pr: true },
-    });
-    const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
-
-    // Fresh ingest → github_state = 'idle'
-    const { workflowId } = ingestWorkflow(db, config, deps);
-    expect(getWorkflowRow(workflowId).github_state).toBe('idle');
-
-    // Manually set github_state to 'creating' to simulate mid-run state.
-    db.writer
-      .prepare("UPDATE workflows SET github_state = 'creating' WHERE id = ?")
-      .run(workflowId);
-    expect(getWorkflowRow(workflowId).github_state).toBe('creating');
-
-    // Second ingest (resume) must NOT reset github_state.
-    const { isResume } = ingestWorkflow(db, config, deps);
-    expect(isResume).toBe(true);
-    expect(getWorkflowRow(workflowId).github_state).toBe('creating');
-  });
-
   it('accepts full github config with pr_target_branch and auth_order (no throw)', () => {
-    // Mirrors the github section in .yoke.yml and .yoke-round-3.yml verbatim.
     const config = makeConfig('yoke', undefined, {
       github: {
         enabled: true,
@@ -225,10 +258,8 @@ describe('ingestWorkflow — github_state initialisation', () => {
     });
     const deps: IngestDeps = { getRemoteOriginUrl: () => 'git@github.com:owner/repo.git' };
 
-    expect(() => ingestWorkflow(db, config, deps)).not.toThrow();
-
-    const { workflowId } = ingestWorkflow(db, config);
-    // The first call created a live workflow; second call resumes — both are fine.
-    expect(workflowId).toBeTruthy();
+    expect(() => createWorkflow(db, config, { name: 'run-1' }, deps)).not.toThrow();
+    // Second call — no dedup, a second row is created without throwing.
+    expect(() => createWorkflow(db, config, { name: 'run-2' }, deps)).not.toThrow();
   });
 });

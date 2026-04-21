@@ -5,7 +5,7 @@
  * so no real git, worktrees, or agent processes are required.
  *
  * Coverage:
- *   AC-1  ingestWorkflow seeds workflow + item rows within the poll window.
+ *   AC-1  createWorkflow seeds workflow + item rows; scheduler.start() picks them up.
  *   AC-2  Crash recovery transitions stale in_progress → awaiting_retry before
  *         any new items are scheduled.
  *   AC-2b Capture mode: fixture file written when .yoke/record.json is present;
@@ -39,7 +39,7 @@ import type { ProcessManager, SpawnHandle, SpawnOpts } from '../../src/server/pr
 import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/server/worktree/manager.js';
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
 import type { ArtifactValidatorFn } from '../../src/server/scheduler/scheduler.js';
-import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
+import { createWorkflow } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 import { runRecord } from '../../src/cli/record.js';
 import { parseFixture } from '../../src/server/process/scripted-manager.js';
@@ -245,16 +245,15 @@ function buildScheduler(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// AC-1: ingestWorkflow
+// AC-1: createWorkflow
 // ---------------------------------------------------------------------------
 
-describe('AC-1: ingestWorkflow', () => {
+describe('AC-1: createWorkflow', () => {
   it('creates a workflow row and one item per stage', () => {
     const config = makeConfig();
-    const { workflowId, isResume } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'test-workflow' });
 
     expect(typeof workflowId).toBe('string');
-    expect(isResume).toBe(false);
 
     const wf = db.reader()
       .prepare('SELECT * FROM workflows WHERE id = ?')
@@ -271,13 +270,17 @@ describe('AC-1: ingestWorkflow', () => {
     expect(items[0].status).toBe('pending');
   });
 
-  it('returns isResume:true and the existing id on second call', () => {
+  it('two calls produce distinct workflow rows (no dedup)', () => {
     const config = makeConfig();
-    const first = ingestWorkflow(db, config);
-    const second = ingestWorkflow(db, config);
+    const first = createWorkflow(db, config, { name: 'run-1' });
+    const second = createWorkflow(db, config, { name: 'run-2' });
 
-    expect(second.workflowId).toBe(first.workflowId);
-    expect(second.isResume).toBe(true);
+    expect(first.workflowId).not.toBe(second.workflowId);
+
+    const all = db.reader()
+      .prepare('SELECT id FROM workflows')
+      .all() as { id: string }[];
+    expect(all).toHaveLength(2);
   });
 
   it('chains depends_on across stages (stage N+1 depends on stage N item)', () => {
@@ -289,7 +292,7 @@ describe('AC-1: ingestWorkflow', () => {
         ],
       },
     });
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'chain-test' });
     const items = db.reader()
       .prepare('SELECT id, stage_id, depends_on FROM items WHERE workflow_id = ? ORDER BY rowid')
       .all(workflowId) as { id: string; stage_id: string; depends_on: string | null }[];
@@ -310,7 +313,7 @@ describe('AC-2: crash recovery before scheduling', () => {
     // Manually seed a workflow + item in in_progress + a sessions row simulating
     // a stale session from a previous run.
     const config = makeConfig();
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-recovery-test' });
 
     // Advance item to in_progress by hand.
     const [item] = db.reader()
@@ -1714,8 +1717,8 @@ describe('feat-pipeline-hardening: restart with awaiting_retry items', () => {
   it('backoff_elapsed fires for awaiting_retry items after scheduler restart', async () => {
     const config = makeConfig();
 
-    // Ingest workflow and manually set the item to awaiting_retry.
-    const { workflowId } = ingestWorkflow(db, config);
+    // Create workflow and manually set the item to awaiting_retry.
+    const { workflowId } = createWorkflow(db, config, { name: 'retry-restart-test' });
     const items = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -1783,7 +1786,7 @@ describe('feat-pipeline-hardening: two-phase workflow', () => {
       },
     });
 
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'two-phase-test' });
     const { scheduler, broadcasts } = buildScheduler({ config, pollIntervalMs: 50 });
     await scheduler.start();
 

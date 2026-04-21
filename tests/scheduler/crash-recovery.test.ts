@@ -26,7 +26,7 @@ import type { DbPool } from '../../src/server/storage/db.js';
 import type { ProcessManager, SpawnHandle, SpawnOpts } from '../../src/server/process/manager.js';
 import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/server/worktree/manager.js';
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
-import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
+import { createWorkflow } from '../../src/server/scheduler/ingest.js';
 import { ActiveFaultInjector } from '../../src/server/fault/injector.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 
@@ -262,7 +262,7 @@ describe('AC-3: session_ok fault injection → crash recovery restart', () => {
     const fi = new ActiveFaultInjector(['session_ok']);
     const scheduler1 = buildScheduler({ config, faultInjector: fi });
 
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-test' });
     await scheduler1.start();
 
     // Wait for the session row to appear (means spawn happened, PID written).
@@ -323,7 +323,7 @@ describe('feat-pipeline-hardening: stale sessions ended during crash recovery', 
     const fi = new ActiveFaultInjector(['session_ok']);
     const scheduler1 = buildScheduler({ config, faultInjector: fi });
 
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-test' });
     await scheduler1.start();
 
     // Wait for session to be created with 'running' status.
@@ -377,7 +377,7 @@ describe('AC-4c: rate_limited item at restart', () => {
     const config = makeConfig();
 
     // Seed the workflow so we have the ids.
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-test' });
     const items = readAllItems(workflowId);
     const itemId = items[0].id;
 
@@ -415,7 +415,7 @@ describe('AC-4c: rate_limited item at restart', () => {
 describe('default (no fault injector): happy path completes normally', () => {
   it('item reaches complete without a fault injector', async () => {
     const config = makeConfig();
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-test' });
     const items = readAllItems(workflowId);
 
     const scheduler = buildScheduler({ config });  // no faultInjector = NoopFaultInjector
