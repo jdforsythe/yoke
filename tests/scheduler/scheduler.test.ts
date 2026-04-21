@@ -36,7 +36,7 @@ import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { DbPool } from '../../src/server/storage/db.js';
 import type { ProcessManager, SpawnHandle, SpawnOpts } from '../../src/server/process/manager.js';
-import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/server/worktree/manager.js';
+import type { WorktreeManager, WorktreeInfo, BootstrapEvent, CreateWorktreeOpts } from '../../src/server/worktree/manager.js';
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
 import type { ArtifactValidatorFn } from '../../src/server/scheduler/scheduler.js';
 import { createWorkflow } from '../../src/server/scheduler/ingest.js';
@@ -1923,4 +1923,182 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
 
     await sched.stop();
   }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// t-05: Two concurrent workflows from the same template — no cross-contamination
+// ---------------------------------------------------------------------------
+
+describe('t-05: two concurrent workflows from same template', () => {
+  it('advances both workflows independently with no shared state', async () => {
+    // Create two workflows from the same config (template).
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const wf1 = createWorkflow(db, config, { name: 'alpha-run' });
+    const wf2 = createWorkflow(db, config, { name: 'beta-run' });
+
+    // Per-workflow worktree manager: uses workflowId as the directory name
+    // so each workflow gets its own isolated path, matching production behaviour.
+    const perWfWorktreeManager: WorktreeManager = {
+      async createWorktree(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
+        const wt = path.join(tmpDir, 'wts', opts.workflowId);
+        fs.mkdirSync(wt, { recursive: true });
+        return {
+          branchName: `yoke/test-${opts.workflowId.slice(0, 8)}`,
+          worktreePath: wt,
+        };
+      },
+      async runBootstrap(): Promise<BootstrapEvent> {
+        return { type: 'bootstrap_ok' };
+      },
+      async cleanup() {
+        return { worktreeRemoved: true, branchRetained: false };
+      },
+    } as unknown as WorktreeManager;
+
+    const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
+    const scheduler = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: perWfWorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: (wid, sid, ft, p) => broadcasts.push({ workflowId: wid, sessionId: sid, frameType: ft, payload: p }),
+      maxParallel: 4,
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(scheduler);
+
+    await scheduler.start();
+
+    // Both workflows must reach 'completed' independently.
+    await pollUntil(() => {
+      const wf1Row = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(wf1.workflowId) as { status: string } | undefined;
+      const wf2Row = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(wf2.workflowId) as { status: string } | undefined;
+      return wf1Row?.status === 'completed' && wf2Row?.status === 'completed';
+    }, { timeoutMs: 15_000 });
+
+    // Verify each workflow independently completed.
+    const wf1Final = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wf1.workflowId) as { status: string };
+    const wf2Final = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wf2.workflowId) as { status: string };
+
+    expect(wf1Final.status).toBe('completed');
+    expect(wf2Final.status).toBe('completed');
+
+    // Worktree paths must be distinct (per-UUID directories).
+    const wf1Row = db.reader()
+      .prepare('SELECT worktree_path FROM workflows WHERE id = ?')
+      .get(wf1.workflowId) as { worktree_path: string | null };
+    const wf2Row = db.reader()
+      .prepare('SELECT worktree_path FROM workflows WHERE id = ?')
+      .get(wf2.workflowId) as { worktree_path: string | null };
+
+    expect(wf1Row.worktree_path).not.toBeNull();
+    expect(wf2Row.worktree_path).not.toBeNull();
+    expect(wf1Row.worktree_path).not.toBe(wf2Row.worktree_path);
+
+    // item.state broadcasts must be scoped to the correct workflowId —
+    // no cross-contamination between the two concurrent workflows.
+    const wf1ItemIds = (
+      db.reader()
+        .prepare('SELECT id FROM items WHERE workflow_id = ?')
+        .all(wf1.workflowId) as { id: string }[]
+    ).map((r) => r.id);
+    const wf2ItemIds = (
+      db.reader()
+        .prepare('SELECT id FROM items WHERE workflow_id = ?')
+        .all(wf2.workflowId) as { id: string }[]
+    ).map((r) => r.id);
+
+    const wf1Broadcasts = broadcasts.filter((b) => b.workflowId === wf1.workflowId);
+    const wf2Broadcasts = broadcasts.filter((b) => b.workflowId === wf2.workflowId);
+
+    // Every item.state broadcast for wf1 must reference an item belonging to wf1.
+    for (const b of wf1Broadcasts.filter((b) => b.frameType === 'item.state')) {
+      const p = b.payload as { itemId: string };
+      expect(wf1ItemIds).toContain(p.itemId);
+      expect(wf2ItemIds).not.toContain(p.itemId);
+    }
+
+    // Every item.state broadcast for wf2 must reference an item belonging to wf2.
+    for (const b of wf2Broadcasts.filter((b) => b.frameType === 'item.state')) {
+      const p = b.payload as { itemId: string };
+      expect(wf2ItemIds).toContain(p.itemId);
+      expect(wf1ItemIds).not.toContain(p.itemId);
+    }
+
+    // No pending_attention rows — clean completion, no cross-workflow leakage.
+    const wf1Attention = db.reader()
+      .prepare('SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ?')
+      .get(wf1.workflowId) as { cnt: number };
+    const wf2Attention = db.reader()
+      .prepare('SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ?')
+      .get(wf2.workflowId) as { cnt: number };
+
+    expect(wf1Attention.cnt).toBe(0);
+    expect(wf2Attention.cnt).toBe(0);
+
+    await scheduler.stop();
+  }, 20_000);
+
+  it('paused workflow is skipped by the tick loop', async () => {
+    // Create one workflow, then pause it before starting the scheduler.
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const { workflowId } = createWorkflow(db, config, { name: 'paused-wf-test' });
+
+    // Manually set paused_at on the workflow row so the tick query skips it.
+    db.writer
+      .prepare('UPDATE workflows SET paused_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), workflowId);
+
+    let spawnCount = 0;
+    class SpyPM implements ProcessManager {
+      async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+        spawnCount++;
+        const h = new StubSpawnHandle([{ type: 'exit', code: 0 }]);
+        h.start();
+        return h;
+      }
+    }
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: new SpyPM(),
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+
+    // Wait several ticks — the paused workflow should never spawn.
+    await new Promise<void>((r) => setTimeout(r, 300));
+    expect(spawnCount).toBe(0);
+
+    // Verify the workflow is still pending (not advanced by the tick loop).
+    const wfRow = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wfRow.status).toBe('pending');
+
+    await sched.stop();
+  });
 });
