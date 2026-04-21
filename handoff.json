@@ -1501,6 +1501,33 @@
         "Mock tests in mockTest.describe use base @playwright/test (no backend fixture), so they rely entirely on page.route() stubs. If a test forgets to mock a required endpoint, the test will fail with a network error rather than a helpful assertion failure.",
         "The backdrop click test uses a fixed coordinate offset (10,10) to avoid the centered dialog panel. If the viewport size changes or a future layout wraps the modal differently, this offset may need adjustment. Using data-testid=modal-backdrop with position is more robust than positional guessing."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "cb4e277a-3086-4a84-82b4-b858ca7a7e8c",
+      "ts": "2026-04-21T23:00:00Z",
+      "note": "Implemented t-09 in full. Six source areas changed: (1) src/server/api/ws.ts — added paused_at to buildSnapshot() SQL SELECT, type annotation ({ paused_at: string | null }), and WorkflowSnapshotPayload return shape (pausedAt: row.paused_at). (2) src/server/api/frames.ts — added pausedAt: string | null field to WorkflowSnapshotPayload interface. (3) src/web/src/ws/types.ts — added pausedAt: string | null to WorkflowSnapshot client type. (4) src/web/src/components/PausedBanner/PausedBanner.tsx — new component: visible when pausedAt!=null, shows copy 'This workflow is paused. Click Continue to resume.', Continue button with data-testid=paused-banner-continue, optimistic hide on click, pending state (disabled + label 'Continuing…') to prevent double-submit, POST to /api/workflows/:id/control {action:'continue'}. (5) src/web/src/routes/WorkflowDetailRoute.tsx — added PausedBanner above the main layout column, reading pausedAt from the WS snapshot store. (6) src/cli/start.ts — close() now always calls scheduler.stop() regardless of noScheduler flag; this prevents 'database connection is not open' errors when scheduleIndexUpdate's 500ms debounce timer fires after test teardown closes the DB. E2e tests (real backend): src/web/e2e/real/workflow-paused.spec.ts — 4 tests: AC-1/2/3 (banner renders with Continue, clicking hides it, DB confirms paused_at cleared), double-click dedup (route.fulfill with 300ms delay on first response, force:true second click on disabled button, assert controlCallCount===1), AC-4 (Pause button sends action:pause, banner appears, DB confirms paused_at set), AC-6 full flow (paused→Continue→gone→broadcast item.state→item advances). Dedup test uses page.route()+route.fulfill() instead of route.fallback() to avoid LIFO-chain timing issues with the fixture proxy. Also fixed 5 pre-existing e2e spec failures in app-shell.spec.ts, control-matrix.spec.ts, workflow-detail.spec.ts, workflow-list.spec.ts; added mockTemplatesApi helper to helpers.ts. Final e2e result: 208 passed, 8 pre-existing failures (create-pr-manual, pr-button-live, session-end-no-autoswitch, sidebar-live-status×2, seed-failed-banner:80, stage-history) — none t-09 related.",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/server/api/frames.ts",
+        "src/web/src/ws/types.ts",
+        "src/web/src/components/PausedBanner/PausedBanner.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/cli/start.ts",
+        "src/web/e2e/real/workflow-paused.spec.ts",
+        "src/web/e2e/app-shell.spec.ts",
+        "src/web/e2e/control-matrix.spec.ts",
+        "src/web/e2e/workflow-detail.spec.ts",
+        "src/web/e2e/workflow-list.spec.ts",
+        "src/web/e2e/helpers.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The dedup guard relies on a React useState 'pending' flag. If the component unmounts and remounts between the two clicks (e.g., a WS workflow.update causes a full re-render that tears down PausedBanner), the pending flag resets and a second POST could fire. In practice the optimistic hide (dismissed=true) removes the banner after the first click, so the component is unmounted before any remount could occur — but this is not enforced by the type system.",
+        "scheduler.stop() is now called unconditionally in close() even when noScheduler:true was passed. This is safe because Scheduler.stop() checks _running and drains cleanly when never started. Any future change to Scheduler.stop() that assumes the scheduler was previously started would silently break this assumption.",
+        "The 8 pre-existing real-backend e2e failures are unrelated to t-09: create-pr-manual and pr-button-live require GitHub integration not present in the test environment; session-end-no-autoswitch and sidebar-live-status rely on race-sensitive WS timing; seed-failed-banner and stage-history have separate untracked bugs. These should be tracked and fixed in dedicated tasks."
+      ]
     }
   ]
 }
