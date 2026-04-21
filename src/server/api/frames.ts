@@ -90,6 +90,7 @@ export interface WorkflowSnapshotPayload {
     status: string;
     currentStage: string | null;
     createdAt: string;
+    pausedAt: string | null;
     recoveryState?: unknown | null;
     githubState?: unknown | null;
   };
