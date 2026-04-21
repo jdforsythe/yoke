@@ -4,11 +4,14 @@
  * The Scheduler is the glue layer that wires all existing building blocks into
  * a real workflow execution engine.  On start() it:
  *
- *   1. Calls ingestWorkflow() to seed workflow + item rows into SQLite.
- *   2. Calls buildCrashRecovery() to detect stale sessions from a previous run.
- *   3. Transitions stale in_progress items → session_fail so they don't get
+ *   1. Calls buildCrashRecovery() to detect stale sessions from a previous run.
+ *   2. Transitions stale in_progress items → session_fail so they don't get
  *      double-spawned.
- *   4. Enters a poll/event loop (default 500 ms tick).
+ *   3. Enters a poll/event loop (default 500 ms tick).
+ *
+ * Workflow creation (createWorkflow) is NOT called here — it is invoked by the
+ * API handler (t-07) when the user picks a template and names a new instance.
+ * start() operates on whatever workflow rows already exist in the DB.
  *
  * ## Tick loop
  *
@@ -73,7 +76,6 @@ import {
 } from '../pipeline/engine.js';
 import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
-import { ingestWorkflow, makeProductionIngestDeps } from './ingest.js';
 import { openSessionLog } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamUsageEvent } from '../process/stream-json.js';
@@ -604,28 +606,16 @@ export class Scheduler {
   // -------------------------------------------------------------------------
 
   /**
-   * Ingests the workflow, runs crash recovery, and starts the scheduling loop.
+   * Runs crash recovery and starts the scheduling loop.
    * Returns once the first tick has been queued (not waited for).
+   *
+   * Workflow creation is NOT performed here — call createWorkflow from the API
+   * handler (t-07) before start() or while the scheduler is already running.
    */
   async start(): Promise<void> {
     if (this.stopped) throw new Error('Scheduler already stopped');
 
-    // Step 1: Ingest workflow + items from config (AC-1).
-    const { workflowId, isResume } = ingestWorkflow(this.db, this.config, makeProductionIngestDeps());
-    this.workflowId = workflowId;
-    console.log(`[scheduler] ${isResume ? 'resumed' : 'started'} workflow ${workflowId}`);
-
-    // Step 2: Ensure a worktree exists before the tick loop. This guarantees
-    // per-item stages (which read items_from from the worktree) can seed on
-    // the first tick, regardless of whether a preceding stage would have
-    // bootstrapped one. On resume, an existing worktree is reused if the
-    // directory still exists on disk; otherwise it is recreated.
-    //
-    // Bootstrap commands run iff we just created the worktree. If bootstrap
-    // fails, start() throws — the caller surfaces the error to the user.
-    await this._ensureWorktree(workflowId);
-
-    // Step 3: Crash recovery — detect stale sessions from a previous run (RC-4).
+    // Crash recovery — detect stale sessions from a previous run (RC-4).
     const recoveryInfos = buildCrashRecovery(this.db);
     for (const info of recoveryInfos) {
       // Transition stale in_progress items to awaiting_retry or awaiting_user
@@ -658,7 +648,7 @@ export class Scheduler {
       }
     }
 
-    // Step 3: Start the poll loop (AC-1: scheduling begins within 2 s).
+    // Start the poll loop.
     console.log(`[scheduler] poll loop starting (interval ${this.pollIntervalMs}ms)`);
     this._scheduleTick();
   }
@@ -1953,8 +1943,7 @@ export class Scheduler {
   // -------------------------------------------------------------------------
 
   /**
-   * Ensure a worktree exists for the given workflow before the tick loop
-   * begins. Called from start() once, after ingestWorkflow.
+   * Ensure a worktree exists for the given workflow.
    *
    *   - worktree_path null:    create worktree + run bootstrap commands.
    *   - worktree_path set and directory present on disk: reuse as-is.
