@@ -95,11 +95,22 @@ test.describe('t-09: paused-workflow banner', () => {
     seedPausedWorkflow(backend.db, { id: wfId, name: 'Dedup Test Workflow' });
 
     let controlCallCount = 0;
-    // Intercept POST /api/workflows/:id/control and count calls.
-    // Last-registered LIFO wins; this runs before the fixture proxy.
+    // Add a 300 ms artificial delay to the first response so the second click
+    // can land while the button is still in its disabled/pending state.  Without
+    // the delay the real backend responds in <10 ms, the banner disappears
+    // before the second click can reach the disabled button.
+    // Fulfill with 202 directly (no route.fallback) to avoid Playwright
+    // LIFO-route-chain timing issues with the fixture proxy.
     await page.route(`**/api/workflows/${wfId}/control`, async (route) => {
       controlCallCount++;
-      await route.fallback();
+      if (controlCallCount === 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      }
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'accepted' }),
+      });
     });
 
     await page.goto(`/workflow/${wfId}`);
@@ -107,11 +118,24 @@ test.describe('t-09: paused-workflow banner', () => {
     const banner = page.getByTestId('paused-banner');
     await expect(banner).toBeVisible({ timeout: 6000 });
 
-    const continueBtn = banner.getByRole('button', { name: 'Continue' });
-    // Rapid double-click — the second click must be a no-op (button disabled while pending).
-    await continueBtn.click();
+    // Use the stable data-testid rather than role+name so the locator still
+    // matches after the first click changes the label to "Continuing…".
+    const continueBtn = page.getByTestId('paused-banner-continue');
+
+    // First click — fires the POST; button enters disabled/pending state.
     await continueBtn.click();
 
+    // Button must be disabled while the request is in-flight (deduplication guard).
+    // The button label has changed to "Continuing…" at this point, which is why
+    // we locate by data-testid rather than role+name.
+    await expect(continueBtn).toBeDisabled({ timeout: 2000 });
+
+    // Second click on disabled button: force:true bypasses Playwright's
+    // enabled-element pre-check; the JS handler still guards with `if (pending)
+    // return` so no second POST fires.
+    await continueBtn.click({ force: true });
+
+    // After ~300 ms the first response arrives; banner hides optimistically.
     await expect(banner).not.toBeVisible({ timeout: 5000 });
 
     // Only one POST should have been made (button disabled after first click).

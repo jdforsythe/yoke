@@ -491,9 +491,11 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
       state.registry.broadcast(workflowId, sessionId, frameType as import('../server/api/frames.js').ServerFrameType, payload);
     },
     async close() {
-      if (!opts.noScheduler) {
-        await scheduler.stop();
-      }
+      // Always stop the scheduler: even when noScheduler:true the scheduler's
+      // scheduleIndexUpdate can be triggered by the control executor, and its
+      // debounce timers must be cleared before the DB is closed to prevent
+      // "database connection is not open" errors in tests.
+      await scheduler.stop();
       await fastify.close();
       db.close();
       // Remove discovery file on clean shutdown.
