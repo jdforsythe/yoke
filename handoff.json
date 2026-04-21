@@ -1403,6 +1403,21 @@
         ".gitignore"
       ],
       "deferred_criteria": []
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "91d5e1b2-d7e1-4da9-bd8b-51c5d77b2fc2",
+      "ts": "2026-04-21T00:00:00.000Z",
+      "note": "Replaced ingestWorkflow with createWorkflow: always-insert semantics, no dedup SELECT, user-supplied name stored verbatim, template_name from config.template.name, initGithubState inside same transaction. Removed ingestWorkflow call from scheduler.start() — workflow creation is now caller responsibility (t-07 API handler). Updated all 26 affected scheduler.test.ts tests to call createWorkflow(db, config, {name}) before starting the scheduler; rewrote bootstrap_fail test to poll for bootstrap_failed item state instead of expecting start() to throw. All 1555 tests pass; typecheck passes.",
+      "intended_files": [
+        "src/server/scheduler/ingest.ts",
+        "src/server/scheduler/scheduler.ts",
+        "tests/scheduler/ingest.test.ts",
+        "tests/scheduler/scheduler.test.ts",
+        "tests/scheduler/crash-recovery.test.ts"
+      ],
+      "deferred_criteria": []
     }
   ]
 }
