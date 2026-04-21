@@ -344,15 +344,15 @@ describe('POST /api/workflows/:id/control cancel — error handling', () => {
     expect(statusCode).toBe(409);
   });
 
-  it('returns 400 for an unsupported action (pause/resume not yet implemented)', async () => {
+  it('returns 400 for an unknown/unsupported action', async () => {
     const wfId = insertWorkflow('running');
 
     const { statusCode, body } = await inject('POST', `/api/workflows/${wfId}/control`, {
       commandId: 'cmd-400',
-      action: 'pause',
+      action: 'rewind',
     });
     expect(statusCode).toBe(400);
-    expect((body as any).action).toBe('pause');
+    expect((body as any).action).toBe('rewind');
     expect(killedSessions).toEqual([]);
   });
 });

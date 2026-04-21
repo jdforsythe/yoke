@@ -203,6 +203,10 @@ function buildScheduler(opts: {
     gracePeriodMs: 500,
     faultInjector: opts.faultInjector,
     artifactValidator: async () => ({ kind: 'validators_ok' as const }),
+    // Skip startup-pause — crash-recovery.test.ts tests verify crash detection
+    // and recovery semantics, not the server-restart pause flow (tested in
+    // tests/pipeline/control-executor.test.ts).
+    skipStartupPause: true,
   });
   activeSchedulers.push(s);
   return s;

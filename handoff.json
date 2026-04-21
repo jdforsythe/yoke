@@ -1459,6 +1459,30 @@
         "broadcastAll() sends to all registered sockets regardless of subscription. If a large number of clients are connected and many workflows are created rapidly, this could produce a burst of workflow.created frames. In practice, the server is single-user (localhost), so this is not a concern.",
         "The POST /api/workflows route does not use Fastify JSON schema validation (Ajv-on-routes). It uses the same manual validation pattern as all other routes in server.ts. The AC says 'if using the existing Ajv-on-routes pattern' — the existing pattern is manual validation, so this is correct."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "929befc4-8755-40ef-a86f-e7e67a2de26c",
+      "ts": "2026-04-21T14:55:00Z",
+      "note": "Implemented t-06 in full. Three source files changed: (1) src/server/pipeline/control-executor.ts — extended ControlExecutorResult union with { status: accepted; pausedAt: string|null } variant; added pause action (idempotent: no-op if already paused, UPDATE paused_at, broadcast workflow.update {pausedAt}) and continue action (clears paused_at, broadcast {pausedAt:null}); action validation changed from action!==cancel to include pause/continue. (2) src/server/api/server.ts and ws.ts — updated response body construction and log message using in-operator checks (cancelledItems in result / pausedAt in result) so TypeScript is happy with the discriminated union. (3) src/server/scheduler/scheduler.ts — added skipStartupPause?: boolean to SchedulerOpts; in start() AFTER crash recovery but BEFORE _scheduleTick(), runs UPDATE workflows SET paused_at=datetime(now) WHERE paused_at IS NULL AND status NOT IN (completed,abandoned,completed_with_blocked) to pause all in-flight workflows on server restart. Tests: new tests/pipeline/control-executor.test.ts covers pause, continue, idempotency, round-trip, startup-pause, tick-loop skipping, and a crash-recovery+startup-pause interaction test. Existing scheduler tests updated: added skipStartupPause:true to all 16 new Scheduler() calls in scheduler.test.ts and crash-recovery.test.ts so steady-state tests are not broken by the startup-pause behavior. control-execute.test.ts updated: action:pause changed to action:rewind (since pause is now valid). index-updates.test.ts: AC-9 test updated from action:pause to action:rewind. All 1594 Vitest tests pass; pnpm typecheck exits 0.",
+      "intended_files": [
+        "src/server/pipeline/control-executor.ts",
+        "src/server/api/server.ts",
+        "src/server/api/ws.ts",
+        "src/server/scheduler/scheduler.ts",
+        "docs/idea/future-work.md",
+        "tests/pipeline/control-executor.test.ts",
+        "tests/api/control-execute.test.ts",
+        "tests/scheduler/crash-recovery.test.ts",
+        "tests/scheduler/index-updates.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "skipStartupPause defaults to false (production behavior). Any future test that constructs new Scheduler({}) directly and calls start() will need to add skipStartupPause:true or accept that workflows it inserts will be paused immediately. The pattern is established but not enforced by the type system.",
+        "The startup-pause UPDATE runs inside start() synchronously before _scheduleTick() is called. If start() is called while a previous scheduler tick is already in progress (i.e., stop()+start() without awaiting the tick drain), there is a brief window where the UPDATE could race with a running tick. In practice, stop() awaits the current tick via the tick lock, so this is not a real race, but it is not formally documented."
+      ]
     }
   ]
 }

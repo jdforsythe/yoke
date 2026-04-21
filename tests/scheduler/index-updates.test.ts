@@ -501,7 +501,7 @@ describe('makeControlExecutor — cancel calls scheduleIndexUpdate', () => {
       (w) => captured.push(w),
     );
 
-    const result = executor(wfId, 'pause');
+    const result = executor(wfId, 'rewind');
 
     expect(result.status).toBe('invalid_action');
     expect(captured).toHaveLength(0);

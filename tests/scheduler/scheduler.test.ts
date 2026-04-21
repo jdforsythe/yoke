@@ -238,6 +238,9 @@ function buildScheduler(opts: {
     maxParallel: opts.maxParallel ?? 4,
     pollIntervalMs: opts.pollIntervalMs ?? 50,
     gracePeriodMs: 500,
+    // Skip startup-pause in scheduler.test.ts — these tests verify steady-state
+    // scheduling, not server-restart semantics (tested in control-executor.test.ts).
+    skipStartupPause: true,
   });
 
   activeSchedulers.push(scheduler);
@@ -527,6 +530,7 @@ describe('AC-8: graceful drain on stop()', () => {
       maxParallel: 4,
       pollIntervalMs: 50,
       gracePeriodMs: 1000,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -589,6 +593,7 @@ describe('AC-4: pre-phase non-continue action blocks spawn', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -659,6 +664,7 @@ describe('AC-5 (spec): post-phase non-continue action forwarded to engine', () =
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1009,6 +1015,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1097,6 +1104,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1176,6 +1184,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1238,6 +1247,7 @@ function buildValidatorScheduler(opts: {
     maxParallel: 4,
     pollIntervalMs: 50,
     gracePeriodMs: 500,
+    skipStartupPause: true,
   });
 
   activeSchedulers.push(scheduler);
@@ -1414,6 +1424,7 @@ describe('feat-artifact-validators: scheduler wiring', () => {
       maxParallel: 4,
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(scheduler);
 
@@ -1502,6 +1513,7 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1567,6 +1579,7 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1619,6 +1632,7 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
       },
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1678,6 +1692,7 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
       },
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1884,6 +1899,7 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -1969,6 +1985,7 @@ describe('t-05: two concurrent workflows from same template', () => {
       maxParallel: 4,
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(scheduler);
 
@@ -2084,6 +2101,7 @@ describe('t-05: two concurrent workflows from same template', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
