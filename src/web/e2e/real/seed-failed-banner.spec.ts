@@ -59,7 +59,7 @@ test.describe('seed_failed attention — real backend', () => {
     const attId = Number((res as { lastInsertRowid: bigint | number }).lastInsertRowid);
 
     await page.goto(`/workflow/${wfId}`);
-    await expect(page.getByText(wfName)).toBeVisible({ timeout: 6000 });
+    await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: wfName })).toBeVisible({ timeout: 6000 });
 
     // Inject the notice frame — mirrors Scheduler._emitAttentionNotice
     backend.broadcast(wfId, null, 'notice', {
@@ -116,7 +116,7 @@ test.describe('seed_failed attention — real backend', () => {
     const attId = Number((res as { lastInsertRowid: bigint | number }).lastInsertRowid);
 
     await page.goto(`/workflow/${wfId}`);
-    await expect(page.getByText(wfName)).toBeVisible({ timeout: 6000 });
+    await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: wfName })).toBeVisible({ timeout: 6000 });
 
     backend.broadcast(wfId, null, 'notice', {
       severity: 'requires_attention',

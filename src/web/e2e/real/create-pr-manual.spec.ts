@@ -64,7 +64,7 @@ test.describe('Create PR manual flow — real backend', () => {
     ).toBeVisible({ timeout: 8000 });
 
     // "Create PR" button should be visible (completed + idle = true).
-    const createPrBtn = page.getByRole('button', { name: 'Create PR' });
+    const createPrBtn = page.getByRole('button', { name: 'Create PR', exact: true });
     await expect(createPrBtn).toBeVisible({ timeout: 3000 });
 
     // Click — route handler broadcasts 'creating' and fulfills 200.
@@ -113,7 +113,7 @@ test.describe('Create PR manual flow — real backend', () => {
     ).toBeVisible({ timeout: 8000 });
 
     // "Create PR" should NOT be visible for in_progress workflow.
-    await expect(page.getByRole('button', { name: 'Create PR' })).not.toBeVisible({
+    await expect(page.getByRole('button', { name: 'Create PR', exact: true })).not.toBeVisible({
       timeout: 2000,
     });
     // The read-only "GitHub" indicator should be visible instead.

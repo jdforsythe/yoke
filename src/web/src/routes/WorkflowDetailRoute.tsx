@@ -248,7 +248,12 @@ export function WorkflowDetailRoute() {
         };
         setState((prev) => {
           if (!prev.snapshot) return prev;
-          if (prev.snapshot.pendingAttention.some((a) => a.id === newItem.id)) return prev;
+          const existingIdx = prev.snapshot.pendingAttention.findIndex((a) => a.id === newItem.id);
+          if (existingIdx !== -1) {
+            const updated = [...prev.snapshot.pendingAttention];
+            updated[existingIdx] = { ...updated[existingIdx]!, payload: newItem.payload };
+            return { ...prev, snapshot: { ...prev.snapshot, pendingAttention: updated } };
+          }
           return {
             ...prev,
             snapshot: {
@@ -565,6 +570,18 @@ export function WorkflowDetailRoute() {
                   ) : (
                     <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
                   )
+                ) : endedSessionId ? (
+                  <div className="flex flex-col h-full">
+                    <div
+                      data-testid="session-ended-banner"
+                      className="shrink-0 px-3 py-1.5 bg-amber-900/20 border-b border-amber-700/30 text-xs text-amber-300"
+                    >
+                      Session ended
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      <LiveStreamPane sessionId={endedSessionId} workflowId={workflowId!} />
+                    </div>
+                  </div>
                 ) : !selectedItemId ? (
                   <LiveStreamPane sessionId={controlSession!.sessionId} workflowId={workflowId!} />
                 ) : null}
@@ -585,7 +602,7 @@ export function WorkflowDetailRoute() {
             </div>
           ) : (
             <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-              {selectedItemId ? 'Select an item to view its session' : 'No active session'}
+              {selectedItemId ? 'No active session' : 'Select an item to view its session'}
             </div>
           )}
         </div>

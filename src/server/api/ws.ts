@@ -197,7 +197,10 @@ export class WsClientRegistry {
     }
 
     for (const [socket, subs] of this.clients) {
-      if (subs.has(workflowId) && socket.readyState === socket.OPEN) {
+      // workflow.index.update is sent to all connected clients so the sidebar
+      // stays up-to-date regardless of which workflow page the client is viewing.
+      const isSubscribed = subs.has(workflowId) || frameType === 'workflow.index.update';
+      if (isSubscribed && socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify(frame));
       }
     }
