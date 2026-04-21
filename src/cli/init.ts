@@ -1,15 +1,12 @@
 /**
- * yoke init — scaffold .yoke.yml and example prompt templates.
+ * yoke init — scaffold .yoke/templates/default.yml.
  *
  * Creates:
- *   .yoke.yml                        — minimal valid config
- *   .yoke/prompts/implement.md       — example implement phase prompt
- *   .yoke/prompts/plan.md            — example plan phase prompt
- *   .yoke/prompts/review.md          — example review phase prompt
+ *   .yoke/templates/default.yml  — minimal valid template the user edits
  *
  * Acceptance criteria:
- *   AC-1: Creates files on opt-in (user runs the command).
- *   AC-2: Exits with an error if any target file already exists — never
+ *   AC-1: Creates the file on opt-in (user runs the command).
+ *   AC-2: Exits with an error if the target file already exists — never
  *         overwrites. This is a hard-coded pre-flight check, not a --force
  *         flag default (RC).
  */
@@ -19,13 +16,14 @@ import path from 'node:path';
 import type { Command } from 'commander';
 
 // ---------------------------------------------------------------------------
-// Templates
+// Template content
 // ---------------------------------------------------------------------------
 
-const YOKE_YML = `version: "1"
+const DEFAULT_TEMPLATE_YML = `version: "1"
 
-project:
-  name: my-project
+template:
+  name: my-workflow
+  description: "A single-phase workflow (edit this)"
 
 pipeline:
   stages:
@@ -44,80 +42,16 @@ phases:
     prompt_template: .yoke/prompts/implement.md
 `;
 
-const IMPLEMENT_MD = `# Implement
-
-You are an engineer implementing the task described below.
-
-## Task
-{{item}}
-
-## Context
-### Recent git log
-{{git_log_recent}}
-
-### Architecture
-{{architecture}}
-
-### Handoff from previous phase
-{{handoff}}
-
-## Instructions
-- Implement the task completely.
-- Write tests for every new code path that can fail.
-- Do not modify files outside the scope of the task.
-- When done, append a handoff entry to handoff.json with a note, intended_files, deferred_criteria, and known_risks.
-`;
-
-const PLAN_MD = `# Plan
-
-You are an architect producing a detailed implementation plan.
-
-## Task
-{{item}}
-
-## Context
-### Architecture
-{{architecture}}
-
-### Recent git log
-{{git_log_recent}}
-
-## Instructions
-- Produce a step-by-step plan in \`docs/plan.md\`.
-- Identify acceptance criteria and edge cases.
-- Note any ambiguities as open questions.
-`;
-
-const REVIEW_MD = `# Review
-
-You are a reviewer checking an implementation for correctness and quality.
-
-## Task
-{{item}}
-
-## Context
-### Architecture
-{{architecture}}
-
-### Handoff
-{{handoff}}
-
-## Instructions
-- Review the implementation against the acceptance criteria.
-- Report findings as APPROVED, NEEDS_CHANGES, or BLOCKED.
-- Update \`docs/review.md\` with your verdict and detailed findings.
-`;
-
 // ---------------------------------------------------------------------------
 // Target file list
 // ---------------------------------------------------------------------------
 
 /** Files created by yoke init, relative to cwd. */
 const TARGETS = [
-  { rel: '.yoke.yml', content: YOKE_YML },
-  { rel: path.join('.yoke', 'prompts', 'implement.md'), content: IMPLEMENT_MD },
-  { rel: path.join('.yoke', 'prompts', 'plan.md'), content: PLAN_MD },
-  { rel: path.join('.yoke', 'prompts', 'review.md'), content: REVIEW_MD },
+  {
+    rel: path.join('.yoke', 'templates', 'default.yml'),
+    content: DEFAULT_TEMPLATE_YML,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -177,7 +111,7 @@ export function register(program: Command): void {
   program
     .command('init')
     .description(
-      'Scaffold .yoke.yml and example prompt templates (never overwrites existing files)',
+      'Scaffold .yoke/templates/default.yml (never overwrites existing files)',
     )
     .action(() => {
       const result = runInit();
@@ -189,5 +123,11 @@ export function register(program: Command): void {
       for (const p of result.created) {
         console.log(`  created ${p}`);
       }
+      console.log('');
+      console.log('Next steps:');
+      console.log('  1. Edit .yoke/templates/default.yml to configure your workflow.');
+      console.log('  2. Run: yoke start');
+      console.log('  3. Open the dashboard URL shown in the terminal.');
+      console.log('  4. Pick a template, name your workflow, and click Run.');
     });
 }

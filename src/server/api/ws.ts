@@ -197,7 +197,24 @@ export class WsClientRegistry {
     }
 
     for (const [socket, subs] of this.clients) {
-      if (subs.has(workflowId) && socket.readyState === socket.OPEN) {
+      // workflow.index.update is sent to all connected clients so the sidebar
+      // stays up-to-date regardless of which workflow page the client is viewing.
+      const isSubscribed = subs.has(workflowId) || frameType === 'workflow.index.update';
+      if (isSubscribed && socket.readyState === socket.OPEN) {
+        socket.send(JSON.stringify(frame));
+      }
+    }
+  }
+
+  /**
+   * Broadcasts a frame to ALL connected clients regardless of their workflow
+   * subscriptions. Used for global notifications such as 'workflow.created'
+   * where no client is yet subscribed to the new workflow.
+   */
+  broadcastAll(frameType: ServerFrameType, payload: unknown): void {
+    const frame = makeFrame(frameType, payload, { seq: 0 });
+    for (const [socket] of this.clients) {
+      if (socket.readyState === socket.OPEN) {
         socket.send(JSON.stringify(frame));
       }
     }
@@ -248,7 +265,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
     .prepare(
       `SELECT id, name, status, current_stage, created_at, recovery_state,
               github_state, github_pr_number, github_pr_url, github_pr_state,
-              github_error, github_last_checked_at
+              github_error, github_last_checked_at, paused_at
          FROM workflows WHERE id = ?`,
     )
     .get(workflowId) as {
@@ -264,6 +281,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
       github_pr_state: string | null;
       github_error: string | null;
       github_last_checked_at: string | null;
+      paused_at: string | null;
     } | undefined;
 
   if (!wf) return null;
@@ -382,6 +400,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
       status: wf.status,
       currentStage: wf.current_stage,
       createdAt: wf.created_at,
+      pausedAt: wf.paused_at ?? null,
       recoveryState: wf.recovery_state ? JSON.parse(wf.recovery_state) : null,
       githubState,
     },
@@ -596,12 +615,16 @@ function handleControl(
       return;
     }
 
+    const message =
+      'cancelledItems' in result
+        ? `Control action '${action}' accepted (${result.cancelledItems} items cancelled)`
+        : `Control action '${action}' accepted`;
     const ok = makeFrame(
       'notice',
       {
         severity: 'info' as const,
         kind: 'control_accepted',
-        message: `Control action '${action}' accepted (${result.cancelledItems} items cancelled)`,
+        message,
       },
       { workflowId },
     );

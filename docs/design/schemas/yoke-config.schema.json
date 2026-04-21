@@ -5,19 +5,21 @@
   "description": "User-authored configuration. Mirrors plan-draft3 §Configuration and the pre/post action grammar (§Phase Pre/Post Commands, D50, D53). Revised per beta3-review-feedback.md Issues 1–4: pipeline uses stages (not nodes+edges), items are opaque, review aggregation is user-owned. All object schemas set additionalProperties: false to fail fast on typos.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "project", "pipeline", "phases"],
+  "required": ["version", "template", "pipeline", "phases"],
   "properties": {
     "version": {
       "type": "string",
       "const": "1",
       "description": "Schema version pin. Must be a quoted string '1' so YAML parsers don't coerce 1.10 → 1.1."
     },
-    "project": {
+    "template": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
+      "description": "Template identity. The `description` field is displayed in the template picker UI.",
       "properties": {
-        "name": { "type": "string", "minLength": 1 }
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "description": "Optional human-readable description shown in the template picker UI." }
       }
     },
     "pipeline": { "$ref": "#/$defs/pipeline" },

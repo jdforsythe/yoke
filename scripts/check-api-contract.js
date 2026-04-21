@@ -34,10 +34,10 @@ import { startServer } from '../src/cli/start.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.resolve(__dirname, '../docs/design/schemas/api-responses.schema.json');
 
-// Minimal .yoke.yml accepted by loadConfig — prompt_template is never read
+// Minimal template accepted by loadTemplate — prompt_template is never read
 // because noScheduler:true skips all agent runs.
 const MINIMAL_CONFIG = `version: "1"
-project:
+template:
   name: contract-test
 pipeline:
   stages:
@@ -131,14 +131,14 @@ async function main() {
 
   // ── Temp directory + config ───────────────────────────────────────────────
   tempDir = path.join(os.tmpdir(), `yoke-contract-${randomUUID()}`);
-  fs.mkdirSync(tempDir, { recursive: true });
-  const configPath = path.join(tempDir, '.yoke.yml');
-  fs.writeFileSync(configPath, MINIMAL_CONFIG, 'utf8');
+  const templatesDir = path.join(tempDir, '.yoke', 'templates');
+  fs.mkdirSync(templatesDir, { recursive: true });
+  fs.writeFileSync(path.join(templatesDir, 'default.yml'), MINIMAL_CONFIG, 'utf8');
 
   // ── Boot server ───────────────────────────────────────────────────────────
   console.log('Starting server…');
   handle = await startServer({
-    configPath,
+    configDir: tempDir,
     port: 0,            // OS-assigned port — no collision risk
     noScheduler: true,  // no items advance; pure read/schema test
     _gitCheck: async () => {},

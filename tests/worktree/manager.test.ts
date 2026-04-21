@@ -186,13 +186,15 @@ describe('createWorktree()', () => {
     expect(branchName).toMatch(/^yoke\/[a-z0-9-]+-[a-z0-9]{8}$/);
   });
 
-  it('worktree path is <baseDir>/<slug>-<shortid>', async () => {
+  it('worktree path is <baseDir>/<workflowId>', async () => {
     const mgr = makeManager();
     const { worktreePath } = await mgr.createWorktree(
       { workflowId: WORKFLOW_ID, workflowName: WORKFLOW_NAME, baseDir: baseDir() },
     );
-    const expectedDir = makeWorktreeDirName(WORKFLOW_NAME, WORKFLOW_ID);
+    const expectedDir = makeWorktreeDirName(WORKFLOW_ID);
     expect(worktreePath).toBe(path.join(baseDir(), expectedDir));
+    // The directory name is the raw UUID, not a slug
+    expect(path.basename(worktreePath)).toBe(WORKFLOW_ID);
   });
 
   it('respects a custom branchPrefix', async () => {

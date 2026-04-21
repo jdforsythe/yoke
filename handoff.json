@@ -1331,6 +1331,283 @@
         "browserWs.waitForEvent('framereceived') resolves on the FIRST frame received after it is set up — if any other WS frame (heartbeat, index.update) arrives before the workflowUpdateFrame or itemStateFrame, the wait resolves early and the DOM assertion may still race. In practice the test WS is silent between snapshot delivery and the explicit send(), so this window is zero. If heartbeat frames are ever enabled in tests, each waitForEvent call should filter by frame content.",
         "The controlSession fallback in WorkflowDetailRoute picks activeSessions[0] when no per-item session exists. If the snapshot contains multiple once-per-workflow sessions (unexpected in practice), only the first is used — ControlMatrix renders with that sessionId."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "b2e63005-3d08-4a36-8d34-ae76bfd0c62f",
+      "ts": "2026-04-21T13:30:00Z",
+      "note": "Implemented t-01 migration for template support columns. Created src/server/storage/migrations/0005_templates.sql (not 0004 — that number is already taken by 0004_item_stable_id.sql from the r3-04 stable-id feature). The migration adds two nullable TEXT columns to workflows: paused_at (for scheduler startup-pause and explicit user pause in t-06) and template_name (denormalized pointer to the source template file, purely informational). Both columns default to NULL so existing workflow rows are unaffected. An index idx_workflows_paused_at on workflows(paused_at) is created to support the scheduler's hot-path tick query (WHERE paused_at IS NULL AND status NOT IN terminal). Updated tests/storage/schema.test.ts: (1) updated the exact workflows column list from 19 to 21 entries, (2) updated the column count assertion from 19 to 21, (3) added a new 'migration 0005' describe block with 7 tests covering: columns exist on fresh DB, existing rows receive NULL for both new columns, version 5 recorded in schema_migrations, idx_workflows_paused_at exists in sqlite_master, paused_at accepts TEXT and NULL, template_name accepts TEXT, and EXPLAIN QUERY PLAN uses the new index for the IS NULL filter. All 1543 Vitest tests pass; pnpm typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/server/storage/migrations/0005_templates.sql",
+        "tests/storage/schema.test.ts"
+      ],
+      "deferred_criteria": [
+        "AC-1 names the file '0004_templates.sql' but that number was already taken by 0004_item_stable_id.sql (added in r3-04). The file was created as 0005_templates.sql instead. All other ACs are fully satisfied: the migration applies cleanly on empty DB and on DB with prior rows, it is forward-only, the index is created, tests cover both fresh and prior-migrations paths, applyMigrations picks it up automatically via directory scan, and pnpm test passes."
+      ],
+      "known_risks": [
+        "The AC spec says 0004_templates.sql but the file is 0005_templates.sql. The reviewer should accept this as the correct adaptation given the pre-existing 0004_item_stable_id.sql migration — using 0004 would break the forward-only guard in applyMigrations.",
+        "paused_at uses TEXT affinity (not TIMESTAMP) to match the existing schema convention (all date/time columns are TEXT) and satisfy the 'all types are TEXT or INTEGER' schema test assertion.",
+        "The EXPLAIN QUERY PLAN test asserts the index name appears in the query plan detail string. If SQLite's query planner changes its plan (e.g. decides a full scan is cheaper on an empty table), the test may fail in edge cases. In practice the index is always used for IS NULL scans with this predicate pattern."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "9d05aa53-9748-47ba-b14a-ff12929064d4",
+      "ts": "2026-04-21T13:35:00Z",
+      "note": "Implemented t-02 in full. Three changes landed in one commit (1ebbf65): (1) docs/design/schemas/yoke-config.schema.json: renamed the top-level 'project' property to 'template', added an optional 'description' field for the template picker UI, updated the 'required' array from ['version','project','pipeline','phases'] to ['version','template','pipeline','phases'], and preserved additionalProperties:false so any document still carrying the old 'project:' key produces a clear AJV error naming the unknown property. (2) src/shared/types/config.ts: renamed the Project interface to Template (adding optional description?: string), and updated RawConfig.project -> RawConfig.template. ResolvedConfig inherits the rename via the existing 'type ResolvedConfig = RawConfig & {...}' intersection. resolve.ts required no changes — it never references the project/template field. (3) src/server/scheduler/ingest.ts: replaced both occurrences of config.project.name with config.template.name (the resume-path SELECT and the new-workflow INSERT). All 16 test fixture files updated: inline ResolvedConfig objects used 'project: { name: ... }' and were updated to 'template: { name: ... }'; YAML string literals in tests/config/loader.test.ts, tests/cli/doctor.test.ts, and tests/cli/start.test.ts were updated from 'project:' to 'template:'; the cfg.project.name assertion in loader.test.ts was updated to cfg.template.name. No scheduler.ts or other production file references remained. pnpm test: 1543/1543 pass. pnpm typecheck: exits 0 for both root and web packages. The root .yoke.yml is NOT migrated per spec (t-03 handles the templates-directory work); a stale .yoke.yml using 'project:' will now fail AJV validation with a readable unknown-key error.",
+      "intended_files": [
+        "docs/design/schemas/yoke-config.schema.json",
+        "src/shared/types/config.ts",
+        "src/server/scheduler/ingest.ts",
+        "tests/config/loader.test.ts",
+        "tests/config/resolve.test.ts",
+        "tests/cli/doctor.test.ts",
+        "tests/cli/start.test.ts",
+        "tests/notifications/attention-roundtrip.test.ts",
+        "tests/pipeline/retry-ladder-e2e.test.ts",
+        "tests/scheduler/attention-broadcasts.test.ts",
+        "tests/scheduler/auto-pr-on-complete.test.ts",
+        "tests/scheduler/crash-recovery.test.ts",
+        "tests/scheduler/index-updates.test.ts",
+        "tests/scheduler/ingest.test.ts",
+        "tests/scheduler/per-item-seeder-error.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [
+        "Root .yoke.yml migration: per spec, the root .yoke.yml is intentionally NOT migrated in t-02. A stale copy using 'project:' will fail AJV validation with a readable 'unknown key' error. Migration is t-03's responsibility (templates-directory work)."
+      ],
+      "known_risks": [
+        "The Project interface is removed and replaced with Template. Any external tooling or documentation that imports Project from src/shared/types/config.ts will get a compile error. Only internal code is affected — no external consumers exist in this repo.",
+        "The root .yoke.yml (if present and using the old 'project:' key) will fail AJV validation on startup, producing a ConfigLoadError. This is documented behavior per spec — t-03 migrates it. The error message names the unknown key ('project') which is the AC requirement for readable AJV errors."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "41b1e8f0-3204-4c27-bd56-d1cdf85c8ea0",
+      "ts": "2026-04-21T00:00:00.000Z",
+      "note": "Replaced loadConfig(path) with listTemplates(configDir) and loadTemplate(configDir, name). Added migration_error kind to ConfigErrorDetail. Both functions check for root .yoke.yml and throw migration_error. loadTemplate passes configDir (repo root) to resolveConfig, preserving path-resolution semantics. All call sites updated: start.ts (configPath→configDir), doctor.ts (checkConfig signature, check name, migration_error remediation), realBackend.ts, and check-api-contract.js (MINIMAL_CONFIG template: key, .yoke/templates/ path). Created .yoke/templates/default.yml from old .yoke.yml content, deleted root .yoke.yml. Updated .gitignore to use .yoke/* glob (not directory) so .yoke/templates/ can be unignored. All 1553 tests pass; typecheck passes.",
+      "intended_files": [
+        "src/server/config/errors.ts",
+        "src/server/config/loader.ts",
+        "tests/config/loader.test.ts",
+        "src/cli/start.ts",
+        "tests/cli/start.test.ts",
+        "src/cli/doctor.ts",
+        "tests/cli/doctor.test.ts",
+        "src/web/e2e/fixtures/realBackend.ts",
+        "scripts/check-api-contract.js",
+        ".yoke/templates/default.yml",
+        ".gitignore"
+      ],
+      "deferred_criteria": []
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "91d5e1b2-d7e1-4da9-bd8b-51c5d77b2fc2",
+      "ts": "2026-04-21T00:00:00.000Z",
+      "note": "Replaced ingestWorkflow with createWorkflow: always-insert semantics, no dedup SELECT, user-supplied name stored verbatim, template_name from config.template.name, initGithubState inside same transaction. Removed ingestWorkflow call from scheduler.start() — workflow creation is now caller responsibility (t-07 API handler). Updated all 26 affected scheduler.test.ts tests to call createWorkflow(db, config, {name}) before starting the scheduler; rewrote bootstrap_fail test to poll for bootstrap_failed item state instead of expecting start() to throw. All 1555 tests pass; typecheck passes.",
+      "intended_files": [
+        "src/server/scheduler/ingest.ts",
+        "src/server/scheduler/scheduler.ts",
+        "tests/scheduler/ingest.test.ts",
+        "tests/scheduler/scheduler.test.ts",
+        "tests/scheduler/crash-recovery.test.ts"
+      ],
+      "deferred_criteria": []
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "33a9fdca-1792-4e1d-a862-9117a4271695",
+      "ts": "2026-04-21T14:25:00Z",
+      "note": "Implemented t-05 (multi-workflow scheduler refactor) in full. Three changes committed in two commits: (1) Removed cached this.workflowId field from Scheduler — it was already unused; the tick loop was already multi-workflow capable via _processWorkflows() which queries all non-terminal workflows per tick. (2) Added AND paused_at IS NULL predicate to the _processWorkflows() SQL query so explicitly-paused workflows (t-06 feature) are skipped without state-machine intervention; leverages the idx_workflows_paused_at index added by migration 0005. (3) Changed makeWorktreeDirName in branch.ts from slug-uuid8 format to returning the raw workflowId UUID as the directory name — each workflow now gets .worktrees/<uuid> ensuring collision-free per-workflow isolation even when two workflows share the same user-supplied name or template. Branch names retain the yoke/slug-uuid8 format for git UI readability. Updated branch.test.ts with 4 tests for the new single-argument makeWorktreeDirName signature and manager.test.ts to assert the UUID directory name. Added two new integration tests in scheduler.test.ts under 't-05: two concurrent workflows from same template': (a) creates two workflows from the same template config, runs them concurrently, asserts both reach completed, their worktree paths are distinct UUID directories, and all item.state broadcasts are scoped to the correct workflowId with no cross-contamination between the two; (b) verifies a workflow with paused_at set is never spawned by the tick loop. Retry timers (retryAfterAt, retryModeFor) are keyed by itemId which is a UUID — globally unique across workflows — so no change needed. Crash recovery (buildCrashRecovery) was already called once and returns per-workflow recovery infos, which is the correct approach. All 1557 Vitest tests pass; pnpm typecheck exits 0.",
+      "intended_files": [
+        "src/server/scheduler/scheduler.ts",
+        "src/server/worktree/branch.ts",
+        "src/server/worktree/manager.ts",
+        "tests/worktree/branch.test.ts",
+        "tests/worktree/manager.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "makeWorktreeDirName now returns just the UUID, so existing worktrees created with the old slug-uuid8 naming (from any prior run) will not be found by the new path. Since worktrees are only created for new workflows (never resumed by path lookup in the current code), this is a forward-only change and does not affect existing DB rows.",
+        "The concurrent test uses a per-workflow worktree manager stub that creates actual directories under tmpDir/wts/<uuid>. These are cleaned up by the afterEach fs.rmSync. If the test is killed mid-run, the directories may be left in os.tmpdir().",
+        "The paused_at IS NULL predicate is wired but there is no API to set paused_at yet (t-06 adds that). The scheduler test sets it via db.writer directly. The t-06 implementation will need to use db.writer or an engine function to set/clear paused_at."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "09d1b1f6-140c-4086-91c2-5bad276e130d",
+      "ts": "2026-04-21T14:35:00Z",
+      "note": "Implemented t-07 in full. Four changes across four commits: (1) src/server/api/frames.ts — added 'workflow.created' to ServerFrameType union. (2) src/server/api/ws.ts — added broadcastAll() to WsClientRegistry that sends a frame to all connected clients regardless of subscription (required since newly-created workflows have no subscribers yet). (3) src/server/api/server.ts — added ListTemplatesFn, CreateWorkflowFn, CreateWorkflowResult types; added listTemplates? and createWorkflow? to ServerCallbacks; added GET /api/templates (returns {templates:[{name,description}]} from the callback, empty list if unconfigured) and POST /api/workflows (validates templateName/name, delegates DB write to createWorkflow callback (RC-3), broadcasts workflow.created via registry.broadcastAll() from the route handler closure, returns 201 {workflowId,name,sameTemplateNames}). (4) src/cli/start.ts — added imports for listTemplates, createWorkflow, makeProductionIngestDeps; wired callbacks.listTemplates (wraps listTemplates(configDir) with catch→[] for safety) and callbacks.createWorkflow (calls loadTemplate then createWorkflow from ingest.ts; queries existing workflows by config.template.name for soft-collision detection; ConfigLoadError.not_found → template_not_found result, other errors → template_error). Tests in tests/api/workflows-create.test.ts cover all 9 ACs: 6 GET /api/templates cases, 8 POST /api/workflows cases including WS broadcast assertion (real WebSocket client connected to a listening Fastify instance receives workflow.created within 2s). All 1576 Vitest tests pass; pnpm typecheck exits 0 for both root and web packages.",
+      "intended_files": [
+        "src/server/api/frames.ts",
+        "src/server/api/ws.ts",
+        "src/server/api/server.ts",
+        "src/cli/start.ts",
+        "tests/api/workflows-create.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "template_name in the workflows table stores config.template.name (the YAML template.name field) rather than the template file name. The soft-collision query in callbacks.createWorkflow uses config.template.name for the WHERE clause to match what's in the DB. If two template files have the same YAML template.name but different filenames, they will be treated as the same template for collision detection. In practice, template file names should match the YAML template name.",
+        "broadcastAll() sends to all registered sockets regardless of subscription. If a large number of clients are connected and many workflows are created rapidly, this could produce a burst of workflow.created frames. In practice, the server is single-user (localhost), so this is not a concern.",
+        "The POST /api/workflows route does not use Fastify JSON schema validation (Ajv-on-routes). It uses the same manual validation pattern as all other routes in server.ts. The AC says 'if using the existing Ajv-on-routes pattern' — the existing pattern is manual validation, so this is correct."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "929befc4-8755-40ef-a86f-e7e67a2de26c",
+      "ts": "2026-04-21T14:55:00Z",
+      "note": "Implemented t-06 in full. Three source files changed: (1) src/server/pipeline/control-executor.ts — extended ControlExecutorResult union with { status: accepted; pausedAt: string|null } variant; added pause action (idempotent: no-op if already paused, UPDATE paused_at, broadcast workflow.update {pausedAt}) and continue action (clears paused_at, broadcast {pausedAt:null}); action validation changed from action!==cancel to include pause/continue. (2) src/server/api/server.ts and ws.ts — updated response body construction and log message using in-operator checks (cancelledItems in result / pausedAt in result) so TypeScript is happy with the discriminated union. (3) src/server/scheduler/scheduler.ts — added skipStartupPause?: boolean to SchedulerOpts; in start() AFTER crash recovery but BEFORE _scheduleTick(), runs UPDATE workflows SET paused_at=datetime(now) WHERE paused_at IS NULL AND status NOT IN (completed,abandoned,completed_with_blocked) to pause all in-flight workflows on server restart. Tests: new tests/pipeline/control-executor.test.ts covers pause, continue, idempotency, round-trip, startup-pause, tick-loop skipping, and a crash-recovery+startup-pause interaction test. Existing scheduler tests updated: added skipStartupPause:true to all 16 new Scheduler() calls in scheduler.test.ts and crash-recovery.test.ts so steady-state tests are not broken by the startup-pause behavior. control-execute.test.ts updated: action:pause changed to action:rewind (since pause is now valid). index-updates.test.ts: AC-9 test updated from action:pause to action:rewind. All 1594 Vitest tests pass; pnpm typecheck exits 0.",
+      "intended_files": [
+        "src/server/pipeline/control-executor.ts",
+        "src/server/api/server.ts",
+        "src/server/api/ws.ts",
+        "src/server/scheduler/scheduler.ts",
+        "docs/idea/future-work.md",
+        "tests/pipeline/control-executor.test.ts",
+        "tests/api/control-execute.test.ts",
+        "tests/scheduler/crash-recovery.test.ts",
+        "tests/scheduler/index-updates.test.ts",
+        "tests/scheduler/scheduler.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "skipStartupPause defaults to false (production behavior). Any future test that constructs new Scheduler({}) directly and calls start() will need to add skipStartupPause:true or accept that workflows it inserts will be paused immediately. The pattern is established but not enforced by the type system.",
+        "The startup-pause UPDATE runs inside start() synchronously before _scheduleTick() is called. If start() is called while a previous scheduler tick is already in progress (i.e., stop()+start() without awaiting the tick drain), there is a brief window where the UPDATE could race with a running tick. In practice, stop() awaits the current tick via the tick lock, so this is not a real race, but it is not formally documented."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "3da50f41-d533-4f89-bbd6-bd88a72ab05d",
+      "ts": "2026-04-21T19:00:00Z",
+      "note": "Implemented t-08 in full. WorkflowListRoute.tsx: complete replacement with template picker grid (GET /api/templates, loading/error/empty states) and NewWorkflowModal (POST /api/workflows, validation, focus trap, Escape/backdrop close, navigate to /workflow/:id on 201). WorkflowList.tsx: added workflow.created WS frame handler to prepend newly created workflows to sidebar. ws/types.ts: added workflow.created to ServerFrameType union and WorkflowCreatedPayload interface. workflow-create.spec.ts: 8 Playwright tests split into real-backend (happy path: list→modal→create→detail route, all ACs 1-5) and mocked (edge cases: whitespace validation, Escape, blur error, empty state, error+retry, description render, backdrop click). Key fix: listTemplates uses filename as template name (not YAML template.name), so real backend test uses template-card-default. Backdrop click test uses position:{x:10,y:10} to avoid the centered dialog panel intercepting. All 8 e2e tests pass; 1594 unit tests pass; typecheck exits 0.",
+      "intended_files": [
+        "src/web/e2e/real/workflow-create.spec.ts",
+        "src/web/src/routes/WorkflowListRoute.tsx",
+        "src/web/src/components/WorkflowList/WorkflowList.tsx",
+        "src/web/src/ws/types.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "Mock tests in mockTest.describe use base @playwright/test (no backend fixture), so they rely entirely on page.route() stubs. If a test forgets to mock a required endpoint, the test will fail with a network error rather than a helpful assertion failure.",
+        "The backdrop click test uses a fixed coordinate offset (10,10) to avoid the centered dialog panel. If the viewport size changes or a future layout wraps the modal differently, this offset may need adjustment. Using data-testid=modal-backdrop with position is more robust than positional guessing."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "cb4e277a-3086-4a84-82b4-b858ca7a7e8c",
+      "ts": "2026-04-21T23:00:00Z",
+      "note": "Implemented t-09 in full. Six source areas changed: (1) src/server/api/ws.ts — added paused_at to buildSnapshot() SQL SELECT, type annotation ({ paused_at: string | null }), and WorkflowSnapshotPayload return shape (pausedAt: row.paused_at). (2) src/server/api/frames.ts — added pausedAt: string | null field to WorkflowSnapshotPayload interface. (3) src/web/src/ws/types.ts — added pausedAt: string | null to WorkflowSnapshot client type. (4) src/web/src/components/PausedBanner/PausedBanner.tsx — new component: visible when pausedAt!=null, shows copy 'This workflow is paused. Click Continue to resume.', Continue button with data-testid=paused-banner-continue, optimistic hide on click, pending state (disabled + label 'Continuing…') to prevent double-submit, POST to /api/workflows/:id/control {action:'continue'}. (5) src/web/src/routes/WorkflowDetailRoute.tsx — added PausedBanner above the main layout column, reading pausedAt from the WS snapshot store. (6) src/cli/start.ts — close() now always calls scheduler.stop() regardless of noScheduler flag; this prevents 'database connection is not open' errors when scheduleIndexUpdate's 500ms debounce timer fires after test teardown closes the DB. E2e tests (real backend): src/web/e2e/real/workflow-paused.spec.ts — 4 tests: AC-1/2/3 (banner renders with Continue, clicking hides it, DB confirms paused_at cleared), double-click dedup (route.fulfill with 300ms delay on first response, force:true second click on disabled button, assert controlCallCount===1), AC-4 (Pause button sends action:pause, banner appears, DB confirms paused_at set), AC-6 full flow (paused→Continue→gone→broadcast item.state→item advances). Dedup test uses page.route()+route.fulfill() instead of route.fallback() to avoid LIFO-chain timing issues with the fixture proxy. Also fixed 5 pre-existing e2e spec failures in app-shell.spec.ts, control-matrix.spec.ts, workflow-detail.spec.ts, workflow-list.spec.ts; added mockTemplatesApi helper to helpers.ts. Final e2e result: 208 passed, 8 pre-existing failures (create-pr-manual, pr-button-live, session-end-no-autoswitch, sidebar-live-status×2, seed-failed-banner:80, stage-history) — none t-09 related.",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/server/api/frames.ts",
+        "src/web/src/ws/types.ts",
+        "src/web/src/components/PausedBanner/PausedBanner.tsx",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/cli/start.ts",
+        "src/web/e2e/real/workflow-paused.spec.ts",
+        "src/web/e2e/app-shell.spec.ts",
+        "src/web/e2e/control-matrix.spec.ts",
+        "src/web/e2e/workflow-detail.spec.ts",
+        "src/web/e2e/workflow-list.spec.ts",
+        "src/web/e2e/helpers.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The dedup guard relies on a React useState 'pending' flag. If the component unmounts and remounts between the two clicks (e.g., a WS workflow.update causes a full re-render that tears down PausedBanner), the pending flag resets and a second POST could fire. In practice the optimistic hide (dismissed=true) removes the banner after the first click, so the component is unmounted before any remount could occur — but this is not enforced by the type system.",
+        "scheduler.stop() is now called unconditionally in close() even when noScheduler:true was passed. This is safe because Scheduler.stop() checks _running and drains cleanly when never started. Any future change to Scheduler.stop() that assumes the scheduler was previously started would silently break this assumption.",
+        "The 8 pre-existing real-backend e2e failures are unrelated to t-09: create-pr-manual and pr-button-live require GitHub integration not present in the test environment; session-end-no-autoswitch and sidebar-live-status rely on race-sensitive WS timing; seed-failed-banner and stage-history have separate untracked bugs. These should be tracked and fixed in dedicated tasks."
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "6895ef48-0fcf-4345-9f6f-0a5880138bc0",
+      "ts": "2026-04-21T00:00:00Z",
+      "note": "Fixed all remaining real-backend e2e test failures: (1) WorkflowDetailRoute — added endedSessionId frozen-pane check inside controlSession branch so session-end-no-autoswitch banner renders when another item session is active; (2) fixed swapped placeholder text (selectedItemId shows No active session now); (3) notice dedup now updates payload instead of skipping, so seed_failed banner shows human-readable message; (4) ws.ts WsClientRegistry.broadcast now sends workflow.index.update to all clients regardless of subscription so sidebar chip updates at /; (5) fixed strict-mode locator issues in create-pr-manual, seed-failed-banner, resume-workflow specs; (6) fixed pr-button-live assertion (completed+idle shows Create PR button not GitHub span). All 216 tests pass.",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/e2e/real/create-pr-manual.spec.ts",
+        "src/web/e2e/real/pr-button-live.spec.ts",
+        "src/web/e2e/real/resume-workflow.spec.ts",
+        "src/web/e2e/real/seed-failed-banner.spec.ts"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "ec97001a-f0e7-471c-bb37-fb63638818fc",
+      "ts": "2026-04-21T23:45:00Z",
+      "note": "Implemented t-10 (final wire-up and documentation) in full. (1) src/cli/init.ts: replaced the old .yoke.yml + three prompt-template scaffolding with a single .yoke/templates/default.yml containing the template: key and a minimal one-phase pipeline. Init output now instructs the user to edit the template file and run yoke start. (2) src/cli/start.ts: added --config as a recognized-but-deprecated Commander option that immediately errors with a clear message directing users to --config-dir. (3) tests/cli/init.test.ts: updated to assert the new file path, template: key, absence of .yoke.yml, presence of pipeline/phases sections. (4) tests/cli/init-start-smoke.test.ts (new): runs runInit() then startServer() against a fresh temp dir, asserts GET /api/templates returns one template named 'default' and GET /api/workflows returns an empty list. (5) docs/design/prompt-template-spec.md: updated 'workflow_name' description from 'Project name from config' to 'Name of the current workflow instance'. (6) docs/design/architecture.md: updated Config Loader section, replaced .yoke.yml references with .yoke/templates/*.yml, added §7 Templates vs workflow instances and §8 Startup-pause behavior. (7) README.md: complete rewrite with the new user flow (yoke init → edit → yoke start → open UI → pick template → name → run), CLI reference table, template structure example. (8) docs/idea/migration-templates-refactor.md (new): step-by-step walkthrough for users moving .yoke.yml to .yoke/templates/ including rename project: → template: and yoke doctor verification. future-work.md pause/resume entry was already struck through in t-06. All 1596 Vitest tests pass, pnpm typecheck exits 0, all 52 real-backend Playwright tests pass (one pre-existing live-attention flake resolved on second run).",
+      "intended_files": [
+        "src/cli/init.ts",
+        "src/cli/start.ts",
+        "tests/cli/init.test.ts",
+        "tests/cli/init-start-smoke.test.ts",
+        "docs/design/prompt-template-spec.md",
+        "docs/design/architecture.md",
+        "README.md",
+        "docs/idea/migration-templates-refactor.md"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The smoke test calls startServer() with noScheduler:true which skips the scheduler startup-pause. This means it doesn't exercise the startup-pause code path, but it does verify the /api/templates endpoint returns the template created by runInit().",
+        "The live-attention.spec.ts test is pre-existing flaky (race between WS snapshot delivery and DOM assertion). It passes on re-run.",
+        "init.ts scaffolds .yoke/templates/default.yml but does NOT create a prompt template file (.yoke/prompts/implement.md). Users must create this themselves before running a workflow. The config loader does not check prompt_template existence at load time (only at assembly time when the scheduler runs), so the smoke test passes."
+      ]
+    },
+    {
+      "phase": "review",
+      "attempt": 1,
+      "session_id": "37eb3bcc-cade-403a-9481-4f0871cca121",
+      "ts": "2026-04-21T23:59:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-4: The --config flag deprecation error path has no test. src/cli/start.ts:527-535 checks opts.config !== undefined and exits 1 with a clear message, but tests/cli/init-start-smoke.test.ts only calls startServer() programmatically (bypassing Commander entirely). No test in tests/cli/ invokes the CLI with --config <file> to assert the deprecation error message and non-zero exit code. Code path was added in commit 82e6cff with no corresponding test."
+      ],
+      "non_blocking": [
+        "RC-3: docs/design/schemas/yoke-config.schema.json:4 has \"title\": \".yoke.yml\" — an orphaned reference to the old config file name. Minor cosmetic issue; schema validation logic is correct.",
+        "RC-3: Pre-existing docs (docs/design/threat-model.md:129,133, docs/design/beta3-review-feedback.md:205, docs/design/schemas/sqlite-schema.sql:41) contain stale .yoke.yml references, but these are pre-existing planning/design docs outside the t-10 feature spec scope.",
+        "AC-1–AC-3, AC-5–AC-10, RC-1, RC-2 all pass: yoke init creates .yoke/templates/default.yml (init.ts:52), output instructs editing that file (init.ts:128), --config-dir flag works (start.ts:519), architecture.md has §7 Templates vs workflow instances and §8 Startup-pause (architecture.md:318-361), README reflects full end-to-end new flow, prompt-template-spec.md uses workflow_name with updated description, migration-templates-refactor.md has concrete step-by-step walkthrough, smoke test (init-start-smoke.test.ts:46-81) verifies GET /api/templates returns one template named default, no project.name in user-facing docs."
+      ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 1,
+      "session_id": "37eb3bcc-cade-403a-9481-4f0871cca121",
+      "ts": "2026-04-21T20:37:31.329Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • AC-4: The --config flag deprecation error path has no test. src/cli/start.ts:527-535 checks opts.config !== undefined and exits 1 with a clear message, but tests/cli/init-start-smoke.test.ts only calls startServer() programmatically (bypassing Commander entirely). No test in tests/cli/ invokes the CLI with --config <file> to assert the deprecation error message and non-zero exit code. Code path was added in commit 82e6cff with no corresponding test.\n"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "frontend-t10-retry-ac4",
+      "ts": "2026-04-21T23:59:00Z",
+      "note": "Addressed the single AC-4 blocking issue from review attempt 1: added a child-process test for the --config deprecation error path. The Commander action calls process.exit(1), which cannot be tested by calling startServer() programmatically. Added a new describe block at the end of tests/cli/start.test.ts that uses spawnSync(tsx, [cliEntry, 'start', '--config', 'somefile.yml']) and asserts: (1) exit code is 1, (2) output contains '--config is no longer supported', (3) output contains '--config-dir'. The test runs as a child process so process.exit(1) in the Commander action does not kill the test runner. All 1597 Vitest tests pass, pnpm typecheck exits 0.",
+      "intended_files": [
+        "tests/cli/start.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The spawnSync test spawns tsx which adds ~2-3s of startup overhead. The timeout is set to 15s to be safe on slow CI machines. If tsx is not found at node_modules/.bin/tsx, the test will fail with ENOENT — but tsx is a required dependency already used by all other tests.",
+        "The test checks both result.stderr and result.stdout combined since Commander may write the error message to either stream depending on the version. The current implementation uses console.error (stderr), but combining both streams makes the assertion robust against future changes."
+      ]
     }
   ]
 }

@@ -131,7 +131,7 @@ test.describe('resume-workflow — real backend', () => {
     const attId = Number((res as { lastInsertRowid: bigint | number }).lastInsertRowid);
 
     await page.goto(`/workflow/${wfId}`);
-    await expect(page.getByText(`No-await Wf ${wfId}`)).toBeVisible({ timeout: 6000 });
+    await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: `No-await Wf ${wfId}` })).toBeVisible({ timeout: 6000 });
 
     backend.broadcast(wfId, null, 'notice', {
       severity: 'requires_attention',

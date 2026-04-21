@@ -23,8 +23,9 @@ import path from 'node:path';
 import type { ExecFileException } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
-import { loadConfig } from '../server/config/loader.js';
+import { listTemplates, loadTemplate } from '../server/config/loader.js';
 import { ConfigLoadError } from '../server/config/errors.js';
+import { createWorkflow, makeProductionIngestDeps } from '../server/scheduler/ingest.js';
 import { openDbPool, type DbPool } from '../server/storage/db.js';
 import { applyMigrations } from '../server/storage/migrate.js';
 import { createServer } from '../server/api/server.js';
@@ -125,8 +126,13 @@ function makeGitHelper(repoRoot: string): GitHelper {
 // ---------------------------------------------------------------------------
 
 export interface StartOptions {
-  /** Path to the .yoke.yml config file. Default: <cwd>/.yoke.yml */
-  configPath?: string;
+  /**
+   * Repo root containing the .yoke/ folder.
+   * Default: process.cwd()
+   * t-10 will add a --template flag to select a named template; for now
+   * startServer always loads the 'default' template.
+   */
+  configDir?: string;
   /** Server port. Default: 7777 */
   port?: number;
   /**
@@ -164,12 +170,13 @@ export interface StartHandle {
  * Exported for integration tests.
  */
 export async function startServer(opts: StartOptions = {}): Promise<StartHandle> {
-  const configPath = opts.configPath ?? path.join(process.cwd(), '.yoke.yml');
+  const configDir = opts.configDir ?? process.cwd();
   const port = opts.port ?? 7777;
   const gitCheck = opts._gitCheck ?? defaultGitRepoCheck;
 
-  // Load + validate config — throws ConfigLoadError on failure.
-  const config = loadConfig(configPath);
+  // Load + validate the 'default' template — throws ConfigLoadError on failure.
+  // t-10 will wire a --template flag so the caller can select a named template.
+  const config = loadTemplate(configDir, 'default');
 
   // Guard: config.configDir must be inside a git repository.
   // WorktreeManager requires a real git repo and will throw uninformative
@@ -211,6 +218,55 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   callbacks.archiveWorkflow = makeArchiveWorkflowFn(db.writer, (workflowId) => {
     state.registry.broadcast(workflowId, null, 'workflow.update', { archived: true });
   });
+
+  // Wire GET /api/templates: list available templates in .yoke/templates/.
+  // Errors (e.g. missing directory) return an empty list rather than failing.
+  callbacks.listTemplates = () => {
+    try {
+      return listTemplates(configDir).map((t) => ({
+        name: t.name,
+        description: t.description,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  // Wire POST /api/workflows: load a template by name, create a workflow row.
+  // The DB write is inside createWorkflow (RC-3). The broadcast is in the route handler.
+  const ingestDeps = makeProductionIngestDeps();
+  callbacks.createWorkflow = ({ templateName, name }) => {
+    let templateConfig: import('../shared/types/config.js').ResolvedConfig;
+    try {
+      templateConfig = loadTemplate(configDir, templateName);
+    } catch (err) {
+      if (err instanceof ConfigLoadError) {
+        if (err.detail.kind === 'not_found') {
+          return { status: 'template_not_found' };
+        }
+        return { status: 'template_error', message: err.message };
+      }
+      throw err;
+    }
+
+    const { workflowId } = createWorkflow(db, templateConfig, { name }, ingestDeps);
+
+    // Query existing workflows from the same template for the soft-collision hint.
+    // template_name in the DB stores config.template.name (the YAML name), not the file name.
+    const existingRows = db
+      .reader()
+      .prepare(
+        'SELECT name FROM workflows WHERE template_name = ? AND id != ? ORDER BY created_at DESC',
+      )
+      .all(templateConfig.template.name, workflowId) as Array<{ name: string }>;
+
+    return {
+      status: 'created',
+      workflowId,
+      name,
+      sameTemplateNames: existingRows.map((r) => r.name),
+    };
+  };
 
   // Write server discovery file.
   const serverJson = path.join(yokeDir, 'server.json');
@@ -435,9 +491,11 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
       state.registry.broadcast(workflowId, sessionId, frameType as import('../server/api/frames.js').ServerFrameType, payload);
     },
     async close() {
-      if (!opts.noScheduler) {
-        await scheduler.stop();
-      }
+      // Always stop the scheduler: even when noScheduler:true the scheduler's
+      // scheduleIndexUpdate can be triggered by the control executor, and its
+      // debounce timers must be cleared before the DB is closed to prevent
+      // "database connection is not open" errors in tests.
+      await scheduler.stop();
       await fastify.close();
       db.close();
       // Remove discovery file on clean shutdown.
@@ -458,18 +516,31 @@ export function register(program: Command): void {
   program
     .command('start')
     .description('Start the Yoke pipeline engine')
-    .option('-c, --config <path>', 'Path to .yoke.yml', '.yoke.yml')
+    .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
     .option('-p, --port <number>', 'Server port', '7777')
     .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
-    .action(async (opts: { config: string; port: string; scheduler: boolean }) => {
-      const configPath = path.resolve(opts.config);
+    // --config was removed in the templates refactor (t-03/t-10). Templates are
+    // now discovered automatically under .yoke/templates/. Keeping the option
+    // registered so Commander can produce a clear error instead of "unknown option".
+    .option('--config <file>', '[removed] use --config-dir instead')
+    .action(async (opts: { configDir: string; port: string; scheduler: boolean; config?: string }) => {
+      if (opts.config !== undefined) {
+        console.error(
+          'Error: --config is no longer supported.\n' +
+          'Templates are now discovered automatically under .yoke/templates/.\n' +
+          'Use --config-dir <path> to specify the repo root (default: current directory).\n' +
+          '\n  Example: yoke start --config-dir /path/to/repo',
+        );
+        process.exit(1);
+      }
+      const configDir = path.resolve(opts.configDir);
       const port = parseInt(opts.port, 10);
       // commander maps --no-scheduler to opts.scheduler === false
       const noScheduler = opts.scheduler === false;
 
       let handle: StartHandle;
       try {
-        handle = await startServer({ configPath, port, noScheduler });
+        handle = await startServer({ configDir, port, noScheduler });
       } catch (err) {
         if (err instanceof ConfigLoadError) {
           console.error(`Configuration error: ${err.message}`);

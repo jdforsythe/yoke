@@ -10,6 +10,7 @@ export type ServerFrameType =
   | 'workflow.snapshot'
   | 'workflow.update'
   | 'workflow.index.update'
+  | 'workflow.created'
   | 'item.state'
   | 'item.data'
   | 'stage.started'
@@ -130,6 +131,7 @@ export interface WorkflowSnapshotPayload {
     status: string;
     currentStage: string | null;
     createdAt: string;
+    pausedAt?: string | null;
     recoveryState?: RecoveryState | null;
     githubState?: GithubState | null;
   };
@@ -145,6 +147,11 @@ export interface WorkflowIndexUpdatePayload {
   status: WorkflowStatus;
   updatedAt: string;
   unreadEvents: number;
+}
+
+export interface WorkflowCreatedPayload {
+  workflowId: string;
+  name: string;
 }
 
 export interface ItemStatePayload {

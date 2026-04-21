@@ -129,7 +129,7 @@ function makeConfig(overrides: { githubEnabled?: boolean; autoPr?: boolean } = {
   return {
     version: '1',
     configDir: tmpDir,
-    project: { name: 'test' },
+    template: { name: 'test' },
     pipeline: {
       stages: [
         { id: 'stage1', run: 'once', phases: ['implement'] },

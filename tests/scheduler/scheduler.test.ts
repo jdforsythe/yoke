@@ -5,7 +5,7 @@
  * so no real git, worktrees, or agent processes are required.
  *
  * Coverage:
- *   AC-1  ingestWorkflow seeds workflow + item rows within the poll window.
+ *   AC-1  createWorkflow seeds workflow + item rows; scheduler.start() picks them up.
  *   AC-2  Crash recovery transitions stale in_progress → awaiting_retry before
  *         any new items are scheduled.
  *   AC-2b Capture mode: fixture file written when .yoke/record.json is present;
@@ -36,10 +36,10 @@ import { openDbPool } from '../../src/server/storage/db.js';
 import { applyMigrations } from '../../src/server/storage/migrate.js';
 import type { DbPool } from '../../src/server/storage/db.js';
 import type { ProcessManager, SpawnHandle, SpawnOpts } from '../../src/server/process/manager.js';
-import type { WorktreeManager, WorktreeInfo, BootstrapEvent } from '../../src/server/worktree/manager.js';
+import type { WorktreeManager, WorktreeInfo, BootstrapEvent, CreateWorktreeOpts } from '../../src/server/worktree/manager.js';
 import { Scheduler } from '../../src/server/scheduler/scheduler.js';
 import type { ArtifactValidatorFn } from '../../src/server/scheduler/scheduler.js';
-import { ingestWorkflow } from '../../src/server/scheduler/ingest.js';
+import { createWorkflow } from '../../src/server/scheduler/ingest.js';
 import type { ResolvedConfig } from '../../src/shared/types/config.js';
 import { runRecord } from '../../src/cli/record.js';
 import { parseFixture } from '../../src/server/process/scripted-manager.js';
@@ -80,7 +80,7 @@ function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
     version: '1',
     configDir: tmpDir,
-    project: { name: 'test-project' },
+    template: { name: 'test-project' },
     pipeline: {
       stages: [
         {
@@ -238,6 +238,9 @@ function buildScheduler(opts: {
     maxParallel: opts.maxParallel ?? 4,
     pollIntervalMs: opts.pollIntervalMs ?? 50,
     gracePeriodMs: 500,
+    // Skip startup-pause in scheduler.test.ts — these tests verify steady-state
+    // scheduling, not server-restart semantics (tested in control-executor.test.ts).
+    skipStartupPause: true,
   });
 
   activeSchedulers.push(scheduler);
@@ -245,16 +248,15 @@ function buildScheduler(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// AC-1: ingestWorkflow
+// AC-1: createWorkflow
 // ---------------------------------------------------------------------------
 
-describe('AC-1: ingestWorkflow', () => {
+describe('AC-1: createWorkflow', () => {
   it('creates a workflow row and one item per stage', () => {
     const config = makeConfig();
-    const { workflowId, isResume } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'test-workflow' });
 
     expect(typeof workflowId).toBe('string');
-    expect(isResume).toBe(false);
 
     const wf = db.reader()
       .prepare('SELECT * FROM workflows WHERE id = ?')
@@ -271,13 +273,17 @@ describe('AC-1: ingestWorkflow', () => {
     expect(items[0].status).toBe('pending');
   });
 
-  it('returns isResume:true and the existing id on second call', () => {
+  it('two calls produce distinct workflow rows (no dedup)', () => {
     const config = makeConfig();
-    const first = ingestWorkflow(db, config);
-    const second = ingestWorkflow(db, config);
+    const first = createWorkflow(db, config, { name: 'run-1' });
+    const second = createWorkflow(db, config, { name: 'run-2' });
 
-    expect(second.workflowId).toBe(first.workflowId);
-    expect(second.isResume).toBe(true);
+    expect(first.workflowId).not.toBe(second.workflowId);
+
+    const all = db.reader()
+      .prepare('SELECT id FROM workflows')
+      .all() as { id: string }[];
+    expect(all).toHaveLength(2);
   });
 
   it('chains depends_on across stages (stage N+1 depends on stage N item)', () => {
@@ -289,7 +295,7 @@ describe('AC-1: ingestWorkflow', () => {
         ],
       },
     });
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'chain-test' });
     const items = db.reader()
       .prepare('SELECT id, stage_id, depends_on FROM items WHERE workflow_id = ? ORDER BY rowid')
       .all(workflowId) as { id: string; stage_id: string; depends_on: string | null }[];
@@ -310,7 +316,7 @@ describe('AC-2: crash recovery before scheduling', () => {
     // Manually seed a workflow + item in in_progress + a sessions row simulating
     // a stale session from a previous run.
     const config = makeConfig();
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'crash-recovery-test' });
 
     // Advance item to in_progress by hand.
     const [item] = db.reader()
@@ -351,10 +357,10 @@ describe('AC-3: state machine end-to-end', () => {
   it('drives a single-stage workflow from pending to complete', async () => {
     const config = makeConfig();
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+    const { workflowId } = createWorkflow(db, config, { name: 'end-to-end-test' });
     const { scheduler } = buildScheduler({ config, processManager: pm, pollIntervalMs: 50 });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     // Wait for the workflow to reach 'completed' status.
     await pollUntil(() => {
@@ -372,25 +378,27 @@ describe('AC-3: state machine end-to-end', () => {
     await scheduler.stop();
   });
 
-  it('bootstrap_fail → scheduler.start() rejects with the failed command in the message', async () => {
-    // Worktree bootstrap now runs in Scheduler.start() via _ensureWorktree,
-    // before the tick loop begins. A bootstrap failure therefore surfaces as
-    // a rejection from start() (caller exits non-zero), not an item-level
-    // bootstrap_failed state. The workflow row still exists — the user
-    // repairs whatever failed and restarts.
+  it('bootstrap_fail → item reaches bootstrap_failed state in the tick loop', async () => {
     const config = makeConfig({
       worktrees: { base_dir: '.worktrees', bootstrap: { commands: ['setup.sh'] } },
     });
     const wm = makeWorktreeManager({ bootstrapEvent: { type: 'bootstrap_fail', failedCommand: 'setup.sh', exitCode: 1, stderr: 'oops' } });
+    const { workflowId } = createWorkflow(db, config, { name: 'bootstrap-fail-test' });
     const { scheduler } = buildScheduler({ config, worktreeManager: wm });
 
-    await expect(scheduler.start()).rejects.toThrow(/setup\.sh/);
+    await scheduler.start();
 
-    // Workflow row still exists so the user can resume after fixing the issue.
-    const wf = db.reader()
-      .prepare('SELECT id FROM workflows WHERE id = ?')
-      .get(scheduler.workflowId!) as { id: string } | undefined;
-    expect(wf).toBeDefined();
+    await pollUntil(() => {
+      const item = db.reader()
+        .prepare('SELECT status FROM items WHERE workflow_id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return item?.status === 'bootstrap_failed';
+    }, { timeoutMs: 10_000 });
+
+    const item = db.reader()
+      .prepare('SELECT status FROM items WHERE workflow_id = ?')
+      .get(workflowId) as { status: string };
+    expect(item.status).toBe('bootstrap_failed');
 
     await scheduler.stop();
   });
@@ -405,10 +413,10 @@ describe('AC-5: worktree_path persisted after createWorktree', () => {
     const config = makeConfig();
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
     const wm = makeWorktreeManager({ worktreePath: path.join(tmpDir, 'my-wt') });
+    const { workflowId } = createWorkflow(db, config, { name: 'worktree-path-test' });
     const { scheduler } = buildScheduler({ config, processManager: pm, worktreeManager: wm });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     // Wait for worktree_path to be set (happens before session spawn).
     await pollUntil(() => {
@@ -437,10 +445,10 @@ describe('AC-7: stream events are broadcast', () => {
   it('calls broadcast with item.state frames', async () => {
     const config = makeConfig();
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+    const { workflowId } = createWorkflow(db, config, { name: 'broadcast-test' });
     const { scheduler, broadcasts } = buildScheduler({ config, processManager: pm });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -464,10 +472,10 @@ describe('AC-7: stream events are broadcast', () => {
   it('session.started broadcast payload includes itemId', async () => {
     const config = makeConfig();
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+    const { workflowId } = createWorkflow(db, config, { name: 'session-started-test' });
     const { scheduler, broadcasts } = buildScheduler({ config, processManager: pm });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -496,6 +504,7 @@ describe('AC-7: stream events are broadcast', () => {
 describe('AC-8: graceful drain on stop()', () => {
   it('resolves within gracePeriodMs even with a running session', async () => {
     const config = makeConfig();
+    createWorkflow(db, config, { name: 'graceful-drain-test' });
 
     // A process that never exits on its own — stalls until cancel() fires SIGTERM.
     class StallingPM implements ProcessManager {
@@ -521,6 +530,7 @@ describe('AC-8: graceful drain on stop()', () => {
       maxParallel: 4,
       pollIntervalMs: 50,
       gracePeriodMs: 1000,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
@@ -566,6 +576,7 @@ describe('AC-4: pre-phase non-continue action blocks spawn', () => {
       }
     }
 
+    const { workflowId } = createWorkflow(db, config, { name: 'pre-phase-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -582,11 +593,11 @@ describe('AC-4: pre-phase non-continue action blocks spawn', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -631,6 +642,7 @@ describe('AC-5 (spec): post-phase non-continue action forwarded to engine', () =
     // Process exits 0 — session_ok path — but post runner returns non-continue.
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
 
+    const { workflowId } = createWorkflow(db, config, { name: 'post-phase-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -652,11 +664,11 @@ describe('AC-5 (spec): post-phase non-continue action forwarded to engine', () =
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -708,6 +720,7 @@ describe('AC-6: rate_limit_detected → rate_limited with backoff', () => {
       }
     }
 
+    const { workflowId } = createWorkflow(db, config, { name: 'rate-limit-test' });
     const { scheduler } = buildScheduler({
       config,
       processManager: new RateLimitPM(),
@@ -715,7 +728,6 @@ describe('AC-6: rate_limit_detected → rate_limited with backoff', () => {
     });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -773,6 +785,7 @@ describe('RC-5: concurrency limit', () => {
       }
     }
 
+    const { workflowId } = createWorkflow(db, config, { name: 'concurrency-test' });
     const { scheduler } = buildScheduler({
       config,
       processManager: new CountingPM(),
@@ -781,7 +794,6 @@ describe('RC-5: concurrency limit', () => {
     });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -813,10 +825,9 @@ describe('AC-2b: capture mode', () => {
     ]);
 
     const config = makeConfig({ configDir: tmpDir });
+    const { workflowId } = createWorkflow(db, config, { name: 'capture-test' });
     const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
     await scheduler.start();
-
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -850,10 +861,9 @@ describe('AC-2b: capture mode', () => {
       { type: 'exit', code: 0 },
     ]);
 
+    const { workflowId } = createWorkflow(db, config, { name: 'no-capture-test' });
     const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
     await scheduler.start();
-
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -886,10 +896,10 @@ describe('AC-2b: capture mode', () => {
     ]);
 
     const config = makeConfig({ configDir: tmpDir });
+    const { workflowId } = createWorkflow(db, config, { name: 'replay-test' });
     const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
     await scheduler.start();
 
-    const workflowId = scheduler.workflowId!;
     await pollUntil(() => {
       const wf = db.reader()
         .prepare('SELECT status FROM workflows WHERE id = ?')
@@ -930,10 +940,10 @@ describe('AC-2b: capture mode', () => {
     ]);
 
     const config = makeConfig({ configDir: tmpDir });
+    const { workflowId } = createWorkflow(db, config, { name: 'fail-capture-test' });
     const { scheduler } = buildScheduler({ config, processManager, pollIntervalMs: 30 });
     await scheduler.start();
 
-    const workflowId = scheduler.workflowId!;
     // Non-zero exit + empty stderr → classifier=unknown → awaiting_user
     // (no transient pattern → no retry budget path).
     await pollUntil(() => {
@@ -989,6 +999,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       output: '',
     };
 
+    const { workflowId } = createWorkflow(db, config, { name: 'prepost-pre-ok-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1004,11 +1015,11 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -1072,6 +1083,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       }
     }
 
+    const { workflowId } = createWorkflow(db, config, { name: 'pre-fail-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1092,11 +1104,11 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -1156,6 +1168,7 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       output: '',
     };
 
+    const { workflowId } = createWorkflow(db, config, { name: 'prepost-post-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1171,11 +1184,11 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -1234,6 +1247,7 @@ function buildValidatorScheduler(opts: {
     maxParallel: 4,
     pollIntervalMs: 50,
     gracePeriodMs: 500,
+    skipStartupPause: true,
   });
 
   activeSchedulers.push(scheduler);
@@ -1243,12 +1257,12 @@ function buildValidatorScheduler(opts: {
 describe('feat-artifact-validators: scheduler wiring', () => {
   // AV-1: validators pass → workflow completes normally.
   it('AV-1: validators_ok → item reaches completed', async () => {
+    const { workflowId } = createWorkflow(db, makeConfig(), { name: 'av1-test' });
     const { scheduler } = buildValidatorScheduler({
       artifactValidator: async () => ({ kind: 'validators_ok' }),
     });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -1265,6 +1279,7 @@ describe('feat-artifact-validators: scheduler wiring', () => {
 
   // AV-2: validators fail → item transitions to awaiting_retry (budget > 0).
   it('AV-2: validator_fail → item enters awaiting_retry', async () => {
+    const { workflowId } = createWorkflow(db, makeConfig(), { name: 'av2-test' });
     const { scheduler } = buildValidatorScheduler({
       artifactValidator: async () => ({
         kind: 'validator_fail',
@@ -1288,7 +1303,6 @@ describe('feat-artifact-validators: scheduler wiring', () => {
     });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const item = db.reader()
@@ -1308,6 +1322,23 @@ describe('feat-artifact-validators: scheduler wiring', () => {
   // AV-3: validator_fail → post commands NOT called.
   it('AV-3: validator_fail → post runner is not invoked', async () => {
     const spy = { called: false };
+    const config = makeConfig({
+      phases: {
+        'phase-one': {
+          command: 'claude',
+          args: ['--output-format', 'stream-json'],
+          prompt_template: 'Do the thing.',
+          post: [
+            {
+              name: 'verify',
+              run: ['true'],
+              actions: { '*': 'continue' },
+            },
+          ],
+        },
+      },
+    });
+    const { workflowId } = createWorkflow(db, config, { name: 'av3-test' });
 
     const { scheduler } = buildValidatorScheduler({
       artifactValidator: async () => ({
@@ -1330,26 +1361,10 @@ describe('feat-artifact-validators: scheduler wiring', () => {
         ],
       }),
       postRunnerSpy: spy,
-      config: makeConfig({
-        phases: {
-          'phase-one': {
-            command: 'claude',
-            args: ['--output-format', 'stream-json'],
-            prompt_template: 'Do the thing.',
-            post: [
-              {
-                name: 'verify',
-                run: ['true'],
-                actions: { '*': 'continue' },
-              },
-            ],
-          },
-        },
-      }),
+      config,
     });
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const item = db.reader()
@@ -1382,6 +1397,7 @@ describe('feat-artifact-validators: scheduler wiring', () => {
       },
     });
 
+    const { workflowId } = createWorkflow(db, config, { name: 'av4-test' });
     const scheduler = new Scheduler({
       db,
       config,
@@ -1408,11 +1424,11 @@ describe('feat-artifact-validators: scheduler wiring', () => {
       maxParallel: 4,
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(scheduler);
 
     await scheduler.start();
-    const workflowId = scheduler.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -1481,6 +1497,7 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
       '["original","added-by-session"]',
     );
 
+    const { workflowId } = createWorkflow(db, config, { name: 'hc1-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1496,11 +1513,11 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -1546,6 +1563,7 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
     // PM does NOT touch the items_from file → diff_check_ok path.
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
 
+    const { workflowId } = createWorkflow(db, config, { name: 'hc2-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1561,11 +1579,11 @@ describe('feat-hook-contract: diff_check_fail scheduler wiring', () => {
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
 
     // Workflow must complete normally.
     await pollUntil(() => {
@@ -1595,9 +1613,11 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
     const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
 
+    const hc4Config = makeConfig();
+    const { workflowId } = createWorkflow(db, hc4Config, { name: 'hc4-test' });
     const sched = new Scheduler({
       db,
-      config: makeConfig(),
+      config: hc4Config,
       processManager: pm,
       worktreeManager: {
         async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
@@ -1612,11 +1632,11 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
       },
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
 
     // Workflow must still complete — malformed manifest must not block acceptance (RC-3).
     await pollUntil(() => {
@@ -1653,9 +1673,11 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
     const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
     const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
 
+    const hc5Config = makeConfig();
+    const { workflowId } = createWorkflow(db, hc5Config, { name: 'hc5-test' });
     const sched = new Scheduler({
       db,
-      config: makeConfig(),
+      config: hc5Config,
       processManager: pm,
       worktreeManager: {
         async createWorktree() { return { branchName: 'yoke/test', worktreePath: wt }; },
@@ -1670,11 +1692,11 @@ describe('feat-hook-contract: last-check.json manifest warnings', () => {
       },
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
 
     await pollUntil(() => {
       const wf = db.reader()
@@ -1714,8 +1736,8 @@ describe('feat-pipeline-hardening: restart with awaiting_retry items', () => {
   it('backoff_elapsed fires for awaiting_retry items after scheduler restart', async () => {
     const config = makeConfig();
 
-    // Ingest workflow and manually set the item to awaiting_retry.
-    const { workflowId } = ingestWorkflow(db, config);
+    // Create workflow and manually set the item to awaiting_retry.
+    const { workflowId } = createWorkflow(db, config, { name: 'retry-restart-test' });
     const items = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -1783,7 +1805,7 @@ describe('feat-pipeline-hardening: two-phase workflow', () => {
       },
     });
 
-    const { workflowId } = ingestWorkflow(db, config);
+    const { workflowId } = createWorkflow(db, config, { name: 'two-phase-test' });
     const { scheduler, broadcasts } = buildScheduler({ config, pollIntervalMs: 50 });
     await scheduler.start();
 
@@ -1843,6 +1865,7 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
 
     let postCallCount = 0;
 
+    const { workflowId } = createWorkflow(db, config, { name: 'goto-test' });
     const sched = new Scheduler({
       db,
       config,
@@ -1876,11 +1899,11 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
       broadcast: () => {},
       pollIntervalMs: 50,
       gracePeriodMs: 500,
+      skipStartupPause: true,
     });
     activeSchedulers.push(sched);
 
     await sched.start();
-    const workflowId = sched.workflowId!;
     const [item] = db.reader()
       .prepare('SELECT id FROM items WHERE workflow_id = ?')
       .all(workflowId) as { id: string }[];
@@ -1916,4 +1939,184 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
 
     await sched.stop();
   }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// t-05: Two concurrent workflows from the same template — no cross-contamination
+// ---------------------------------------------------------------------------
+
+describe('t-05: two concurrent workflows from same template', () => {
+  it('advances both workflows independently with no shared state', async () => {
+    // Create two workflows from the same config (template).
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const wf1 = createWorkflow(db, config, { name: 'alpha-run' });
+    const wf2 = createWorkflow(db, config, { name: 'beta-run' });
+
+    // Per-workflow worktree manager: uses workflowId as the directory name
+    // so each workflow gets its own isolated path, matching production behaviour.
+    const perWfWorktreeManager: WorktreeManager = {
+      async createWorktree(opts: CreateWorktreeOpts): Promise<WorktreeInfo> {
+        const wt = path.join(tmpDir, 'wts', opts.workflowId);
+        fs.mkdirSync(wt, { recursive: true });
+        return {
+          branchName: `yoke/test-${opts.workflowId.slice(0, 8)}`,
+          worktreePath: wt,
+        };
+      },
+      async runBootstrap(): Promise<BootstrapEvent> {
+        return { type: 'bootstrap_ok' };
+      },
+      async cleanup() {
+        return { worktreeRemoved: true, branchRetained: false };
+      },
+    } as unknown as WorktreeManager;
+
+    const broadcasts: Array<{ workflowId: string; sessionId: string | null; frameType: string; payload: unknown }> = [];
+    const scheduler = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: perWfWorktreeManager,
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: (wid, sid, ft, p) => broadcasts.push({ workflowId: wid, sessionId: sid, frameType: ft, payload: p }),
+      maxParallel: 4,
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+      skipStartupPause: true,
+    });
+    activeSchedulers.push(scheduler);
+
+    await scheduler.start();
+
+    // Both workflows must reach 'completed' independently.
+    await pollUntil(() => {
+      const wf1Row = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(wf1.workflowId) as { status: string } | undefined;
+      const wf2Row = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(wf2.workflowId) as { status: string } | undefined;
+      return wf1Row?.status === 'completed' && wf2Row?.status === 'completed';
+    }, { timeoutMs: 15_000 });
+
+    // Verify each workflow independently completed.
+    const wf1Final = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wf1.workflowId) as { status: string };
+    const wf2Final = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(wf2.workflowId) as { status: string };
+
+    expect(wf1Final.status).toBe('completed');
+    expect(wf2Final.status).toBe('completed');
+
+    // Worktree paths must be distinct (per-UUID directories).
+    const wf1Row = db.reader()
+      .prepare('SELECT worktree_path FROM workflows WHERE id = ?')
+      .get(wf1.workflowId) as { worktree_path: string | null };
+    const wf2Row = db.reader()
+      .prepare('SELECT worktree_path FROM workflows WHERE id = ?')
+      .get(wf2.workflowId) as { worktree_path: string | null };
+
+    expect(wf1Row.worktree_path).not.toBeNull();
+    expect(wf2Row.worktree_path).not.toBeNull();
+    expect(wf1Row.worktree_path).not.toBe(wf2Row.worktree_path);
+
+    // item.state broadcasts must be scoped to the correct workflowId —
+    // no cross-contamination between the two concurrent workflows.
+    const wf1ItemIds = (
+      db.reader()
+        .prepare('SELECT id FROM items WHERE workflow_id = ?')
+        .all(wf1.workflowId) as { id: string }[]
+    ).map((r) => r.id);
+    const wf2ItemIds = (
+      db.reader()
+        .prepare('SELECT id FROM items WHERE workflow_id = ?')
+        .all(wf2.workflowId) as { id: string }[]
+    ).map((r) => r.id);
+
+    const wf1Broadcasts = broadcasts.filter((b) => b.workflowId === wf1.workflowId);
+    const wf2Broadcasts = broadcasts.filter((b) => b.workflowId === wf2.workflowId);
+
+    // Every item.state broadcast for wf1 must reference an item belonging to wf1.
+    for (const b of wf1Broadcasts.filter((b) => b.frameType === 'item.state')) {
+      const p = b.payload as { itemId: string };
+      expect(wf1ItemIds).toContain(p.itemId);
+      expect(wf2ItemIds).not.toContain(p.itemId);
+    }
+
+    // Every item.state broadcast for wf2 must reference an item belonging to wf2.
+    for (const b of wf2Broadcasts.filter((b) => b.frameType === 'item.state')) {
+      const p = b.payload as { itemId: string };
+      expect(wf2ItemIds).toContain(p.itemId);
+      expect(wf1ItemIds).not.toContain(p.itemId);
+    }
+
+    // No pending_attention rows — clean completion, no cross-workflow leakage.
+    const wf1Attention = db.reader()
+      .prepare('SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ?')
+      .get(wf1.workflowId) as { cnt: number };
+    const wf2Attention = db.reader()
+      .prepare('SELECT COUNT(*) AS cnt FROM pending_attention WHERE workflow_id = ?')
+      .get(wf2.workflowId) as { cnt: number };
+
+    expect(wf1Attention.cnt).toBe(0);
+    expect(wf2Attention.cnt).toBe(0);
+
+    await scheduler.stop();
+  }, 20_000);
+
+  it('paused workflow is skipped by the tick loop', async () => {
+    // Create one workflow, then pause it before starting the scheduler.
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+
+    const { workflowId } = createWorkflow(db, config, { name: 'paused-wf-test' });
+
+    // Manually set paused_at on the workflow row so the tick query skips it.
+    db.writer
+      .prepare('UPDATE workflows SET paused_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), workflowId);
+
+    let spawnCount = 0;
+    class SpyPM implements ProcessManager {
+      async spawn(_opts: SpawnOpts): Promise<SpawnHandle> {
+        spawnCount++;
+        const h = new StubSpawnHandle([{ type: 'exit', code: 0 }]);
+        h.start();
+        return h;
+      }
+    }
+
+    const sched = new Scheduler({
+      db,
+      config,
+      processManager: new SpyPM(),
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => 'stub prompt',
+      broadcast: () => {},
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+      skipStartupPause: true,
+    });
+    activeSchedulers.push(sched);
+
+    await sched.start();
+
+    // Wait several ticks — the paused workflow should never spawn.
+    await new Promise<void>((r) => setTimeout(r, 300));
+    expect(spawnCount).toBe(0);
+
+    // Verify the workflow is still pending (not advanced by the tick loop).
+    const wfRow = db.reader()
+      .prepare('SELECT status FROM workflows WHERE id = ?')
+      .get(workflowId) as { status: string };
+    expect(wfRow.status).toBe('pending');
+
+    await sched.stop();
+  });
 });

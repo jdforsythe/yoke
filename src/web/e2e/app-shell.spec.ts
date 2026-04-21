@@ -52,11 +52,19 @@ test('connection indicator shows Version mismatch when protocolVersion is wrong'
   await expect(page.getByText('Version mismatch')).toBeVisible();
 });
 
-test('WorkflowListRoute renders empty-state placeholder in main area', async ({ page }) => {
+test('WorkflowListRoute renders template picker empty-state in main area', async ({ page }) => {
   await setupWs(page);
+  // Return an empty template list so the empty-state copy is shown.
+  await page.route('**/api/templates', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ templates: [] }),
+    }),
+  );
   await page.goto('/');
 
-  await expect(page.getByText('Select a workflow to get started')).toBeVisible();
+  await expect(page.getByTestId('empty-state')).toBeVisible();
 });
 
 test('bell badge shows count derived from pendingAttention array length in snapshot', async ({ page }) => {

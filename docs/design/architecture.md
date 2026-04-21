@@ -168,7 +168,7 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_ITEM_ID`,
 ## 4. Module responsibilities (one page each)
 
 ### 4.1 Pipeline Engine
-- Inputs: SQLite state, stage list from `.yoke.yml` (Issue 1), events
+- Inputs: SQLite state, stage list from `.yoke/templates/*.yml` (Issue 1), events
   from Process Manager, Pre/Post Runner, Worktree Manager.
 - Outputs: SQLite writes, side-effect calls to Process / Worktree / Prompt
   modules, WebSocket `workflow.update` / `item.update` frames.
@@ -248,11 +248,17 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_ITEM_ID`,
 - No I/O inside the assembler; enables dry-run preview and unit testing.
 
 ### 4.7 Config Loader
-- Parses `.yoke.yml` (YAML 1.2), validates against
-  `schemas/yoke-config.schema.json`, resolves relative paths at load time
-  (templates, artifact schemas, hooks).
+- Reads template files from `.yoke/templates/*.yml` (YAML 1.2), validates
+  against `schemas/yoke-config.schema.json`, resolves relative paths at load
+  time (prompt templates, artifact schemas, hooks).
+- Exposes two public functions: `listTemplates(configDir)` for the UI picker
+  and `loadTemplate(configDir, name)` for full validation + path resolution.
 - Rejects unknown keys (`additionalProperties: false` everywhere).
+- Throws `migration_error` if a root `.yoke.yml` is found — it must be moved
+  to `.yoke/templates/<name>.yml` first.
 - Produces a typed `ResolvedConfig` that downstream modules consume.
+- The `template.name` field (from the YAML) is stored in the workflow row as
+  `template_name` and is informational only — it does not drive dedup or resumption.
 
 ### 4.8 Storage layer
 - `better-sqlite3` single writer, separate read-only connections for the
@@ -302,7 +308,54 @@ All children inherit correlation env: `YOKE_WORKFLOW_ID`, `YOKE_ITEM_ID`,
 ## 6. Trust boundaries
 
 - Untrusted: spec content, item manifest content, agent-produced files.
-- Trusted: harness code, `.yoke.yml` (it's user-authored), the user's own
+- Trusted: harness code, `.yoke/templates/*.yml` (user-authored), the user's own
   Claude hooks.
 - Enforcement of the untrusted→trusted boundary is opt-in (`post:`
   commands + safety templates). See `threat-model.md`.
+
+---
+
+## 7. Templates vs workflow instances
+
+A **template** is a static YAML file under `.yoke/templates/` that declares
+the pipeline shape, phases, commands, and prompt files. Templates have a
+`template.name` field (informational, used in the UI picker) and an optional
+`description`. One template file can be used to create many workflow instances.
+
+A **workflow instance** is a SQLite row (`workflows` table) with:
+- A user-supplied `name` (set at creation via the UI or API).
+- A `template_name` column (denormalized from `config.template.name`, informational only).
+- Its own `id` (UUID), `status`, `paused_at`, `branch_name`, `worktree_path`.
+
+Workflow instances are created via `POST /api/workflows` (the UI picker) by:
+1. Selecting a template from `GET /api/templates`.
+2. Entering a workflow name (e.g. "add-auth-v2").
+3. The server calls `createWorkflow(db, config, {name})` which inserts the row.
+
+**Key invariant:** a template file can be edited at any time without affecting
+running or paused workflow instances. The scheduler reads the resolved config
+at startup; running instances use the config snapshot stored at creation.
+
+---
+
+## 8. Startup-pause behavior
+
+When `yoke start` is invoked, the Scheduler applies a **startup pause** before
+beginning its tick loop:
+
+1. All non-terminal workflows (`status NOT IN (completed, abandoned,
+   completed_with_blocked)`) with `paused_at IS NULL` have `paused_at` set to
+   `datetime('now')`.
+2. The tick loop begins. Workflows where `paused_at IS NOT NULL` are skipped
+   (via the `idx_workflows_paused_at` partial index added by migration 0005).
+3. The user views the dashboard, selects a workflow, and clicks **Continue** in
+   the PausedBanner. This calls `POST /api/workflows/:id/control` with
+   `{action: "continue"}`, which clears `paused_at` and allows the tick loop to
+   pick up the workflow on the next cycle.
+
+This design ensures no workflow auto-resumes after a server restart without
+explicit user intent, which is important when multiple templates are in use and
+the user may want to inspect or adjust a workflow before continuing.
+
+To skip the startup pause (e.g. in tests or automated pipelines), pass
+`skipStartupPause: true` to the `Scheduler` constructor.

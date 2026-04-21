@@ -126,8 +126,10 @@ export interface Pipeline {
 // Top-level optional sections
 // ---------------------------------------------------------------------------
 
-export interface Project {
+export interface Template {
   name: string;
+  /** Optional human-readable description shown in the template picker UI. */
+  description?: string;
 }
 
 export interface WorktreesBootstrap {
@@ -210,7 +212,7 @@ export interface Ui {
  */
 export interface RawConfig {
   version: string;
-  project: Project;
+  template: Template;
   pipeline: Pipeline;
   /** Keys are phase names referenced by pipeline stages. */
   phases: Record<string, Phase>;

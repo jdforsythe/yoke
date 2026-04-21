@@ -120,7 +120,7 @@ function makeConfig(configDir: string): ResolvedConfig {
   return {
     version: '1',
     configDir,
-    project: { name: 'test' },
+    template: { name: 'test' },
     pipeline: { stages: [{ id: 'stage1', run: 'once', phases: ['implement'] }] },
     phases: {
       implement: {
@@ -501,7 +501,7 @@ describe('makeControlExecutor — cancel calls scheduleIndexUpdate', () => {
       (w) => captured.push(w),
     );
 
-    const result = executor(wfId, 'pause');
+    const result = executor(wfId, 'rewind');
 
     expect(result.status).toBe('invalid_action');
     expect(captured).toHaveLength(0);

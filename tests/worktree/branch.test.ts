@@ -148,23 +148,24 @@ describe('makeBranchName()', () => {
 describe('makeWorktreeDirName()', () => {
   const id = '550e8400-e29b-41d4-a716-446655440000';
 
-  it('produces <slug>-<shortid> without any prefix', () => {
-    expect(makeWorktreeDirName('add-auth', id)).toBe('add-auth-550e8400');
+  it('returns the full workflowId UUID as the directory name', () => {
+    expect(makeWorktreeDirName(id)).toBe(id);
   });
 
   it('contains no "/" character — safe for filesystem use', () => {
-    const dirName = makeWorktreeDirName('add-auth', id);
+    const dirName = makeWorktreeDirName(id);
     expect(dirName).not.toContain('/');
   });
 
-  it('matches the branch name suffix (without prefix)', () => {
-    const branchName = makeBranchName('add-auth', id);
-    const dirName = makeWorktreeDirName('add-auth', id);
-    // dirName should equal branchName with 'yoke/' stripped
-    expect(branchName).toBe(`yoke/${dirName}`);
+  it('two different workflowIds produce different directory names', () => {
+    const id2 = 'aabbccdd-0000-0000-0000-000000000000';
+    expect(makeWorktreeDirName(id)).not.toBe(makeWorktreeDirName(id2));
   });
 
-  it('uses "workflow" as fallback for empty name', () => {
-    expect(makeWorktreeDirName('', id)).toBe('workflow-550e8400');
+  it('branch name still includes uuid8 prefix for readability', () => {
+    const branchName = makeBranchName('add-auth', id);
+    // Branch keeps the slug-uuid8 format; dir uses full UUID (different shapes)
+    expect(branchName).toBe('yoke/add-auth-550e8400');
+    expect(makeWorktreeDirName(id)).toBe(id);
   });
 });

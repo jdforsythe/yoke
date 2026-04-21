@@ -30,15 +30,17 @@ Each entry should answer: **what** is deferred, **where** in the codebase it liv
 
 ---
 
-## Pause / resume control actions not implemented
+## ~~Pause / resume control actions not implemented~~
 
-**What.** The UI `ControlMatrix` surfaces pause and resume buttons, but the server-side `controlExecutor` only accepts `cancel`. Any pause/resume request returns `invalid_action` with status 400.
+~~**What.** The UI `ControlMatrix` surfaces pause and resume buttons, but the server-side `controlExecutor` only accepts `cancel`. Any pause/resume request returns `invalid_action` with status 400.~~
 
-**Where.** `src/server/pipeline/control-executor.ts` (the switch over `action`), `src/web/src/components/ControlMatrix/ControlMatrix.tsx` (the buttons).
+~~**Where.** `src/server/pipeline/control-executor.ts` (the switch over `action`), `src/web/src/components/ControlMatrix/ControlMatrix.tsx` (the buttons).~~
 
-**Why deferred.** Cancel was the blocking safety primitive for running workflows through the dashboard. Pause/resume needs a design decision about what "paused" means at the state-machine level — there's no `paused` state in the `State` union today, and retry-ladder timers, rate-limit windows, and in-flight sessions all interact with pause semantics.
+~~**Why deferred.** Cancel was the blocking safety primitive for running workflows through the dashboard. Pause/resume needs a design decision about what "paused" means at the state-machine level — there's no `paused` state in the `State` union today, and retry-ladder timers, rate-limit windows, and in-flight sessions all interact with pause semantics.~~
 
-**Fix sketch.** Either (a) add a `paused` workflow status (workflow-scope, not item-scope) that makes the scheduler skip ticking the workflow; resume flips it back. Or (b) hide the buttons in ControlMatrix until a real design lands. (b) is the right interim move to avoid user confusion.
+~~**Fix sketch.** Either (a) add a `paused` workflow status (workflow-scope, not item-scope) that makes the scheduler skip ticking the workflow; resume flips it back. Or (b) hide the buttons in ControlMatrix until a real design lands. (b) is the right interim move to avoid user confusion.~~
+
+**Implemented in templates refactor t-06.** pause/continue are workflow-scoped: pause sets `workflows.paused_at = now()`, continue clears it. The scheduler tick skips workflows where `paused_at IS NOT NULL` (via the `idx_workflows_paused_at` index added by migration 0005). Scheduler startup automatically pauses all non-terminal workflows so no workflow auto-resumes after a server restart. See `src/server/pipeline/control-executor.ts` and `tests/pipeline/control-executor.test.ts`.
 
 ---
 

@@ -1,7 +1,10 @@
 /**
- * Workflow ingestion — creates workflow + item rows from ResolvedConfig.
+ * Workflow creation — seeds a brand-new workflow + item rows from ResolvedConfig.
  *
- * Called by the Scheduler on startup (AC-1: ingests stage graph within 2 s).
+ * createWorkflow always inserts a new row; there is no dedup / resume check.
+ * With user-supplied instance names, concurrent workflows from the same template
+ * are expected. The caller (API handler, t-07) is responsible for choosing a
+ * unique or descriptive name.
  *
  * ## What gets seeded
  *
@@ -11,31 +14,19 @@
  *   sequential stage execution.
  *
  *   run:per-item stages — items come from the manifest file (items_from path),
- *   which lives inside the worktree that doesn't exist yet at startup.  These
- *   items are seeded lazily when the stage becomes active (deferred to a later
- *   phase of the orchestration loop — see open-questions.md). Only the stage
- *   ordering dependency (depends on previous stage's item) is recorded at
- *   ingest time.
- *
- * ## Idempotency
- *
- *   If a live workflow (same project.name + configDir, non-terminal status)
- *   already exists, it is returned as-is (isResume: true). A new workflow
- *   is only created when no live match is found — allowing safe restart
- *   without creating duplicate runs.
+ *   which lives inside the worktree that doesn't exist yet at creation time.
+ *   These items are seeded lazily when the stage becomes active.  Only the stage
+ *   ordering dependency (depends on previous stage's item) is recorded here.
  *
  * ## GitHub state initialisation
  *
- *   For fresh workflows (isResume: false), initGithubState is called inside
- *   the same transaction as the workflow INSERT so every new workflow row has
- *   a non-null github_state from the moment it is committed.
+ *   initGithubState is called inside the same transaction as the workflow INSERT
+ *   so every new workflow row has a non-null github_state from the moment it is
+ *   committed.
  *
- *   The git remote URL is resolved via injected IngestDeps before the
- *   transaction begins (it may block on a local filesystem read).  This
- *   keeps the transaction itself synchronous.
- *
- *   Resume path: initGithubState is NOT called — the existing github_state
- *   is left untouched.
+ *   The git remote URL is resolved via injected IngestDeps before the transaction
+ *   begins (it may block on a local filesystem read).  This keeps the transaction
+ *   itself synchronous.
  */
 
 import crypto from 'node:crypto';
@@ -48,12 +39,6 @@ import { initGithubState } from '../github/service.js';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface IngestResult {
-  workflowId: string;
-  /** true when an existing live workflow was found (resume path). */
-  isResume: boolean;
-}
 
 /**
  * Injectable git helper for resolving the remote origin URL.
@@ -71,48 +56,24 @@ export interface IngestDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const TERMINAL_WF_STATUSES = ['completed', 'abandoned', 'completed_with_blocked'];
-
-// ---------------------------------------------------------------------------
-// ingestWorkflow
+// createWorkflow
 // ---------------------------------------------------------------------------
 
 /**
- * Ingest a workflow run from the given resolved config.
+ * Create a new workflow run from the given resolved config and user-supplied name.
  *
- * If an existing live workflow matches (same project.name + configDir), it is
- * returned as-is (resume path). Otherwise a new workflow row is created with:
- *   - All run:once stage items seeded in `pending` status.
- *   - Stage ordering enforced via depends_on chaining.
- *   - Workflow status = 'pending', current_stage = first stage id.
- *   - github_state initialised based on config.github and the git remote.
+ * Always inserts a new workflow row — no dedup check against live workflows.
+ * Two calls with the same template + name produce two distinct workflow rows
+ * with distinct UUIDs. The caller decides whether to warn about name collisions.
  *
  * All writes are inside a single db.transaction() for atomicity.
  */
-export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: IngestDeps): IngestResult {
-  // Check for an existing live workflow (read-only; outside transaction).
-  const placeholders = TERMINAL_WF_STATUSES.map(() => '?').join(',');
-  const existingRow = db.reader()
-    .prepare(
-      `SELECT id FROM workflows
-        WHERE (name = ? OR name LIKE ?)
-          AND json_extract(config, '$.configDir') = ?
-          AND status NOT IN (${placeholders})
-        ORDER BY created_at DESC
-        LIMIT 1`,
-    )
-    .get(config.project.name, `${config.project.name}-%`, config.configDir, ...TERMINAL_WF_STATUSES) as
-    | { id: string }
-    | undefined;
-
-  if (existingRow) {
-    // Resume path: do NOT re-initialise github_state.
-    return { workflowId: existingRow.id, isResume: true };
-  }
-
+export function createWorkflow(
+  db: DbPool,
+  config: ResolvedConfig,
+  opts: { name: string },
+  deps?: IngestDeps,
+): { workflowId: string } {
   // Resolve github state BEFORE entering the transaction.
   // getRemoteOriginUrl may perform a local filesystem read (execFileSync).
   const githubEnabled = config.github?.enabled ?? false;
@@ -126,23 +87,22 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: Ingest
     }
   }
 
-  // Create new workflow + items in one transaction.
   const workflowId = crypto.randomUUID();
 
   return db.transaction((writer) => {
     const now = new Date().toISOString();
-
     const firstStageId = config.pipeline.stages[0]?.id ?? null;
 
     writer
       .prepare(`
         INSERT INTO workflows
-          (id, name, spec, pipeline, config, status, current_stage, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+          (id, name, template_name, spec, pipeline, config, status, current_stage, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
       `)
       .run(
         workflowId,
-        `${config.project.name}-${workflowId.slice(0, 8)}`,
+        opts.name,
+        config.template.name,
         JSON.stringify({ stages: config.pipeline.stages.map((s) => s.id) }),
         JSON.stringify({ stages: config.pipeline.stages }),
         JSON.stringify({ configDir: config.configDir }),
@@ -179,7 +139,7 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: Ingest
       hasOwnerRepo,
     });
 
-    return { workflowId, isResume: false };
+    return { workflowId };
   });
 }
 

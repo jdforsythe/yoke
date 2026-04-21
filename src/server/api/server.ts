@@ -232,6 +232,37 @@ export type {
   ArchiveWorkflowFn,
 } from '../pipeline/archive-workflow.js';
 
+// ---------------------------------------------------------------------------
+// Template / workflow-creation callback types (t-07)
+// ---------------------------------------------------------------------------
+
+/** Shape returned by ListTemplatesFn to the GET /api/templates response. */
+export interface TemplateSummaryItem {
+  name: string;
+  description: string | null;
+}
+
+/**
+ * Returns the list of templates available in the configured templates directory.
+ * Called by GET /api/templates. If omitted, the endpoint returns {templates: []}.
+ */
+export type ListTemplatesFn = () => TemplateSummaryItem[];
+
+export type CreateWorkflowResult =
+  | { status: 'template_not_found' }
+  | { status: 'template_error'; message: string }
+  | { status: 'created'; workflowId: string; name: string; sameTemplateNames: string[] };
+
+/**
+ * Creates a new workflow from the named template with the given user-supplied name.
+ * Called by POST /api/workflows. The DB write must happen inside this callback (RC-3).
+ * If omitted, the endpoint returns 501.
+ */
+export type CreateWorkflowFn = (input: {
+  templateName: string;
+  name: string;
+}) => CreateWorkflowResult;
+
 /**
  * Optional callbacks injected into the server at creation time.
  * These allow the API layer to delegate writes to the pipeline engine layer
@@ -270,6 +301,17 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   createPrExecutor?: import('../pipeline/create-pr-executor.js').CreatePrExecutorFn;
+  /**
+   * Returns the list of templates for GET /api/templates.
+   * If omitted, the endpoint returns {templates: []}.
+   */
+  listTemplates?: ListTemplatesFn;
+  /**
+   * Creates a new workflow from a template for POST /api/workflows.
+   * Must perform the DB write (RC-3 — no writes in API layer).
+   * If omitted, the endpoint returns 501 Not Implemented.
+   */
+  createWorkflow?: CreateWorkflowFn;
 }
 
 /**
@@ -562,14 +604,15 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           });
         }
 
-        // accepted
-        const responseBody = {
+        // accepted — build response body based on which accepted variant fired
+        const responseBody: Record<string, unknown> = {
           status: 'accepted',
           commandId: body.commandId,
           workflowId: id,
           action: body.action,
-          cancelledItems: result.cancelledItems,
         };
+        if ('cancelledItems' in result) responseBody.cancelledItems = result.cancelledItems;
+        if ('pausedAt' in result) responseBody.pausedAt = result.pausedAt;
         // Cache AFTER successful execution (so a failure retry can re-run).
         idempotency.set(body.commandId, responseBody);
         return reply.status(202).send(responseBody);
@@ -778,6 +821,65 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       return reply.status(200).send(responseBody);
     },
   );
+
+  // GET /api/templates
+  // Returns {templates: [{name, description}]} for the configured template directory.
+  // Invalid template files are skipped by the callback (list never fails the request).
+  fastify.get('/api/templates', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const templates = callbacks.listTemplates?.() ?? [];
+    return reply.send({ templates });
+  });
+
+  // POST /api/workflows
+  // Creates a new workflow from a named template with a user-supplied name.
+  // Validates templateName (must exist) and name (must be non-empty after trim).
+  // Returns 201 with {workflowId, name, sameTemplateNames} on success.
+  // Broadcasts 'workflow.created' to all connected WS clients (sidebar update).
+  fastify.post('/api/workflows', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as Record<string, unknown> | null;
+
+    const rawTemplateName = body?.templateName;
+    if (typeof rawTemplateName !== 'string' || !rawTemplateName.trim()) {
+      return badRequest(reply, 'templateName is required');
+    }
+    const templateName = rawTemplateName.trim();
+
+    const rawName = body?.name;
+    if (rawName === undefined || rawName === null) {
+      return badRequest(reply, 'name is required');
+    }
+    const name = String(rawName).trim();
+    if (!name) {
+      return badRequest(reply, 'name must be non-empty');
+    }
+
+    if (!callbacks.createWorkflow) {
+      return reply.status(501).send({ error: 'workflow creation not configured' });
+    }
+
+    const result = callbacks.createWorkflow({ templateName, name });
+
+    if (result.status === 'template_not_found') {
+      return reply.status(404).send({ error: `template '${templateName}' not found` });
+    }
+    if (result.status === 'template_error') {
+      return reply.status(422).send({
+        error: `template '${templateName}' has errors: ${result.message}`,
+      });
+    }
+
+    // Broadcast to all connected clients so the sidebar can show the new workflow.
+    registry.broadcastAll('workflow.created', {
+      workflowId: result.workflowId,
+      name: result.name,
+    });
+
+    return reply.status(201).send({
+      workflowId: result.workflowId,
+      name: result.name,
+      sameTemplateNames: result.sameTemplateNames,
+    });
+  });
 
   return { fastify, state: { seqStore, backfillBuffer, idempotency, registry } };
 }

@@ -368,9 +368,6 @@ test('AC-1/AC-8: Pause hidden and Resume shown when workflow changes to paused',
 }) => {
   let capturedWs: WebSocketRoute | null = null;
 
-  // Must be set up before routeWebSocket and goto so we capture the browser's WS object.
-  const browserWsPromise = page.waitForEvent('websocket');
-
   await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
     capturedWs = ws;
     ws.send(helloFrame());
@@ -390,15 +387,11 @@ test('AC-1/AC-8: Pause hidden and Resume shown when workflow changes to paused',
   });
 
   await page.goto(`/workflow/${WF_ID}`);
-  const browserWs = await browserWsPromise;
 
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Resume' })).not.toBeVisible();
 
-  // Wait for the browser to receive the frame before asserting DOM state.
-  const updateReceived = browserWs.waitForEvent('framereceived');
   capturedWs!.send(workflowUpdateFrame({ status: 'paused' }));
-  await updateReceived;
 
   await expect(page.getByRole('button', { name: 'Resume' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pause' })).not.toBeVisible();
@@ -556,9 +549,6 @@ test('skip sends control frame with itemId after confirmation', async ({ page })
 test('item actions dynamically update when item.state frame arrives', async ({ page }) => {
   let capturedWs: WebSocketRoute | null = null;
 
-  // Must be set up before routeWebSocket and goto so we capture the browser's WS object.
-  const browserWsPromise = page.waitForEvent('websocket');
-
   await page.routeWebSocket('**/stream', (ws: WebSocketRoute) => {
     capturedWs = ws;
     ws.send(helloFrame());
@@ -592,19 +582,15 @@ test('item actions dynamically update when item.state frame arrives', async ({ p
   });
 
   await page.goto(`/workflow/${WF_ID}`);
-  const browserWs = await browserWsPromise;
   await page.locator('#item-item-transition').click();
 
   // in_progress item: skip visible, retry not visible
   await expect(page.getByRole('button', { name: 'Skip item' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry' })).not.toBeVisible();
 
-  // Wait for the browser to receive the frame before asserting DOM state.
-  const stateReceived = browserWs.waitForEvent('framereceived');
   capturedWs!.send(
     itemStateFrame({ itemId: 'item-transition', state: { status: 'awaiting_user' } }),
   );
-  await stateReceived;
 
   // retry should now be visible, skip should be hidden (awaiting_user is not skip-eligible)
   await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();

@@ -259,7 +259,7 @@ test('AttentionBanner renders pending attention items', async ({ page }) => {
   const banner = page.getByRole('region', { name: 'Attention required' });
   await expect(banner).toBeVisible();
   await expect(banner.getByText('awaiting_user_retry')).toBeVisible();
-  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
 });
 
 test('AttentionBanner is hidden when pendingAttention is empty', async ({ page }) => {
@@ -308,10 +308,10 @@ test('AttentionBanner: notice frame with requires_attention adds item in real-ti
   const banner = page.getByRole('region', { name: 'Attention required' });
   await expect(banner).toBeVisible();
   await expect(banner.getByText('bootstrap_failed')).toBeVisible();
-  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
 });
 
-test('AttentionBanner: Acknowledge shows spinner then hides item after POST (AC-3)', async ({
+test('AttentionBanner: Resume shows spinner then hides item after POST (AC-3)', async ({
   page,
 }) => {
   let resolveAck: () => void = () => {};
@@ -343,13 +343,13 @@ test('AttentionBanner: Acknowledge shows spinner then hides item after POST (AC-
   await page.goto(`/workflow/${WF_ID}`);
 
   const banner = page.getByRole('region', { name: 'Attention required' });
-  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
 
-  await banner.getByRole('button', { name: 'Acknowledge' }).click();
+  await banner.getByRole('button', { name: 'Resume' }).click();
 
   // Spinner visible while ack is in-flight (AC-3)
-  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeVisible();
-  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeDisabled();
+  await expect(banner.getByRole('button', { name: 'Resuming…' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resuming…' })).toBeDisabled();
 
   // Release the deferred response
   resolveAck();
@@ -388,18 +388,18 @@ test('AttentionBanner: item reappears if ack POST fails (RC-5)', async ({ page }
   await page.goto(`/workflow/${WF_ID}`);
 
   const banner = page.getByRole('region', { name: 'Attention required' });
-  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
 
-  await banner.getByRole('button', { name: 'Acknowledge' }).click();
+  await banner.getByRole('button', { name: 'Resume' }).click();
 
   // Spinner visible while POST is in-flight.
-  await expect(banner.getByRole('button', { name: 'Acknowledging…' })).toBeVisible();
+  await expect(banner.getByRole('button', { name: 'Resuming…' })).toBeVisible();
 
   // Release the deferred 500 response.
   resolveAck();
 
-  // After failure: item reappears with the original Acknowledge button (RC-5).
-  await expect(banner.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  // After failure: item reappears with the original Resume button (RC-5).
+  await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
   await expect(banner.getByText('awaiting_user_retry')).toBeVisible();
 });
 

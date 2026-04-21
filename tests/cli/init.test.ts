@@ -31,104 +31,87 @@ describe('yoke init', () => {
     removeTmpDir(tmpDir);
   });
 
-  // AC-1: creates all four files in a fresh directory.
-  it('creates .yoke.yml and three prompt templates on first run', () => {
+  // AC-1: creates the template file in a fresh directory.
+  it('creates .yoke/templates/default.yml on first run', () => {
     const result = runInit(tmpDir);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.created).toHaveLength(4);
+    expect(result.created).toHaveLength(1);
 
-    const yokeYml = path.join(tmpDir, '.yoke.yml');
-    expect(fs.existsSync(yokeYml)).toBe(true);
-    expect(fs.readFileSync(yokeYml, 'utf8')).toContain('version: "1"');
-
-    const implementMd = path.join(tmpDir, '.yoke', 'prompts', 'implement.md');
-    expect(fs.existsSync(implementMd)).toBe(true);
-
-    const planMd = path.join(tmpDir, '.yoke', 'prompts', 'plan.md');
-    expect(fs.existsSync(planMd)).toBe(true);
-
-    const reviewMd = path.join(tmpDir, '.yoke', 'prompts', 'review.md');
-    expect(fs.existsSync(reviewMd)).toBe(true);
+    const defaultYml = path.join(tmpDir, '.yoke', 'templates', 'default.yml');
+    expect(fs.existsSync(defaultYml)).toBe(true);
+    const content = fs.readFileSync(defaultYml, 'utf8');
+    expect(content).toContain('version: "1"');
+    expect(content).toContain('template:');
+    expect(content).toContain('name:');
   });
 
-  // AC-2a: exits with an error when .yoke.yml already exists.
-  it('returns already_exists error when .yoke.yml exists', () => {
-    const yokeYml = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(yokeYml, 'existing content', 'utf8');
+  // AC-1: no longer creates .yoke.yml at the repo root.
+  it('does NOT create a root .yoke.yml', () => {
+    const result = runInit(tmpDir);
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.yoke.yml'))).toBe(false);
+  });
+
+  // AC-1: scaffolded template uses the `template:` key, not `project:`.
+  it('default.yml uses template: key (not project:)', () => {
+    runInit(tmpDir);
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.yoke', 'templates', 'default.yml'),
+      'utf8',
+    );
+    expect(content).toContain('template:');
+    expect(content).not.toContain('project:');
+  });
+
+  // AC-2: exits with an error when default.yml already exists.
+  it('returns already_exists error when default.yml exists', () => {
+    const defaultYml = path.join(tmpDir, '.yoke', 'templates', 'default.yml');
+    fs.mkdirSync(path.dirname(defaultYml), { recursive: true });
+    fs.writeFileSync(defaultYml, 'existing content', 'utf8');
 
     const result = runInit(tmpDir);
     expect(result.ok).toBe(false);
     if (result.ok) return;
 
     expect(result.error.code).toBe('already_exists');
-    expect(result.error.path).toBe(yokeYml);
+    expect(result.error.path).toBe(defaultYml);
     expect(result.error.message).toContain('already exists');
     expect(result.error.message).toContain('never overwrites');
   });
 
-  // AC-2b: refuses if any prompt template already exists.
-  it('returns already_exists error when a prompt template exists', () => {
-    const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
-    fs.mkdirSync(promptsDir, { recursive: true });
-    const implementMd = path.join(promptsDir, 'implement.md');
-    fs.writeFileSync(implementMd, '# existing', 'utf8');
-
-    const result = runInit(tmpDir);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-
-    expect(result.error.code).toBe('already_exists');
-    expect(result.error.path).toBe(implementMd);
-  });
-
-  // RC: never overwrites — no partial creation when first file exists.
-  it('does not create any files when the first target already exists', () => {
-    const yokeYml = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(yokeYml, 'original', 'utf8');
+  // RC: never overwrites — content unchanged when existing file found.
+  it('does not overwrite existing default.yml', () => {
+    const defaultYml = path.join(tmpDir, '.yoke', 'templates', 'default.yml');
+    fs.mkdirSync(path.dirname(defaultYml), { recursive: true });
+    fs.writeFileSync(defaultYml, 'original', 'utf8');
 
     runInit(tmpDir);
 
-    // .yoke.yml still has original content — not overwritten.
-    expect(fs.readFileSync(yokeYml, 'utf8')).toBe('original');
-    // No prompt templates were created.
-    const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
-    expect(fs.existsSync(promptsDir)).toBe(false);
+    expect(fs.readFileSync(defaultYml, 'utf8')).toBe('original');
   });
 
-  // RC: no partial creation when a later file exists.
-  it('does not create any files when a later target already exists', () => {
-    const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
-    fs.mkdirSync(promptsDir, { recursive: true });
-    fs.writeFileSync(path.join(promptsDir, 'review.md'), '# existing review', 'utf8');
-
-    const result = runInit(tmpDir);
-    expect(result.ok).toBe(false);
-
-    // .yoke.yml was NOT created (pre-flight checks all targets before any write).
-    expect(fs.existsSync(path.join(tmpDir, '.yoke.yml'))).toBe(false);
-  });
-
-  // Scaffolded .yoke.yml contains a valid version field.
-  it('.yoke.yml template has version "1"', () => {
-    const result = runInit(tmpDir);
-    expect(result.ok).toBe(true);
-    const content = fs.readFileSync(path.join(tmpDir, '.yoke.yml'), 'utf8');
+  // Scaffolded default.yml contains a valid version field.
+  it('default.yml template has version "1"', () => {
+    runInit(tmpDir);
+    const content = fs.readFileSync(
+      path.join(tmpDir, '.yoke', 'templates', 'default.yml'),
+      'utf8',
+    );
     expect(content).toMatch(/^version:\s+"1"/m);
   });
 
-  // Prompt templates contain {{item}} and {{architecture}} template vars.
-  it('implement template contains expected template variables', () => {
-    const result = runInit(tmpDir);
-    expect(result.ok).toBe(true);
+  // Scaffolded template has pipeline and phases sections.
+  it('default.yml has pipeline and phases sections', () => {
+    runInit(tmpDir);
     const content = fs.readFileSync(
-      path.join(tmpDir, '.yoke', 'prompts', 'implement.md'),
+      path.join(tmpDir, '.yoke', 'templates', 'default.yml'),
       'utf8',
     );
-    expect(content).toContain('{{item}}');
-    expect(content).toContain('{{architecture}}');
-    expect(content).toContain('{{handoff}}');
+    expect(content).toContain('pipeline:');
+    expect(content).toContain('phases:');
+    expect(content).toContain('prompt_template:');
   });
 
   // Idempotence: running a second time after success always fails.

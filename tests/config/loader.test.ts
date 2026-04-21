@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig } from '../../src/server/config/loader.js';
+import { listTemplates, loadTemplate } from '../../src/server/config/loader.js';
 import { ConfigLoadError } from '../../src/server/config/errors.js';
 
 // ---------------------------------------------------------------------------
@@ -19,19 +19,24 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function writeYaml(content: string, filename = '.yoke.yml'): string {
-  const filePath = path.join(tmpDir, filename);
-  fs.writeFileSync(filePath, content, 'utf8');
-  return filePath;
+/**
+ * Write a template file to <tmpDir>/.yoke/templates/<name>.yml.
+ * Returns the template name so callers can pass it directly to loadTemplate.
+ */
+function writeTemplate(content: string, name = 'default'): string {
+  const dir = path.join(tmpDir, '.yoke', 'templates');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${name}.yml`), content, 'utf8');
+  return name;
 }
 
 // ---------------------------------------------------------------------------
-// Minimal valid .yoke.yml used as the happy-path baseline
+// Minimal valid template used as the happy-path baseline
 // ---------------------------------------------------------------------------
 
 const MINIMAL_VALID = `\
 version: "1"
-project:
+template:
   name: test-project
 pipeline:
   stages:
@@ -47,22 +52,106 @@ phases:
 `;
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 1 — valid config parses to ResolvedConfig
+// listTemplates — happy path (AC: listTemplates returns every *.yml)
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — valid configs', () => {
-  it('parses a minimal valid .yoke.yml without throwing', () => {
-    const fp = writeYaml(MINIMAL_VALID);
-    const cfg = loadConfig(fp);
+describe('listTemplates — happy path', () => {
+  it('returns an empty array when .yoke/templates/ does not exist', () => {
+    const result = listTemplates(tmpDir);
+    expect(result).toEqual([]);
+  });
+
+  it('returns one entry when a single valid template is present', () => {
+    writeTemplate(MINIMAL_VALID, 'default');
+    const result = listTemplates(tmpDir);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('default');
+    expect(result[0].description).toBeNull();
+    expect(result[0].path).toBe(path.join(tmpDir, '.yoke', 'templates', 'default.yml'));
+  });
+
+  it('returns description when template.description is set', () => {
+    const yaml = MINIMAL_VALID.replace(
+      'template:\n  name: test-project',
+      'template:\n  name: test-project\n  description: A great template',
+    );
+    writeTemplate(yaml, 'awesome');
+    const [entry] = listTemplates(tmpDir);
+    expect(entry.description).toBe('A great template');
+    expect(entry.name).toBe('awesome');
+  });
+
+  it('returns multiple entries for multiple template files', () => {
+    writeTemplate(MINIMAL_VALID, 'alpha');
+    writeTemplate(MINIMAL_VALID, 'beta');
+    const result = listTemplates(tmpDir);
+    const names = result.map((r) => r.name).sort();
+    expect(names).toEqual(['alpha', 'beta']);
+  });
+
+  it('skips invalid YAML files with a warning instead of throwing', () => {
+    writeTemplate(MINIMAL_VALID, 'valid');
+    writeTemplate('bad: [yaml\n  not closed', 'broken');
+    // Should not throw; should return only the valid entry.
+    let result: ReturnType<typeof listTemplates> = [];
+    expect(() => {
+      result = listTemplates(tmpDir);
+    }).not.toThrow();
+    expect(result.some((r) => r.name === 'valid')).toBe(true);
+    // broken may be skipped (YAML parse error) — no assertion on its presence
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listTemplates — migration error
+// ---------------------------------------------------------------------------
+
+describe('listTemplates — root .yoke.yml rejected', () => {
+  it('throws migration_error when .yoke.yml exists at repo root', () => {
+    fs.writeFileSync(path.join(tmpDir, '.yoke.yml'), MINIMAL_VALID, 'utf8');
+    let err: ConfigLoadError | undefined;
+    try {
+      listTemplates(tmpDir);
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('migration_error');
+    expect(err!.detail.message).toMatch(/\.yoke\.yml at repo root is no longer supported/);
+    expect(err!.detail.message).toMatch(/\.yoke\/templates\//);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadTemplate — happy path (AC: loadTemplate validates + resolves)
+// ---------------------------------------------------------------------------
+
+describe('loadTemplate — valid configs', () => {
+  it('parses a minimal valid template without throwing', () => {
+    writeTemplate(MINIMAL_VALID);
+    const cfg = loadTemplate(tmpDir, 'default');
     expect(cfg.version).toBe('1');
-    expect(cfg.project.name).toBe('test-project');
+    expect(cfg.template.name).toBe('test-project');
     expect(cfg.pipeline.stages[0].id).toBe('main');
+  });
+
+  it('resolves prompt_template relative to configDir (repo root), not templates dir', () => {
+    writeTemplate(MINIMAL_VALID);
+    const cfg = loadTemplate(tmpDir, 'default');
+    const expected = path.join(tmpDir, 'prompts/implement.md');
+    expect(cfg.phases['implement'].prompt_template).toBe(expected);
+  });
+
+  it('sets configDir to the repo root (configDir argument), not the template file directory', () => {
+    writeTemplate(MINIMAL_VALID);
+    const cfg = loadTemplate(tmpDir, 'default');
+    expect(cfg.configDir).toBe(tmpDir);
   });
 
   it('parses a config with all major optional sections without throwing', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: full-test
 pipeline:
   stages:
@@ -116,23 +205,62 @@ ui:
   auth: false
 safety_mode: default
 `;
-    const fp = writeYaml(yaml);
-    expect(() => loadConfig(fp)).not.toThrow();
-    const cfg = loadConfig(fp);
+    writeTemplate(yaml);
+    expect(() => loadTemplate(tmpDir, 'default')).not.toThrow();
+    const cfg = loadTemplate(tmpDir, 'default');
     expect(cfg.worktrees?.base_dir).toBe('.worktrees');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 2 — unknown top-level key rejected, key named
+// loadTemplate — not_found (AC: loadTemplate missing file)
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — unknown keys', () => {
-  it('rejects an unknown top-level key with a validation_error naming it', () => {
-    const fp = writeYaml(MINIMAL_VALID + 'totally_unknown_key: value\n');
+describe('loadTemplate — missing file', () => {
+  it('throws not_found when the template file does not exist', () => {
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'nonexistent');
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('not_found');
+    if (err!.detail.kind === 'not_found') {
+      expect(err!.detail.path).toContain('nonexistent.yml');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadTemplate — migration error (AC: root .yoke.yml rejected)
+// ---------------------------------------------------------------------------
+
+describe('loadTemplate — root .yoke.yml rejected', () => {
+  it('throws migration_error when .yoke.yml exists at repo root', () => {
+    fs.writeFileSync(path.join(tmpDir, '.yoke.yml'), MINIMAL_VALID, 'utf8');
+    let err: ConfigLoadError | undefined;
+    try {
+      loadTemplate(tmpDir, 'default');
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('migration_error');
+    expect(err!.detail.message).toMatch(/\.yoke\.yml at repo root is no longer supported/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadTemplate — unknown keys rejected
+// ---------------------------------------------------------------------------
+
+describe('loadTemplate — unknown keys', () => {
+  it('rejects an unknown top-level key with a validation_error naming it', () => {
+    writeTemplate(MINIMAL_VALID + 'totally_unknown_key: value\n');
+    let err: ConfigLoadError | undefined;
+    try {
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -142,27 +270,26 @@ describe('loadConfig — unknown keys', () => {
   });
 
   it('rejects an unknown key inside a phase (additionalProperties:false at nested level)', () => {
-    const yaml =
-      MINIMAL_VALID.replace(
-        '    prompt_template: prompts/implement.md',
-        '    prompt_template: prompts/implement.md\n    bad_phase_key: oops',
-      );
+    const yaml = MINIMAL_VALID.replace(
+      '    prompt_template: prompts/implement.md',
+      '    prompt_template: prompts/implement.md\n    bad_phase_key: oops',
+    );
+    writeTemplate(yaml);
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
     expect(err).toBeInstanceOf(ConfigLoadError);
     expect(err!.detail.kind).toBe('validation_error');
-    // Must name the offending property
     expect(err!.detail.message).toMatch(/bad_phase_key/);
   });
 
   it('rejects an unknown key inside a pipeline stage', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -176,9 +303,10 @@ phases:
     args: []
     prompt_template: p.md
 `;
+    writeTemplate(yaml);
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -189,15 +317,15 @@ phases:
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 3 — missing / wrong version rejected with clear message
+// loadTemplate — version pin
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — version pin', () => {
+describe('loadTemplate — version pin', () => {
   it('rejects a config missing the version field', () => {
-    const yaml = MINIMAL_VALID.replace('version: "1"\n', '');
+    writeTemplate(MINIMAL_VALID.replace('version: "1"\n', ''));
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -208,10 +336,10 @@ describe('loadConfig — version pin', () => {
   });
 
   it('rejects version: "2" and names both the received and required values', () => {
-    const yaml = MINIMAL_VALID.replace('version: "1"', 'version: "2"');
+    writeTemplate(MINIMAL_VALID.replace('version: "1"', 'version: "2"'));
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -220,39 +348,36 @@ describe('loadConfig — version pin', () => {
     if (err!.detail.kind === 'version_error') {
       expect(err!.detail.received).toBe('2');
     }
-    // Message must name required ("1") and received ("2")
     expect(err!.detail.message).toContain('"1"');
     expect(err!.detail.message).toContain('"2"');
   });
 
   it('rejects version: 1 (unquoted integer) and names the received value', () => {
-    // YAML 1.2 parses bare `1` as number; the harness requires the string "1"
-    const yaml = MINIMAL_VALID.replace('version: "1"', 'version: 1');
+    writeTemplate(MINIMAL_VALID.replace('version: "1"', 'version: 1'));
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
     expect(err).toBeInstanceOf(ConfigLoadError);
     expect(err!.detail.kind).toBe('version_error');
     if (err!.detail.kind === 'version_error') {
-      expect(err!.detail.received).toBe(1); // numeric, not string
+      expect(err!.detail.received).toBe(1);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 4 — relative paths resolved using config dir, not cwd
+// loadTemplate — path resolution
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — path resolution', () => {
+describe('loadTemplate — path resolution', () => {
   it('resolves prompt_template relative to config dir, not process.cwd()', () => {
-    const fp = writeYaml(MINIMAL_VALID);
-    const cfg = loadConfig(fp);
+    writeTemplate(MINIMAL_VALID);
+    const cfg = loadTemplate(tmpDir, 'default');
     const expected = path.join(tmpDir, 'prompts/implement.md');
     expect(cfg.phases['implement'].prompt_template).toBe(expected);
-    // Must NOT be relative to process.cwd()
     expect(cfg.phases['implement'].prompt_template).not.toBe(
       path.join(process.cwd(), 'prompts/implement.md'),
     );
@@ -261,7 +386,7 @@ describe('loadConfig — path resolution', () => {
   it('resolves artifact schema path to absolute', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -277,8 +402,8 @@ phases:
       - path: features.json
         schema: schemas/features.schema.json
 `;
-    const fp = writeYaml(yaml);
-    const cfg = loadConfig(fp);
+    writeTemplate(yaml);
+    const cfg = loadTemplate(tmpDir, 'default');
     expect(cfg.phases['plan'].output_artifacts?.[0].schema).toBe(
       path.join(tmpDir, 'schemas/features.schema.json'),
     );
@@ -287,7 +412,7 @@ phases:
   it('resolves worktrees.teardown.script to absolute', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -303,30 +428,30 @@ worktrees:
   teardown:
     script: .yoke/teardown.sh
 `;
-    const fp = writeYaml(yaml);
-    const cfg = loadConfig(fp);
+    writeTemplate(yaml);
+    const cfg = loadTemplate(tmpDir, 'default');
     expect(cfg.worktrees?.teardown?.script).toBe(
       path.join(tmpDir, '.yoke/teardown.sh'),
     );
   });
 
-  it('attaches configDir equal to the .yoke.yml directory', () => {
-    const fp = writeYaml(MINIMAL_VALID);
-    const cfg = loadConfig(fp);
+  it('attaches configDir equal to the repo root (first argument to loadTemplate)', () => {
+    writeTemplate(MINIMAL_VALID);
+    const cfg = loadTemplate(tmpDir, 'default');
     expect(cfg.configDir).toBe(tmpDir);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 5 — empty / invalid YAML returns structured error
+// loadTemplate — parse errors
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — parse errors', () => {
+describe('loadTemplate — parse errors', () => {
   it('returns a parse_error for an empty file', () => {
-    const fp = writeYaml('');
+    writeTemplate('');
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -335,10 +460,10 @@ describe('loadConfig — parse errors', () => {
   });
 
   it('returns a parse_error for a whitespace-only file', () => {
-    const fp = writeYaml('   \n\n  ');
+    writeTemplate('   \n\n  ');
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -347,10 +472,10 @@ describe('loadConfig — parse errors', () => {
   });
 
   it('returns a parse_error for syntactically invalid YAML', () => {
-    const fp = writeYaml('key: [unclosed\n  - item\nnot: closed: properly:');
+    writeTemplate('key: [unclosed\n  - item\nnot: closed: properly:');
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -358,24 +483,17 @@ describe('loadConfig — parse errors', () => {
     expect(err!.detail.kind).toBe('parse_error');
   });
 
-  it('returns a not_found error when the file does not exist', () => {
-    let err: ConfigLoadError | undefined;
-    try {
-      loadConfig('/nonexistent/path/.yoke.yml');
-    } catch (e) {
-      err = e as ConfigLoadError;
-    }
-    expect(err).toBeInstanceOf(ConfigLoadError);
-    expect(err!.detail.kind).toBe('not_found');
-  });
-
   it('does not throw an unhandled exception for any failure — always ConfigLoadError', () => {
+    writeTemplate('');
+    const badYamlName = writeTemplate('bad: [yaml', 'badyaml');
+    const missingVersionName = writeTemplate(MINIMAL_VALID.replace('version: "1"\n', ''), 'nover');
+    const extraKeyName = writeTemplate(MINIMAL_VALID + 'extra: key\n', 'extrakey');
     const cases = [
-      () => loadConfig('/nonexistent/.yoke.yml'),
-      () => loadConfig(writeYaml('')),
-      () => loadConfig(writeYaml('bad: [yaml')),
-      () => loadConfig(writeYaml(MINIMAL_VALID.replace('version: "1"\n', ''))),
-      () => loadConfig(writeYaml(MINIMAL_VALID + 'extra: key\n')),
+      () => loadTemplate(tmpDir, 'nonexistent'),
+      () => loadTemplate(tmpDir, 'default'),
+      () => loadTemplate(tmpDir, badYamlName),
+      () => loadTemplate(tmpDir, missingVersionName),
+      () => loadTemplate(tmpDir, extraKeyName),
     ];
     for (const fn of cases) {
       expect(fn).toThrowError(ConfigLoadError);
@@ -384,28 +502,27 @@ describe('loadConfig — parse errors', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 6 — AJV error messages include schema path + value
+// loadTemplate — AJV error message quality
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — AJV error message quality', () => {
+describe('loadTemplate — AJV error message quality', () => {
   it('validation_error message includes the AJV schema path (#/...)', () => {
-    const fp = writeYaml(MINIMAL_VALID + 'rogue_key: 42\n');
+    writeTemplate(MINIMAL_VALID + 'rogue_key: 42\n');
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
     expect(err!.detail.kind).toBe('validation_error');
-    // Must contain a JSON schema pointer starting with #/
     expect(err!.detail.message).toMatch(/#\//);
   });
 
   it('validation_error errors array carries instancePath and schemaPath per AJV error', () => {
-    const fp = writeYaml(MINIMAL_VALID + 'rogue_key: 42\n');
+    writeTemplate(MINIMAL_VALID + 'rogue_key: 42\n');
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(fp);
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -421,14 +538,14 @@ describe('loadConfig — AJV error message quality', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance criterion 7 — missing wildcard '*' key in actions map (AC-4)
+// loadTemplate — prepost actions map wildcard enforcement
 // ---------------------------------------------------------------------------
 
-describe('loadConfig — prepost actions map wildcard enforcement (AC-4)', () => {
+describe('loadTemplate — prepost actions map wildcard enforcement', () => {
   it('rejects a post command whose actions map has no "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -446,9 +563,10 @@ phases:
         actions:
           "0": continue
 `;
+    writeTemplate(yaml);
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -459,7 +577,7 @@ phases:
   it('rejects a pre command whose actions map has no "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -478,9 +596,10 @@ phases:
           "0": continue
           "1": stop-and-ask
 `;
+    writeTemplate(yaml);
     let err: ConfigLoadError | undefined;
     try {
-      loadConfig(writeYaml(yaml));
+      loadTemplate(tmpDir, 'default');
     } catch (e) {
       err = e as ConfigLoadError;
     }
@@ -491,7 +610,7 @@ phases:
   it('accepts a post command whose actions map has a "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -510,13 +629,14 @@ phases:
           "0": continue
           "*": stop-and-ask
 `;
-    expect(() => loadConfig(writeYaml(yaml))).not.toThrow();
+    writeTemplate(yaml);
+    expect(() => loadTemplate(tmpDir, 'default')).not.toThrow();
   });
 
   it('accepts an actions map with only a "*" key (covers all exit codes)', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -534,6 +654,7 @@ phases:
         actions:
           "*": continue
 `;
-    expect(() => loadConfig(writeYaml(yaml))).not.toThrow();
+    writeTemplate(yaml);
+    expect(() => loadTemplate(tmpDir, 'default')).not.toThrow();
   });
 });

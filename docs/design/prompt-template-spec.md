@@ -80,7 +80,7 @@ variables replaced with opaque `item` and `item_state`.
 
 | Variable | Description |
 |---|---|
-| `workflow_name` | Project name from config |
+| `workflow_name` | Name of the current workflow instance (user-supplied at creation) |
 | `stage_id` | Current stage identifier (Issue 1) |
 | `architecture_md` | Contents of `architecture.md` if present, else empty string |
 | `git_log_recent` | Last 20 commits (formatted) |

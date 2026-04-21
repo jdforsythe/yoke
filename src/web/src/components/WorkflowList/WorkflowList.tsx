@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
-import type { WorkflowIndexUpdatePayload, ServerFrame } from '@/ws/types';
+import type { WorkflowIndexUpdatePayload, WorkflowCreatedPayload, ServerFrame } from '@/ws/types';
 import type { WorkflowRow } from '@shared/types/workflow';
 import { WORKFLOW_STATUS_VALUES, WORKFLOW_STATUS_LABELS } from '@shared/types/workflow';
 
@@ -185,6 +185,30 @@ export function WorkflowList() {
           unreadEvents: p.unreadEvents,
         };
         return next;
+      });
+    });
+  }, []);
+
+  // WS: prepend newly-created workflow to sidebar on workflow.created.
+  useEffect(() => {
+    return getClient().on('workflow.created', (frame: ServerFrame) => {
+      const p = frame.payload as WorkflowCreatedPayload;
+      const now = new Date().toISOString();
+      setRows((prev) => {
+        if (prev.some((r) => r.id === p.workflowId)) return prev;
+        return [
+          {
+            id: p.workflowId,
+            name: p.name,
+            status: 'pending' as const,
+            currentStage: null,
+            updatedAt: now,
+            createdAt: now,
+            activeSessions: 0,
+            unreadEvents: 0,
+          },
+          ...prev,
+        ];
       });
     });
   }, []);

@@ -46,9 +46,9 @@ test.describe('GithubButton live transitions — real backend', () => {
     backend.broadcast(wfId, null, 'workflow.update', {
       githubState: { status: 'idle', lastCheckedAt: now },
     });
-    // GithubButton for 'idle' renders a span with text "GitHub"
-    const githubSpan = page.getByText('GitHub', { exact: true });
-    await expect(githubSpan).toBeVisible({ timeout: 3000 });
+    // completed + idle → GithubButton renders "Create PR" button
+    const createPrBtn = page.getByRole('button', { name: 'Create PR', exact: true });
+    await expect(createPrBtn).toBeVisible({ timeout: 3000 });
 
     // --- Step 2: inject creating state ---
     backend.broadcast(wfId, null, 'workflow.update', {
@@ -56,8 +56,8 @@ test.describe('GithubButton live transitions — real backend', () => {
     });
     // GithubButton for 'creating' renders "Creating PR…" text with spinner
     await expect(page.getByText('Creating PR…')).toBeVisible({ timeout: 3000 });
-    // The idle span should no longer be visible
-    await expect(githubSpan).not.toBeVisible({ timeout: 1000 });
+    // The "Create PR" button should no longer be visible
+    await expect(createPrBtn).not.toBeVisible({ timeout: 1000 });
 
     // --- Step 3: inject created state ---
     const prUrl = `https://github.com/test/test/pull/42`;
