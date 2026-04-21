@@ -556,7 +556,8 @@ export function WorkflowDetailRoute() {
                 />
               </div>
 
-              {/* Stream output — scoped to the per-item session when one exists */}
+              {/* Stream output — scoped to the per-item session when one exists,
+                  or to the workflow-level session when no item is selected */}
               <div className="flex-1 min-h-0">
                 {activeSession ? (
                   useReviewPanel ? (
@@ -564,6 +565,8 @@ export function WorkflowDetailRoute() {
                   ) : (
                     <LiveStreamPane sessionId={activeSession.sessionId} workflowId={workflowId!} />
                   )
+                ) : !selectedItemId ? (
+                  <LiveStreamPane sessionId={controlSession!.sessionId} workflowId={workflowId!} />
                 ) : null}
               </div>
             </>
