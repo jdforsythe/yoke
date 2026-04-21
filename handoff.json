@@ -1566,6 +1566,48 @@
         "The live-attention.spec.ts test is pre-existing flaky (race between WS snapshot delivery and DOM assertion). It passes on re-run.",
         "init.ts scaffolds .yoke/templates/default.yml but does NOT create a prompt template file (.yoke/prompts/implement.md). Users must create this themselves before running a workflow. The config loader does not check prompt_template existence at load time (only at assembly time when the scheduler runs), so the smoke test passes."
       ]
+    },
+    {
+      "phase": "review",
+      "attempt": 1,
+      "session_id": "37eb3bcc-cade-403a-9481-4f0871cca121",
+      "ts": "2026-04-21T23:59:00Z",
+      "verdict": "FAIL",
+      "blocking_issues": [
+        "AC-4: The --config flag deprecation error path has no test. src/cli/start.ts:527-535 checks opts.config !== undefined and exits 1 with a clear message, but tests/cli/init-start-smoke.test.ts only calls startServer() programmatically (bypassing Commander entirely). No test in tests/cli/ invokes the CLI with --config <file> to assert the deprecation error message and non-zero exit code. Code path was added in commit 82e6cff with no corresponding test."
+      ],
+      "non_blocking": [
+        "RC-3: docs/design/schemas/yoke-config.schema.json:4 has \"title\": \".yoke.yml\" — an orphaned reference to the old config file name. Minor cosmetic issue; schema validation logic is correct.",
+        "RC-3: Pre-existing docs (docs/design/threat-model.md:129,133, docs/design/beta3-review-feedback.md:205, docs/design/schemas/sqlite-schema.sql:41) contain stale .yoke.yml references, but these are pre-existing planning/design docs outside the t-10 feature spec scope.",
+        "AC-1–AC-3, AC-5–AC-10, RC-1, RC-2 all pass: yoke init creates .yoke/templates/default.yml (init.ts:52), output instructs editing that file (init.ts:128), --config-dir flag works (start.ts:519), architecture.md has §7 Templates vs workflow instances and §8 Startup-pause (architecture.md:318-361), README reflects full end-to-end new flow, prompt-template-spec.md uses workflow_name with updated description, migration-templates-refactor.md has concrete step-by-step walkthrough, smoke test (init-start-smoke.test.ts:46-81) verifies GET /api/templates returns one template named default, no project.name in user-facing docs."
+      ]
+    },
+    {
+      "phase": "review:hook-failure",
+      "attempt": 1,
+      "session_id": "37eb3bcc-cade-403a-9481-4f0871cca121",
+      "ts": "2026-04-21T20:37:31.329Z",
+      "harness_injected": true,
+      "command": "check-verdict",
+      "exit_code": 1,
+      "blocking_issues": [
+        "check-verdict failed (exit 1):\nReview verdict: FAIL — 1 blocking issue(s):\n  • AC-4: The --config flag deprecation error path has no test. src/cli/start.ts:527-535 checks opts.config !== undefined and exits 1 with a clear message, but tests/cli/init-start-smoke.test.ts only calls startServer() programmatically (bypassing Commander entirely). No test in tests/cli/ invokes the CLI with --config <file> to assert the deprecation error message and non-zero exit code. Code path was added in commit 82e6cff with no corresponding test.\n"
+      ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 2,
+      "session_id": "frontend-t10-retry-ac4",
+      "ts": "2026-04-21T23:59:00Z",
+      "note": "Addressed the single AC-4 blocking issue from review attempt 1: added a child-process test for the --config deprecation error path. The Commander action calls process.exit(1), which cannot be tested by calling startServer() programmatically. Added a new describe block at the end of tests/cli/start.test.ts that uses spawnSync(tsx, [cliEntry, 'start', '--config', 'somefile.yml']) and asserts: (1) exit code is 1, (2) output contains '--config is no longer supported', (3) output contains '--config-dir'. The test runs as a child process so process.exit(1) in the Commander action does not kill the test runner. All 1597 Vitest tests pass, pnpm typecheck exits 0.",
+      "intended_files": [
+        "tests/cli/start.test.ts"
+      ],
+      "deferred_criteria": [],
+      "known_risks": [
+        "The spawnSync test spawns tsx which adds ~2-3s of startup overhead. The timeout is set to 15s to be safe on slow CI machines. If tsx is not found at node_modules/.bin/tsx, the test will fail with ENOENT — but tsx is a required dependency already used by all other tests.",
+        "The test checks both result.stderr and result.stdout combined since Commander may write the error message to either stream depending on the version. The current implementation uses console.error (stderr), but combining both streams makes the assertion robust against future changes."
+      ]
     }
   ]
 }
