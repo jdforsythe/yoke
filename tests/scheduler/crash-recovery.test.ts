@@ -64,7 +64,7 @@ function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
     version: '1',
     configDir: tmpDir,
-    project: { name: 'crash-test' },
+    template: { name: 'crash-test' },
     pipeline: {
       stages: [{ id: 'stage-alpha', run: 'once', phases: ['phase-one'] }],
     },

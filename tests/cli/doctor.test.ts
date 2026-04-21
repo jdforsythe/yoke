@@ -26,7 +26,7 @@ function removeTmpDir(d: string): void {
 }
 
 const MINIMAL_CONFIG = `version: "1"
-project:
+template:
   name: test-project
 pipeline:
   stages:
@@ -250,7 +250,7 @@ describe('checkConfig()', () => {
 
   it('fails with version_error and actionable remediation', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, 'version: "2"\nproject:\n  name: x\n', 'utf8');
+    fs.writeFileSync(configPath, 'version: "2"\ntemplate:\n  name: x\n', 'utf8');
     const result = checkConfig(configPath);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('version: "1"');
@@ -259,7 +259,7 @@ describe('checkConfig()', () => {
   it('fails with validation_error and schema reference remediation', () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
     // Missing required fields.
-    fs.writeFileSync(configPath, 'version: "1"\nproject:\n  name: x\n', 'utf8');
+    fs.writeFileSync(configPath, 'version: "1"\ntemplate:\n  name: x\n', 'utf8');
     const result = checkConfig(configPath);
     expect(result.passed).toBe(false);
     expect(result.remediation).toContain('schema');

@@ -9,7 +9,7 @@ const BASE = '/project/root';
 function minimal(overrides: Partial<RawConfig> = {}): RawConfig {
   return {
     version: '1',
-    project: { name: 'test' },
+    template: { name: 'test' },
     pipeline: {
       stages: [{ id: 'main', run: 'once', phases: ['impl'] }],
     },
@@ -155,7 +155,7 @@ describe('resolveConfig — multiple phases', () => {
   it('resolves paths in every phase, not just the first', () => {
     const raw: RawConfig = {
       version: '1',
-      project: { name: 'test' },
+      template: { name: 'test' },
       pipeline: {
         stages: [{ id: 'main', run: 'once', phases: ['plan', 'implement'] }],
       },

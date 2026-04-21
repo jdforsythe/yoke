@@ -137,7 +137,7 @@ function makeConfig(configDir: string): ResolvedConfig {
   return {
     version: '1',
     configDir,
-    project: { name: 'test' },
+    template: { name: 'test' },
     pipeline: {
       stages: [
         {

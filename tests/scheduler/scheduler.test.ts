@@ -80,7 +80,7 @@ function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
     version: '1',
     configDir: tmpDir,
-    project: { name: 'test-project' },
+    template: { name: 'test-project' },
     pipeline: {
       stages: [
         {

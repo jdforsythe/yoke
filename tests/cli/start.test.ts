@@ -21,7 +21,7 @@ function removeTmpDir(d: string): void {
 }
 
 const MINIMAL_CONFIG = `version: "1"
-project:
+template:
   name: test-project
 pipeline:
   stages:
@@ -65,13 +65,13 @@ describe('yoke start — startServer()', () => {
 
   it('throws ConfigLoadError when .yoke.yml has invalid content', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, 'version: "1"\nproject: {}\n', 'utf8');
+    fs.writeFileSync(configPath, 'version: "1"\ntemplate: {}\n', 'utf8');
     await expect(startServer({ configPath })).rejects.toBeInstanceOf(ConfigLoadError);
   });
 
   it('throws ConfigLoadError with version mismatch', async () => {
     const configPath = path.join(tmpDir, '.yoke.yml');
-    fs.writeFileSync(configPath, 'version: "2"\nproject:\n  name: x\n', 'utf8');
+    fs.writeFileSync(configPath, 'version: "2"\ntemplate:\n  name: x\n', 'utf8');
     await expect(startServer({ configPath })).rejects.toBeInstanceOf(ConfigLoadError);
   });
 

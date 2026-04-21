@@ -45,7 +45,7 @@ function makeConfig(projectName = 'yoke', configDir?: string, extra?: Partial<Re
   return {
     version: '1',
     configDir: configDir ?? tmpDir,
-    project: { name: projectName },
+    template: { name: projectName },
     pipeline: {
       stages: [
         { id: 'stage-one', run: 'once', phases: ['phase-a'] },

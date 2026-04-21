@@ -351,7 +351,7 @@ function _makeConfig(configDir: string): ResolvedConfig {
   return {
     version: '1',
     configDir,
-    project: { name: 'attn-rt-live' },
+    template: { name: 'attn-rt-live' },
     pipeline: { stages: [{ id: 'stage1', run: 'once', phases: ['impl'] }] },
     phases: { impl: { command: 'echo', args: [], prompt_template: 'p.md' } },
   } as unknown as ResolvedConfig;

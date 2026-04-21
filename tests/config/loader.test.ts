@@ -31,7 +31,7 @@ function writeYaml(content: string, filename = '.yoke.yml'): string {
 
 const MINIMAL_VALID = `\
 version: "1"
-project:
+template:
   name: test-project
 pipeline:
   stages:
@@ -55,14 +55,14 @@ describe('loadConfig — valid configs', () => {
     const fp = writeYaml(MINIMAL_VALID);
     const cfg = loadConfig(fp);
     expect(cfg.version).toBe('1');
-    expect(cfg.project.name).toBe('test-project');
+    expect(cfg.template.name).toBe('test-project');
     expect(cfg.pipeline.stages[0].id).toBe('main');
   });
 
   it('parses a config with all major optional sections without throwing', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: full-test
 pipeline:
   stages:
@@ -162,7 +162,7 @@ describe('loadConfig — unknown keys', () => {
   it('rejects an unknown key inside a pipeline stage', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -261,7 +261,7 @@ describe('loadConfig — path resolution', () => {
   it('resolves artifact schema path to absolute', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -287,7 +287,7 @@ phases:
   it('resolves worktrees.teardown.script to absolute', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -428,7 +428,7 @@ describe('loadConfig — prepost actions map wildcard enforcement (AC-4)', () =>
   it('rejects a post command whose actions map has no "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -459,7 +459,7 @@ phases:
   it('rejects a pre command whose actions map has no "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -491,7 +491,7 @@ phases:
   it('accepts a post command whose actions map has a "*" key', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:
@@ -516,7 +516,7 @@ phases:
   it('accepts an actions map with only a "*" key (covers all exit codes)', () => {
     const yaml = `\
 version: "1"
-project:
+template:
   name: test
 pipeline:
   stages:

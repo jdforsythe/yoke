@@ -104,7 +104,7 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: Ingest
         ORDER BY created_at DESC
         LIMIT 1`,
     )
-    .get(config.project.name, `${config.project.name}-%`, config.configDir, ...TERMINAL_WF_STATUSES) as
+    .get(config.template.name, `${config.template.name}-%`, config.configDir, ...TERMINAL_WF_STATUSES) as
     | { id: string }
     | undefined;
 
@@ -142,7 +142,7 @@ export function ingestWorkflow(db: DbPool, config: ResolvedConfig, deps?: Ingest
       `)
       .run(
         workflowId,
-        `${config.project.name}-${workflowId.slice(0, 8)}`,
+        `${config.template.name}-${workflowId.slice(0, 8)}`,
         JSON.stringify({ stages: config.pipeline.stages.map((s) => s.id) }),
         JSON.stringify({ stages: config.pipeline.stages }),
         JSON.stringify({ configDir: config.configDir }),
