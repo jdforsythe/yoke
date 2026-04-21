@@ -26,6 +26,7 @@ import type { ActiveSession } from '@/store/itemSessionMap';
 import { shouldUseReviewPanel } from '@/store/reviewPanelDetection';
 import type { RenderBlock } from '@/store/types';
 import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner/CrashRecoveryBanner';
+import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
@@ -436,12 +437,18 @@ export function WorkflowDetailRoute() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Banners */}
+      {/* Banners — stack order: CrashRecovery → Paused → Attention */}
       {snapshot.workflow.recoveryState && (
         <CrashRecoveryBanner
           workflowId={workflowId!}
           recoveryState={snapshot.workflow.recoveryState}
           sendControl={sendControl}
+        />
+      )}
+      {snapshot.workflow.pausedAt && (
+        <PausedBanner
+          workflowId={workflowId!}
+          pausedAt={snapshot.workflow.pausedAt}
         />
       )}
       {snapshot.pendingAttention.length > 0 && (
