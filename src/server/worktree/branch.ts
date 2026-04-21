@@ -74,15 +74,17 @@ export function makeBranchName(
 /**
  * Computes the worktree directory name for a given workflow.
  *
- * Mirrors the branch name suffix (strips the 'yoke/' prefix) so it is
- * safe for use as a filesystem directory name with no '/' characters.
+ * Returns the full workflowId UUID so each workflow has a guaranteed-unique
+ * directory regardless of the user-supplied workflow name. This is safe for
+ * use as a filesystem directory name (UUIDs contain only hex digits and '-').
+ *
+ * The branch name (makeBranchName) retains the human-readable slug prefix for
+ * git UI readability; only the worktree directory uses the raw UUID.
  *
  * @example
- *   makeWorktreeDirName('add-auth', '550e8400-e29b-41d4-a716-446655440000')
- *   // → 'add-auth-550e8400'
+ *   makeWorktreeDirName('550e8400-e29b-41d4-a716-446655440000')
+ *   // → '550e8400-e29b-41d4-a716-446655440000'
  */
-export function makeWorktreeDirName(workflowName: string, workflowId: string): string {
-  const slug = slugify(workflowName);
-  const shortId = makeShortId(workflowId);
-  return `${slug}-${shortId}`;
+export function makeWorktreeDirName(workflowId: string): string {
+  return workflowId;
 }

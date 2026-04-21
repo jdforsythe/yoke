@@ -155,8 +155,11 @@ export class WorktreeManager {
   /**
    * Creates a git branch + worktree under baseDir.
    *
-   * Branch name:    yoke/<slug>-<shortid>
-   * Worktree path:  <baseDir>/<slug>-<shortid>  (absolute, validated)
+   * Branch name:    yoke/<slug>-<shortid>   (human-readable, includes uuid8)
+   * Worktree path:  <baseDir>/<workflowId>  (full UUID, collision-free)
+   *
+   * The worktree directory uses the raw workflowId UUID so multiple workflows
+   * from the same template never share a directory regardless of their names.
    *
    * Returns { branchName, worktreePath } for the caller (Pipeline Engine) to
    * persist via applyWorktreeCreated().  This method does NOT write to SQLite —
@@ -169,7 +172,7 @@ export class WorktreeManager {
     const { workflowId, workflowName, baseDir, branchPrefix = 'yoke/' } = opts;
 
     const branchName = makeBranchName(workflowName, workflowId, branchPrefix);
-    const dirName = makeWorktreeDirName(workflowName, workflowId);
+    const dirName = makeWorktreeDirName(workflowId);
     // path.resolve ensures the result is absolute even if baseDir is relative.
     const worktreePath = path.resolve(baseDir, dirName);
 

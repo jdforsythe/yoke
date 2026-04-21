@@ -418,9 +418,6 @@ export class Scheduler {
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
 
-  /** workflowId populated by start(). */
-  workflowId: string | null = null;
-
   /** Items currently being managed (bootstrapping, spawning, or running). */
   private readonly inFlight = new Map<string, InFlightEntry>();
 
@@ -750,11 +747,14 @@ export class Scheduler {
 
   private async _processWorkflows(): Promise<void> {
     const placeholders = TERMINAL_WF_STATUSES.map(() => '?').join(',');
+    // paused_at IS NULL excludes workflows that are explicitly paused (t-06).
+    // The idx_workflows_paused_at index (migration 0005) makes this predicate fast.
     const workflows = this.db.reader()
       .prepare(
         `SELECT id, name, status, current_stage, worktree_path, branch_name
            FROM workflows
-          WHERE status NOT IN (${placeholders})`,
+          WHERE paused_at IS NULL
+            AND status NOT IN (${placeholders})`,
       )
       .all(...TERMINAL_WF_STATUSES) as WorkflowDbRow[];
 
