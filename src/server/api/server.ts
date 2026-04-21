@@ -604,14 +604,15 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           });
         }
 
-        // accepted
-        const responseBody = {
+        // accepted — build response body based on which accepted variant fired
+        const responseBody: Record<string, unknown> = {
           status: 'accepted',
           commandId: body.commandId,
           workflowId: id,
           action: body.action,
-          cancelledItems: result.cancelledItems,
         };
+        if ('cancelledItems' in result) responseBody.cancelledItems = result.cancelledItems;
+        if ('pausedAt' in result) responseBody.pausedAt = result.pausedAt;
         // Cache AFTER successful execution (so a failure retry can re-run).
         idempotency.set(body.commandId, responseBody);
         return reply.status(202).send(responseBody);

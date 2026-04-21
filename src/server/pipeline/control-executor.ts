@@ -1,13 +1,17 @@
 /**
- * Workflow control executor — implements workflow-level manual cancel.
+ * Workflow control executor — implements workflow-level manual controls.
  *
  * Called by both transports:
  *   - HTTP: POST /api/workflows/:id/control  (server.ts)
- *   - WS:   control frame with action='cancel'  (ws.ts)
+ *   - WS:   control frame with action='cancel'|'pause'|'continue'  (ws.ts)
  *
- * For the current iteration only action='cancel' is implemented; pause/resume
- * and other actions return invalid_action so the API layer can surface a
- * clear 400 to the caller (future work).
+ * Implemented actions:
+ *   - cancel: transitions all non-terminal items to abandoned, SIGTERMs
+ *             running sessions, and sets workflow status to abandoned.
+ *   - pause:  sets workflows.paused_at = now(); scheduler tick skips
+ *             workflows with paused_at IS NOT NULL. Idempotent.
+ *   - continue: clears workflows.paused_at = NULL; scheduler resumes
+ *               normal ticking for this workflow. Idempotent.
  *
  * Design invariants:
  *   - The API layer (server.ts, ws.ts) performs NO SQLite writes (RC-3). All
@@ -18,8 +22,7 @@
  *   - Running sessions are SIGTERMed through the injected killSession callback
  *     AFTER the cancel transitions commit, so WS broadcasts and SQLite state
  *     reflect the cancelled workflow before any process teardown noise.
- *   - broadcast() runs last so connected clients see the final (abandoned)
- *     workflow status.
+ *   - broadcast() runs last so connected clients see the final workflow status.
  */
 
 import type Database from 'better-sqlite3';
@@ -32,6 +35,7 @@ import { applyItemTransition } from './engine.js';
 
 export type ControlExecutorResult =
   | { status: 'accepted'; cancelledItems: number }
+  | { status: 'accepted'; pausedAt: string | null }
   | { status: 'workflow_not_found' }
   | { status: 'invalid_action'; action: string }
   | { status: 'already_terminal' };
@@ -84,6 +88,7 @@ const ITEM_TERMINAL_STATUSES = ['complete', 'abandoned'];
 interface WorkflowRow {
   id: string;
   status: string;
+  paused_at: string | null;
 }
 
 interface ItemRow {
@@ -129,19 +134,61 @@ export function makeControlExecutor(
 
   return (workflowId: string, action: string): ControlExecutorResult => {
     // ---- Validate action --------------------------------------------------
-    if (action !== 'cancel') {
+    if (action !== 'cancel' && action !== 'pause' && action !== 'continue') {
       return { status: 'invalid_action', action };
     }
 
     // ---- Look up workflow -------------------------------------------------
     const wf = writer
-      .prepare('SELECT id, status FROM workflows WHERE id = ?')
+      .prepare('SELECT id, status, paused_at FROM workflows WHERE id = ?')
       .get(workflowId) as WorkflowRow | undefined;
 
     if (!wf) return { status: 'workflow_not_found' };
 
     if (WORKFLOW_TERMINAL_STATUSES.has(wf.status)) {
       return { status: 'already_terminal' };
+    }
+
+    // ---- Pause action -------------------------------------------------------
+    // Sets paused_at = now(). The scheduler tick loop skips workflows with
+    // paused_at IS NOT NULL (added in t-05 migration 0005). Idempotent:
+    // pausing an already-paused workflow is a no-op success that re-broadcasts
+    // the existing paused_at timestamp.
+    if (action === 'pause') {
+      if (!wf.paused_at) {
+        writer
+          .prepare(
+            `UPDATE workflows
+                SET paused_at  = datetime('now'),
+                    updated_at = datetime('now')
+              WHERE id = ?`,
+          )
+          .run(workflowId);
+      }
+      const row = writer
+        .prepare('SELECT paused_at FROM workflows WHERE id = ?')
+        .get(workflowId) as { paused_at: string };
+      broadcast(workflowId, 'workflow.update', { pausedAt: row.paused_at });
+      scheduleIndexUpdate?.(workflowId);
+      return { status: 'accepted', pausedAt: row.paused_at };
+    }
+
+    // ---- Continue action ----------------------------------------------------
+    // Clears paused_at = NULL so the scheduler tick loop resumes normal
+    // scheduling for this workflow. Idempotent: clearing an already-unpaused
+    // workflow is a no-op success.
+    if (action === 'continue') {
+      writer
+        .prepare(
+          `UPDATE workflows
+              SET paused_at  = NULL,
+                  updated_at = datetime('now')
+            WHERE id = ?`,
+        )
+        .run(workflowId);
+      broadcast(workflowId, 'workflow.update', { pausedAt: null });
+      scheduleIndexUpdate?.(workflowId);
+      return { status: 'accepted', pausedAt: null };
     }
 
     // ---- Collect non-terminal items and live sessions --------------------

@@ -610,12 +610,16 @@ function handleControl(
       return;
     }
 
+    const message =
+      'cancelledItems' in result
+        ? `Control action '${action}' accepted (${result.cancelledItems} items cancelled)`
+        : `Control action '${action}' accepted`;
     const ok = makeFrame(
       'notice',
       {
         severity: 'info' as const,
         kind: 'control_accepted',
-        message: `Control action '${action}' accepted (${result.cancelledItems} items cancelled)`,
+        message,
       },
       { workflowId },
     );

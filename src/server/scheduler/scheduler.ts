@@ -395,6 +395,13 @@ export interface SchedulerOpts {
    * Inject stubs in tests to control push/createPr behaviour.
    */
   autoPr?: AutoPrDeps;
+  /**
+   * Skip the startup-pause step in start() (t-06).
+   * In production this is always false (undefined). Set to true in tests
+   * that verify steady-state scheduling rather than restart semantics, so
+   * the startup-pause does not interfere with their expected workflow flow.
+   */
+  skipStartupPause?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +421,7 @@ export class Scheduler {
   private readonly notifyFn?: NotifyFn;
   private readonly clockNow: () => number;
   private readonly autoPrDeps: AutoPrDeps | undefined;
+  private readonly skipStartupPause: boolean;
   private readonly pollIntervalMs: number;
   private readonly gracePeriodMs: number;
   private readonly maxParallel: number;
@@ -471,6 +479,7 @@ export class Scheduler {
     this.gracePeriodMs = opts.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
     this.maxParallel = opts.maxParallel ?? DEFAULT_MAX_PARALLEL;
     this.autoPrDeps = opts.autoPr;
+    this.skipStartupPause = opts.skipStartupPause ?? false;
   }
 
   // -------------------------------------------------------------------------
@@ -643,6 +652,32 @@ export class Scheduler {
         this._armRetryTimer(stale.itemId, item.retry_count + 1, recoveryResult);
         console.log(`[scheduler] crash recovery: ${item.stage_id} → ${recoveryResult.newState}`);
       }
+    }
+
+    // Startup pause (t-06): pause any workflow that was in-flight when the
+    // server last stopped. This ensures no workflow auto-resumes after a
+    // restart — the user must issue an explicit 'continue' control action.
+    // The tick loop already filters paused_at IS NULL (added by t-05), so
+    // paused workflows simply don't tick until unpaused. Crash recovery above
+    // still transitions stale sessions to awaiting_retry/awaiting_user; those
+    // transitions are safe even when the workflow is paused because they don't
+    // trigger immediate re-spawning.
+    //
+    // skipStartupPause is a test-only escape hatch. Production (start.ts) never
+    // sets this; tests that verify steady-state scheduling (not restart semantics)
+    // set it to avoid the pause interfering with their expected workflow flow.
+    if (!this.skipStartupPause) {
+      const TERMINAL_STATUSES_FOR_PAUSE = ['completed', 'abandoned', 'completed_with_blocked'];
+      const placeholders = TERMINAL_STATUSES_FOR_PAUSE.map(() => '?').join(', ');
+      this.db.writer
+        .prepare(
+          `UPDATE workflows
+              SET paused_at  = datetime('now'),
+                  updated_at = datetime('now')
+            WHERE paused_at IS NULL
+              AND status NOT IN (${placeholders})`,
+        )
+        .run(...TERMINAL_STATUSES_FOR_PAUSE);
     }
 
     // Start the poll loop.
