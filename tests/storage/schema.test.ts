@@ -130,7 +130,7 @@ describe('AC-1: all seven tables present after migration 0001', () => {
     });
   }
 
-  it('workflows has exactly 19 columns', () => {
+  it('workflows has exactly 21 columns', () => {
     const db = makeDb();
     const names = colNames(db, 'workflows');
     db.close();
@@ -143,6 +143,8 @@ describe('AC-1: all seven tables present after migration 0001', () => {
       'github_pr_state', 'github_error', 'github_last_checked_at',
       // migration 0003: archive support
       'archived_at',
+      // migration 0005: template support
+      'paused_at', 'template_name',
     ]);
   });
 
@@ -454,7 +456,7 @@ describe('AC-6: no extra columns in any table', () => {
   it('column counts match the schema exactly', () => {
     const db = makeDb();
     const counts: Record<string, number> = {
-      workflows: 19,  // 12 original + 6 github_state columns (migration 0002) + archived_at (migration 0003)
+      workflows: 21,  // 12 original + 6 github_state (0002) + archived_at (0003) + paused_at + template_name (0005)
       items: 14,  // 13 original + stable_id (migration 0004)
       sessions: 22,
       events: 12,
@@ -624,5 +626,98 @@ describe('applyMigrations — runner behavior', () => {
       .get() as { version: number } | undefined;
     db.close();
     expect(row?.version).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 0005 — paused_at and template_name columns on workflows
+// ---------------------------------------------------------------------------
+
+describe('migration 0005: paused_at and template_name on workflows', () => {
+  it('applies cleanly on a fresh DB — both columns exist', () => {
+    const db = makeDb();
+    const names = colNames(db, 'workflows');
+    db.close();
+    expect(names).toContain('paused_at');
+    expect(names).toContain('template_name');
+  });
+
+  it('applies cleanly on a DB that already has rows — existing rows have NULL for both columns', () => {
+    const db = makeDb();
+    insertWorkflow(db, 'wf-pre-0005');
+    const row = db
+      .prepare('SELECT paused_at, template_name FROM workflows WHERE id = ?')
+      .get('wf-pre-0005') as { paused_at: string | null; template_name: string | null };
+    db.close();
+    expect(row.paused_at).toBeNull();
+    expect(row.template_name).toBeNull();
+  });
+
+  it('version 5 is recorded in schema_migrations', () => {
+    const db = makeDb();
+    const row = db
+      .prepare('SELECT version FROM schema_migrations WHERE version = 5')
+      .get() as { version: number } | undefined;
+    db.close();
+    expect(row?.version).toBe(5);
+  });
+
+  it('index idx_workflows_paused_at exists in sqlite_master', () => {
+    const db = makeDb();
+    const row = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_workflows_paused_at'`,
+      )
+      .get();
+    db.close();
+    expect(row).toBeDefined();
+  });
+
+  it('paused_at accepts a TEXT timestamp and NULL', () => {
+    const db = makeDb();
+    insertWorkflow(db, 'wf-pause-a');
+    db.prepare(`UPDATE workflows SET paused_at = ? WHERE id = ?`).run(
+      '2026-04-21T12:00:00.000Z',
+      'wf-pause-a',
+    );
+    const row = db
+      .prepare('SELECT paused_at FROM workflows WHERE id = ?')
+      .get('wf-pause-a') as { paused_at: string };
+    db.prepare(`UPDATE workflows SET paused_at = NULL WHERE id = ?`).run('wf-pause-a');
+    const nullRow = db
+      .prepare('SELECT paused_at FROM workflows WHERE id = ?')
+      .get('wf-pause-a') as { paused_at: string | null };
+    db.close();
+    expect(row.paused_at).toBe('2026-04-21T12:00:00.000Z');
+    expect(nullRow.paused_at).toBeNull();
+  });
+
+  it('template_name accepts a TEXT value and NULL', () => {
+    const db = makeDb();
+    insertWorkflow(db, 'wf-tmpl-a');
+    db.prepare(`UPDATE workflows SET template_name = ? WHERE id = ?`).run(
+      'default.yml',
+      'wf-tmpl-a',
+    );
+    const row = db
+      .prepare('SELECT template_name FROM workflows WHERE id = ?')
+      .get('wf-tmpl-a') as { template_name: string };
+    db.close();
+    expect(row.template_name).toBe('default.yml');
+  });
+
+  it('EXPLAIN QUERY PLAN uses idx_workflows_paused_at for paused_at IS NULL filter', () => {
+    const db = makeDb();
+    type EqpRow = { id: number; parent: number; notused: number; detail: string };
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT id FROM workflows
+         WHERE paused_at IS NULL AND status NOT IN ('completed', 'abandoned', 'completed_with_blocked')`,
+      )
+      .all() as EqpRow[];
+    db.close();
+    const detail = plan.map((r) => r.detail).join('\n');
+    expect(detail).toMatch(/idx_workflows_paused_at/i);
   });
 });
