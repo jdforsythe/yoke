@@ -23,7 +23,7 @@ import path from 'node:path';
 import type { ExecFileException } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
-import { loadConfig } from '../server/config/loader.js';
+import { loadTemplate } from '../server/config/loader.js';
 import { ConfigLoadError } from '../server/config/errors.js';
 import { openDbPool, type DbPool } from '../server/storage/db.js';
 import { applyMigrations } from '../server/storage/migrate.js';
@@ -125,8 +125,13 @@ function makeGitHelper(repoRoot: string): GitHelper {
 // ---------------------------------------------------------------------------
 
 export interface StartOptions {
-  /** Path to the .yoke.yml config file. Default: <cwd>/.yoke.yml */
-  configPath?: string;
+  /**
+   * Repo root containing the .yoke/ folder.
+   * Default: process.cwd()
+   * t-10 will add a --template flag to select a named template; for now
+   * startServer always loads the 'default' template.
+   */
+  configDir?: string;
   /** Server port. Default: 7777 */
   port?: number;
   /**
@@ -164,12 +169,13 @@ export interface StartHandle {
  * Exported for integration tests.
  */
 export async function startServer(opts: StartOptions = {}): Promise<StartHandle> {
-  const configPath = opts.configPath ?? path.join(process.cwd(), '.yoke.yml');
+  const configDir = opts.configDir ?? process.cwd();
   const port = opts.port ?? 7777;
   const gitCheck = opts._gitCheck ?? defaultGitRepoCheck;
 
-  // Load + validate config — throws ConfigLoadError on failure.
-  const config = loadConfig(configPath);
+  // Load + validate the 'default' template — throws ConfigLoadError on failure.
+  // t-10 will wire a --template flag so the caller can select a named template.
+  const config = loadTemplate(configDir, 'default');
 
   // Guard: config.configDir must be inside a git repository.
   // WorktreeManager requires a real git repo and will throw uninformative
@@ -458,18 +464,18 @@ export function register(program: Command): void {
   program
     .command('start')
     .description('Start the Yoke pipeline engine')
-    .option('-c, --config <path>', 'Path to .yoke.yml', '.yoke.yml')
+    .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
     .option('-p, --port <number>', 'Server port', '7777')
     .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
-    .action(async (opts: { config: string; port: string; scheduler: boolean }) => {
-      const configPath = path.resolve(opts.config);
+    .action(async (opts: { configDir: string; port: string; scheduler: boolean }) => {
+      const configDir = path.resolve(opts.configDir);
       const port = parseInt(opts.port, 10);
       // commander maps --no-scheduler to opts.scheduler === false
       const noScheduler = opts.scheduler === false;
 
       let handle: StartHandle;
       try {
-        handle = await startServer({ configPath, port, noScheduler });
+        handle = await startServer({ configDir, port, noScheduler });
       } catch (err) {
         if (err instanceof ConfigLoadError) {
           console.error(`Configuration error: ${err.message}`);
