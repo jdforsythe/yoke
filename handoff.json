@@ -1528,6 +1528,21 @@
         "scheduler.stop() is now called unconditionally in close() even when noScheduler:true was passed. This is safe because Scheduler.stop() checks _running and drains cleanly when never started. Any future change to Scheduler.stop() that assumes the scheduler was previously started would silently break this assumption.",
         "The 8 pre-existing real-backend e2e failures are unrelated to t-09: create-pr-manual and pr-button-live require GitHub integration not present in the test environment; session-end-no-autoswitch and sidebar-live-status rely on race-sensitive WS timing; seed-failed-banner and stage-history have separate untracked bugs. These should be tracked and fixed in dedicated tasks."
       ]
+    },
+    {
+      "phase": "implement",
+      "attempt": 1,
+      "session_id": "6895ef48-0fcf-4345-9f6f-0a5880138bc0",
+      "ts": "2026-04-21T00:00:00Z",
+      "note": "Fixed all remaining real-backend e2e test failures: (1) WorkflowDetailRoute — added endedSessionId frozen-pane check inside controlSession branch so session-end-no-autoswitch banner renders when another item session is active; (2) fixed swapped placeholder text (selectedItemId shows No active session now); (3) notice dedup now updates payload instead of skipping, so seed_failed banner shows human-readable message; (4) ws.ts WsClientRegistry.broadcast now sends workflow.index.update to all clients regardless of subscription so sidebar chip updates at /; (5) fixed strict-mode locator issues in create-pr-manual, seed-failed-banner, resume-workflow specs; (6) fixed pr-button-live assertion (completed+idle shows Create PR button not GitHub span). All 216 tests pass.",
+      "intended_files": [
+        "src/server/api/ws.ts",
+        "src/web/src/routes/WorkflowDetailRoute.tsx",
+        "src/web/e2e/real/create-pr-manual.spec.ts",
+        "src/web/e2e/real/pr-button-live.spec.ts",
+        "src/web/e2e/real/resume-workflow.spec.ts",
+        "src/web/e2e/real/seed-failed-banner.spec.ts"
+      ]
     }
   ]
 }
