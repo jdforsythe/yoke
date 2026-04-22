@@ -44,7 +44,9 @@ function makeItem(overrides: Partial<ItemProjection> = {}): ItemProjection {
     },
     displayTitle: 'Widget',
     displaySubtitle: 'subtitle',
+    displayDescription: null,
     stableId: 'widget-slug',
+    dependsOn: [],
     ...overrides,
   };
 }
@@ -84,6 +86,42 @@ function prepostRow(
     ...(overrides as object),
   } as ItemTimelineRow;
 }
+
+// ---------------------------------------------------------------------------
+// 0. Match via displayDescription / stableId (card-visible fields)
+// ---------------------------------------------------------------------------
+
+describe('match via card-visible fields', () => {
+  it('matches when the query is a substring of displayDescription', () => {
+    const item = makeItem({
+      displayTitle: 'Unrelated',
+      displaySubtitle: 'nothing',
+      displayDescription: 'Refactor the auth middleware stack',
+      stableId: 'unrelated-slug',
+    });
+    expect(fuzzyMatch(item, 'auth middleware', 'implement', undefined)).toBe(true);
+  });
+
+  it('matches when the query is a substring of stableId', () => {
+    const item = makeItem({
+      displayTitle: 'Unrelated',
+      displaySubtitle: 'nothing',
+      displayDescription: null,
+      stableId: 'fix-camelcase-api',
+    });
+    expect(fuzzyMatch(item, 'camelcase', 'implement', undefined)).toBe(true);
+  });
+
+  it('does not match when description and stableId are null', () => {
+    const item = makeItem({
+      displayTitle: 'Unrelated',
+      displaySubtitle: 'nothing',
+      displayDescription: null,
+      stableId: null,
+    });
+    expect(fuzzyMatch(item, 'auth', 'implement', undefined)).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // 1. Match via stage id
@@ -218,7 +256,7 @@ describe('cached-only trade-off: no match when rows are missing', () => {
 describe('log content is not searched', () => {
   it('does not match fields outside the documented allow-list', () => {
     // Construct an item whose only occurrence of the query string is in
-    // fields NOT in the search allow-list: stableId, exitCode, status,
+    // fields NOT in the search allow-list: exitCode, session status,
     // attempt, actionTaken, stdoutPath, and the item.state fields. If any
     // of those matched we would have a regression (and a likely log-content
     // fan-out next).
@@ -227,7 +265,6 @@ describe('log content is not searched', () => {
       stageId: 'implement',
       displayTitle: 'Widget',
       displaySubtitle: 'subtitle',
-      stableId: 'logneedle-slug',
       state: {
         status: 'logneedle-status',
         currentPhase: 'logneedle-phase',

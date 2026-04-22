@@ -28,6 +28,7 @@ export type ServerFrameType =
   | 'stage.complete'
   | 'session.started'
   | 'session.ended'
+  | 'stream.initial_prompt'
   | 'stream.text'
   | 'stream.thinking'
   | 'stream.tool_use'
@@ -114,7 +115,14 @@ export interface ItemProjection {
   state: ItemStateProjection;
   displayTitle: string | null;
   displaySubtitle: string | null;
+  /** Long-form description extracted via items_display.description JSONPath. */
+  displayDescription: string | null;
   stableId: string | null;
+  /**
+   * Stable IDs of items this item depends on. Row UUIDs appear only as
+   * fallback when the dep row has no stable_id (once-stage items).
+   */
+  dependsOn: string[];
 }
 
 export interface ItemStateProjection {
@@ -181,6 +189,18 @@ export interface SessionStartedPayload {
   attempt: number;
   startedAt: string;
   parentSessionId?: string | null;
+}
+
+/**
+ * Initial prompt sent to the agent session. Captured at send time, written
+ * as the first entry in the session's JSONL log and broadcast over WS.
+ * Used by the UI to surface the fully-rendered prompt at the top of the
+ * session log for debugging template substitutions.
+ */
+export interface InitialPromptPayload {
+  sessionId: string;
+  prompt: string;
+  assembledAt: string;
 }
 
 export interface SessionEndedPayload {

@@ -6,6 +6,8 @@
  *
  *   - displayTitle
  *   - displaySubtitle
+ *   - displayDescription
+ *   - stableId
  *   - the owning stage id
  *   - phase names and ids in the item's timeline rows
  *   - prepost commandName for prepost rows
@@ -51,6 +53,8 @@ export function fuzzyMatch(
   const q = query.toLowerCase();
   if ((item.displayTitle ?? '').toLowerCase().includes(q)) return true;
   if ((item.displaySubtitle ?? '').toLowerCase().includes(q)) return true;
+  if ((item.displayDescription ?? '').toLowerCase().includes(q)) return true;
+  if ((item.stableId ?? '').toLowerCase().includes(q)) return true;
   if (stageId.toLowerCase().includes(q)) return true;
   if (cachedRows) {
     for (const row of cachedRows) {
@@ -66,12 +70,13 @@ export function fuzzyMatch(
 
 /**
  * Returns true iff `query` matches ONLY via a cached timeline row — i.e.
- * none of displayTitle / displaySubtitle / stageId contain the query but
- * at least one cached row does. Used by FeatureBoard to auto-expand items
- * whose match is otherwise hidden under a collapsed caret.
+ * none of the card-visible fields (title / subtitle / description /
+ * stableId / stage id) contain the query but at least one cached row
+ * does. Used by FeatureBoard to auto-expand items whose match is
+ * otherwise hidden under a collapsed caret.
  *
  * Returns false if `fuzzyMatch` would also have returned false (no match
- * at all) or if the match was via title / subtitle / stage id (the hit is
+ * at all) or if the match was via a card-visible field (the hit is
  * already visible on the collapsed card).
  */
 export function matchesOnlyViaTimeline(
@@ -84,6 +89,8 @@ export function matchesOnlyViaTimeline(
   const q = query.toLowerCase();
   if ((item.displayTitle ?? '').toLowerCase().includes(q)) return false;
   if ((item.displaySubtitle ?? '').toLowerCase().includes(q)) return false;
+  if ((item.displayDescription ?? '').toLowerCase().includes(q)) return false;
+  if ((item.stableId ?? '').toLowerCase().includes(q)) return false;
   if (stageId.toLowerCase().includes(q)) return false;
   if (!cachedRows) return false;
   for (const row of cachedRows) {

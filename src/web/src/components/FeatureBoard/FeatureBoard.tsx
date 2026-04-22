@@ -62,6 +62,22 @@ import { loadSessionIntoStore } from '@/components/LiveStream/sessionDisplay';
 
 export { fuzzyMatch } from './fuzzyMatch';
 
+/**
+ * If blockedReason is of the form "dependency <rowUuid> <state>", rewrite
+ * it to use the referenced item's stable ID. Falls back to the raw string
+ * when the lookup misses. Keeps the `⚠` tooltip readable.
+ */
+function translateBlockedReason(
+  raw: string | null,
+  rowIdToStableId: Map<string, string>,
+): string | null {
+  if (!raw) return raw;
+  const m = /^dependency (\S+) (\S+)$/.exec(raw);
+  if (!m) return raw;
+  const stable = rowIdToStableId.get(m[1]);
+  return stable ? `dependency ${stable} ${m[2]}` : raw;
+}
+
 // ---------------------------------------------------------------------------
 // Item data cache
 // ---------------------------------------------------------------------------
@@ -204,6 +220,21 @@ export function FeatureBoard({
       map.set(item.stageId, list);
     }
     return map;
+  }, [items]);
+
+  // stableId → item and rowId → stableId lookups for resolving dependsOn
+  // entries and translating "dependency <uuid> <state>" blockedReason
+  // strings. Built once per items change (not per render).
+  const { stableIdToItem, rowIdToStableId } = useMemo(() => {
+    const byStable = new Map<string, ItemProjection>();
+    const rowToStable = new Map<string, string>();
+    for (const item of items) {
+      if (item.stableId) {
+        byStable.set(item.stableId, item);
+        rowToStable.set(item.id, item.stableId);
+      }
+    }
+    return { stableIdToItem: byStable, rowIdToStableId: rowToStable };
   }, [items]);
 
   // Filtered flat list for keyboard navigation.
@@ -473,6 +504,28 @@ export function FeatureBoard({
     const stage = stages.find((s) => s.id === item.stageId);
     const displayName = resolveItemDisplayName(item, stage?.run);
 
+    // "Waiting on" line: only shown for pending/blocked items whose
+    // dependency list contains at least one item that hasn't completed.
+    // This is the user-facing answer to "why is this idle?" on a workflow
+    // that still has concurrency budget.
+    const showWaitingOn =
+      (item.state.status === 'pending' || item.state.status === 'blocked') &&
+      (item.dependsOn?.length ?? 0) > 0;
+    const unmetDepLabels: string[] = showWaitingOn
+      ? (item.dependsOn ?? []).filter((depLabel) => {
+          const depItem = stableIdToItem.get(depLabel);
+          // Unknown deps (cross-workflow, pruned, or UUID fallbacks with no
+          // stable-id match) are shown as-is — the user still gets a label.
+          if (!depItem) return true;
+          return depItem.state.status !== 'complete';
+        })
+      : [];
+
+    const blockedTooltip = translateBlockedReason(
+      item.state.blockedReason,
+      rowIdToStableId,
+    );
+
     return (
       <div
         key={item.id}
@@ -526,15 +579,33 @@ export function FeatureBoard({
                   retry {item.state.retryCount}
                 </span>
               )}
-              {item.state.blockedReason && (
+              {blockedTooltip && (
                 <span
-                  title={item.state.blockedReason}
+                  title={blockedTooltip}
                   className="text-[10px] text-orange-400 cursor-help"
+                  data-testid="item-blocked-badge"
                 >
                   ⚠
                 </span>
               )}
             </div>
+            {item.displayDescription && (
+              <p
+                className="text-[10px] text-gray-400 truncate mt-0.5"
+                data-testid="item-description"
+              >
+                {item.displayDescription}
+              </p>
+            )}
+            {unmetDepLabels.length > 0 && (
+              <p
+                className="text-[10px] text-orange-300 truncate mt-0.5"
+                data-testid="item-waiting-on"
+                title={`Waiting on: ${unmetDepLabels.join(', ')}`}
+              >
+                Waiting on: {unmetDepLabels.join(', ')}
+              </p>
+            )}
             {item.displaySubtitle && (
               <p className="text-[10px] text-gray-500 truncate mt-0.5" data-testid="item-subtitle">
                 {item.displaySubtitle}
