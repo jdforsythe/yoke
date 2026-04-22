@@ -108,6 +108,27 @@ interface Props {
    * has already been prefetched into the render store by FeatureBoard.
    */
   onSelectTimelineSession?: (itemId: string, sessionId: string) => void;
+  /**
+   * Phase 5: per-item timeline refetch signals. The parent route owns the
+   * counter and bumps it (keyed by itemId) when a session lifecycle frame
+   * arrives for an item currently in `expanded`. When the count for an
+   * itemId increases, FeatureBoard drops its cached timelineByItem entry
+   * for that item so the existing fetch effect re-fires and re-populates
+   * it from the (now invalidated) module-level timelineCache.
+   *
+   * Only read for items in `expanded`; signals for collapsed items are
+   * ignored because their timeline has never been fetched in the first
+   * place. Provided so the route-layer can decide whether to invalidate
+   * without needing a ref into FeatureBoard (Option A of the phase plan).
+   */
+  timelineInvalidations?: ReadonlyMap<string, number>;
+  /**
+   * Phase 5: externally-observable expanded set. When provided, the route
+   * can read this to decide whether an incoming session-lifecycle frame
+   * warrants invalidating the timeline. If omitted, FeatureBoard manages
+   * expand/collapse state internally as before.
+   */
+  onExpandedChange?: (expanded: ReadonlySet<string>) => void;
 }
 
 export function FeatureBoard({
@@ -118,6 +139,8 @@ export function FeatureBoard({
   selectedItemId,
   onSelectItem,
   onSelectTimelineSession,
+  timelineInvalidations,
+  onExpandedChange,
 }: Props) {
   const { itemId: deepLinkedItemId } = useParams<{ itemId?: string }>();
 
@@ -152,6 +175,16 @@ export function FeatureBoard({
     Record<string, ItemTimelineRow[] | null>
   >({});
   const fetchingTimeline = useRef<Set<string>>(new Set());
+
+  // Phase 5: notify the parent route whenever `expanded` changes so it can
+  // gate session-lifecycle invalidation without needing a ref into this
+  // component. Intentionally omits onExpandedChange from the dep list — the
+  // callback is expected to be stable; re-running on every parent render
+  // would re-notify spuriously.
+  useEffect(() => {
+    onExpandedChange?.(expanded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -321,6 +354,43 @@ export function FeatureBoard({
     // module cache and including it would re-fire the effect on every settle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, workflowId]);
+
+  // Phase 5: react to parent-driven timeline invalidations. The route bumps
+  // the per-item counter when a session-lifecycle frame (session.started /
+  // session.ended) arrives for an expanded item; the module-level cache has
+  // already been cleared by the route, so we just need to drop our mirror so
+  // the fetch effect above re-fires.
+  //
+  // seenInvalidationsRef stores the last count we acted on per itemId. The
+  // ref is necessary (not state) because including it in deps would cause the
+  // effect to re-run on every update and potentially loop.
+  const seenInvalidationsRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    if (!timelineInvalidations) return;
+    const seen = seenInvalidationsRef.current;
+    const itemsToDrop: string[] = [];
+    for (const [itemId, count] of timelineInvalidations) {
+      const lastSeen = seen.get(itemId) ?? 0;
+      if (count > lastSeen) {
+        seen.set(itemId, count);
+        // Only drop state for items we've already rendered. Collapsed items
+        // have no state entry, so there's nothing to drop; and we don't want
+        // to prefetch collapsed-item timelines.
+        if (timelineByItem[itemId] !== undefined) itemsToDrop.push(itemId);
+      }
+    }
+    if (itemsToDrop.length > 0) {
+      setTimelineByItem((prev) => {
+        const next = { ...prev };
+        for (const id of itemsToDrop) delete next[id];
+        return next;
+      });
+    }
+    // timelineByItem is intentionally read inside the effect body (via the
+    // closure) rather than listed as a dep — including it would re-run the
+    // effect after every fetch settle, re-dropping and looping.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineInvalidations]);
 
   // Click-through from a timeline-session row → prefetch log into the store
   // and ask the parent to select the right-pane session.

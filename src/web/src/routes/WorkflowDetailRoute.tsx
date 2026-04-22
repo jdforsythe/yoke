@@ -30,6 +30,7 @@ import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
+import { invalidateItemTimeline } from '@/components/FeatureBoard/timelineCache';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
 import { HistoryPane, type ItemSession } from '@/components/LiveStream/HistoryPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
@@ -112,6 +113,37 @@ export function WorkflowDetailRoute() {
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  // Phase 5: mirror FeatureBoard's expanded item set so the WS frame handlers
+  // below can decide whether a session-lifecycle frame warrants invalidating
+  // the timeline cache. Kept as a ref (not state) because every toggle would
+  // otherwise re-fire the WS subscription effect below (which keys on
+  // workflowId). A ref is correct: the frame handlers close over a stable
+  // mutable box, and we do not need re-renders driven by expanded-set changes
+  // in the route itself — FeatureBoard owns rendering.
+  const expandedItemsRef = useRef<ReadonlySet<string>>(new Set());
+  // Phase 5: ref snapshot of itemActiveSession for use inside WS frame
+  // handlers. session.ended carries only sessionId, so we need to look up
+  // the itemId; doing so inside a setState updater is fragile (strict mode
+  // re-runs updaters), so we read from this ref which mirrors state
+  // synchronously via the effect below.
+  const itemActiveSessionRef = useRef<Map<string, ActiveSession>>(new Map());
+  // Per-item timeline invalidation counter. When a session-lifecycle frame
+  // arrives for an expanded item, we invalidate the module-level timeline
+  // cache AND bump this counter. FeatureBoard watches the map and drops its
+  // render-mirror for any itemId whose count increased, which re-fires the
+  // existing lazy fetch effect. The setState identity change (new Map) is
+  // what React uses to diff; individual count values are signals, not data.
+  const [timelineInvalidations, setTimelineInvalidations] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
+  const bumpTimelineInvalidation = useCallback((itemId: string) => {
+    setTimelineInvalidations((prev) => {
+      const next = new Map(prev);
+      next.set(itemId, (prev.get(itemId) ?? 0) + 1);
+      return next;
+    });
+  }, []);
   // Track whether the snapshot has arrived so the timeout ref can be cleared.
   const snapshotArrivedRef = useRef(false);
 
@@ -130,6 +162,13 @@ export function WorkflowDetailRoute() {
   useEffect(() => {
     setAttentionCount(pendingAttentionArr?.length ?? 0);
   }, [pendingAttentionArr]);
+
+  // Phase 5: keep the activeSession ref in sync with state for use inside
+  // WS handlers. session.ended needs sessionId → itemId reverse lookup, and
+  // doing it from a ref avoids tying the WS subscription effect to state.
+  useEffect(() => {
+    itemActiveSessionRef.current = state.itemActiveSession;
+  }, [state.itemActiveSession]);
 
   // sendControl wrapper so ControlMatrix doesn't import the WS module directly.
   // 'retry' uses POST /api/workflows/:id/retry — the WS control executor only
@@ -304,6 +343,13 @@ export function WorkflowDetailRoute() {
               itemEndedSession: endedMap,
             };
           });
+          // Phase 5: if the item is currently expanded in the board, drop its
+          // cached timeline entry so the inline list reflects the new session.
+          // Collapsed items are untouched — we do not prefetch.
+          if (expandedItemsRef.current.has(p.itemId)) {
+            invalidateItemTimeline(workflowId, p.itemId);
+            bumpTimelineInvalidation(p.itemId);
+          }
         }
         dispatch(frame);
       }),
@@ -312,6 +358,18 @@ export function WorkflowDetailRoute() {
     offs.push(
       client.on('session.ended', (frame: ServerFrame) => {
         const p = frame.payload as SessionEndedPayload;
+        // Phase 5: session.ended carries only sessionId. We recover the
+        // itemId from the live itemActiveSession map via the ref snapshot
+        // BEFORE setState mutates it, so the invalidation sees the correct
+        // item even if the updater runs twice under strict mode.
+        const currentActive = itemActiveSessionRef.current;
+        let endedItemId: string | null = null;
+        for (const [itemId, sess] of currentActive) {
+          if (sess.sessionId === p.sessionId) {
+            endedItemId = itemId;
+            break;
+          }
+        }
         setState((prev) => {
           const { map, clearedItemId } = removeBySessionId(prev.itemActiveSession, p.sessionId);
           const endedMap =
@@ -320,6 +378,10 @@ export function WorkflowDetailRoute() {
               : prev.itemEndedSession;
           return { ...prev, itemActiveSession: map, itemEndedSession: endedMap };
         });
+        if (endedItemId !== null && expandedItemsRef.current.has(endedItemId)) {
+          invalidateItemTimeline(workflowId, endedItemId);
+          bumpTimelineInvalidation(endedItemId);
+        }
         dispatch(frame);
       }),
     );
@@ -521,6 +583,10 @@ export function WorkflowDetailRoute() {
               setSelectedItemId(itemId);
               setPendingHistorySessionId(sessionId);
               setStreamTab('history');
+            }}
+            timelineInvalidations={timelineInvalidations}
+            onExpandedChange={(expanded) => {
+              expandedItemsRef.current = expanded;
             }}
           />
         </div>
