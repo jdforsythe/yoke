@@ -118,6 +118,10 @@ export function WorkflowDetailRoute() {
   // History tab state — tab and past sessions for the currently selected item.
   const [streamTab, setStreamTab] = useState<'live' | 'history'>('live');
   const [itemSessions, setItemSessions] = useState<ItemSession[]>([]);
+  // When the user clicks a session row inside an item's inline timeline
+  // (FeatureBoard), we switch the right pane to History and seed HistoryPane's
+  // selection. Cleared when the user deselects or changes item.
+  const [pendingHistorySessionId, setPendingHistorySessionId] = useState<string | null>(null);
 
   // Sync attention count whenever pendingAttention changes — covers snapshot,
   // workflow.update patches, and real-time notice frame additions.
@@ -359,9 +363,14 @@ export function WorkflowDetailRoute() {
     if (!selectedItemId) {
       setItemSessions([]);
       setStreamTab('live');
+      setPendingHistorySessionId(null);
       return;
     }
-    setStreamTab('live');
+    // Don't stomp a pending timeline-session-click that just set the tab to
+    // history and provided an initialSessionId. If pendingHistorySessionId
+    // is set for THIS item the flow is: FeatureBoard → setSelectedItemId +
+    // setStreamTab('history') + setPendingHistorySessionId, all in one click.
+    if (!pendingHistorySessionId) setStreamTab('live');
     void fetch(`/api/items/${encodeURIComponent(selectedItemId)}/sessions`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((d: { sessions?: ItemSession[] }) => {
@@ -498,7 +507,21 @@ export function WorkflowDetailRoute() {
             items={Array.from(items.values())}
             activeSessionId={activeSession?.sessionId ?? null}
             selectedItemId={selectedItemId}
-            onSelectItem={setSelectedItemId}
+            onSelectItem={(itemId) => {
+              // Plain card click clears any pending timeline-session-click so
+              // HistoryPane doesn't try to preselect a stale session from a
+              // different item's inline timeline.
+              setPendingHistorySessionId(null);
+              setSelectedItemId(itemId);
+            }}
+            onSelectTimelineSession={(itemId, sessionId) => {
+              // Sequence matters: set selection first so the sessions-fetch
+              // effect runs for the right item, then flip to history and seed
+              // the initial-session id HistoryPane will honour on mount.
+              setSelectedItemId(itemId);
+              setPendingHistorySessionId(sessionId);
+              setStreamTab('history');
+            }}
           />
         </div>
 
@@ -542,6 +565,7 @@ export function WorkflowDetailRoute() {
                 itemId={selectedItemId}
                 workflowId={workflowId!}
                 sessions={itemSessions}
+                initialSessionId={pendingHistorySessionId}
               />
             </div>
           ) : controlSession ? (

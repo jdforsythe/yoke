@@ -10,7 +10,9 @@
  *
  * Keyboard navigation: j/k move a visible focus ring between items using
  * aria-activedescendant pattern. Enter opens the stream pane for the focused
- * item (calls onSelectItem). Escape clears selection.
+ * item (calls onSelectItem). Escape clears selection. j/k stay at the item
+ * level and do NOT descend into inline timeline rows under an expanded card.
+ * Space on the focused item toggles its inline timeline (expand/collapse).
  *
  * Deep-link: /workflow/:id/item/:itemId scrolls to and highlights the target
  * card on mount (reads :itemId from URL via useParams). Highlight is managed
@@ -22,6 +24,13 @@
  *
  * item.data: fetched once per selection via GET /api/workflows/:id/items/:itemId/data
  * and cached client-side. Cache is invalidated on new item.state frames.
+ *
+ * Inline timeline (Phase 4): each card carries a disclosure caret. Expanding
+ * lazily fetches GET /api/workflows/:id/items/:itemId/timeline (cached via
+ * timelineCache.ts) and renders the merged session + prepost-command history
+ * inline via <TimelineList>. Clicking a session row loads the log into the
+ * render store (loadSessionIntoStore) and asks the parent to switch to the
+ * History tab preselected to that session.
  */
 
 import {
@@ -35,8 +44,15 @@ import {
 } from 'react';
 import { useParams } from 'react-router-dom';
 import type { ItemProjection, StageProjection } from '@/ws/types';
+import type { ItemTimelineRow, ItemTimelinePrepostRow } from '@shared/types/timeline';
 import { itemStatusClass, ITEM_STATUS_OPTIONS } from './itemStatus';
 import { resolveItemDisplayName } from './displayName';
+import { TimelineList } from './TimelineList';
+import {
+  fetchItemTimeline,
+  getCachedTimeline,
+} from './timelineCache';
+import { loadSessionIntoStore } from '@/components/LiveStream/sessionDisplay';
 
 function fuzzyMatch(item: ItemProjection, query: string): boolean {
   if (!query) return true;
@@ -85,6 +101,13 @@ interface Props {
   activeSessionId: string | null;
   selectedItemId: string | null;
   onSelectItem: (itemId: string | null) => void;
+  /**
+   * Fires when the user clicks a session row in an expanded item's inline
+   * timeline. The parent is expected to select the item, switch to the
+   * History tab, and point the right pane at the given sessionId. The log
+   * has already been prefetched into the render store by FeatureBoard.
+   */
+  onSelectTimelineSession?: (itemId: string, sessionId: string) => void;
 }
 
 export function FeatureBoard({
@@ -94,6 +117,7 @@ export function FeatureBoard({
   activeSessionId,
   selectedItemId,
   onSelectItem,
+  onSelectTimelineSession,
 }: Props) {
   const { itemId: deepLinkedItemId } = useParams<{ itemId?: string }>();
 
@@ -114,6 +138,20 @@ export function FeatureBoard({
   // prevents the data-highlight attribute being overwritten by re-renders during
   // the 2 s animation window (the prior DOM-mutation approach was fragile).
   const [highlightedItems, setHighlightedItems] = useState<Set<string>>(new Set());
+
+  // Inline timeline expand/collapse state.
+  // - `expanded` is the set of itemIds currently expanded (card caret open).
+  // - `timelineByItem` mirrors the module-level timelineCache by value so a
+  //   fetch settling triggers a re-render. We keep the cache authoritative —
+  //   this state is only for re-render propagation.
+  // - `fetchingTimeline` is a ref (not state) for the same reason as
+  //   fetchingData above: mutating a Set to kick a new render would re-fire
+  //   the effect and 404-loop. See fetchingData comment.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [timelineByItem, setTimelineByItem] = useState<
+    Record<string, ItemTimelineRow[] | null>
+  >({});
+  const fetchingTimeline = useRef<Set<string>>(new Set());
 
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -168,7 +206,21 @@ export function FeatureBoard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deepLinkedItemId, items]); // items triggers re-check after snapshot loads; onSelectItem intentionally omitted (stable ref)
 
+  // Declared here (pre-handleKeyDown) so Space handling in the keyboard
+  // callback can close over it without a forward reference.
+  const toggleExpanded = useCallback((itemId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }, []);
+
   // Keyboard navigation.
+  // j/k move between items only; they do NOT descend into the inline timeline
+  // rows of an expanded card. Space on the focused item toggles the inline
+  // timeline. Enter selects the item (unchanged).
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'j') {
@@ -180,12 +232,18 @@ export function FeatureBoard({
       } else if (e.key === 'Enter') {
         const item = flatFiltered[focusedIdx];
         if (item) onSelectItem(item.id);
+      } else if (e.key === ' ' || e.code === 'Space') {
+        const item = flatFiltered[focusedIdx];
+        if (item) {
+          e.preventDefault();
+          toggleExpanded(item.id);
+        }
       } else if (e.key === 'Escape') {
         onSelectItem(null);
         setFocusedIdx(-1);
       }
     },
-    [flatFiltered, focusedIdx, onSelectItem],
+    [flatFiltered, focusedIdx, onSelectItem, toggleExpanded],
   );
 
   // Scroll focused item into view.
@@ -239,6 +297,56 @@ export function FeatureBoard({
       });
   }, [selectedItemId, workflowId]);
 
+  // Lazy-fetch the timeline for any newly-expanded item. Seeds state from the
+  // module-level cache on first read so flipping expand off/on doesn't refetch.
+  useEffect(() => {
+    for (const itemId of expanded) {
+      if (timelineByItem[itemId] !== undefined) continue;
+      const cached = getCachedTimeline(workflowId, itemId);
+      if (cached !== undefined) {
+        setTimelineByItem((prev) => ({ ...prev, [itemId]: cached }));
+        continue;
+      }
+      if (fetchingTimeline.current.has(itemId)) continue;
+      fetchingTimeline.current.add(itemId);
+      void fetchItemTimeline(workflowId, itemId)
+        .then((rows) => {
+          setTimelineByItem((prev) => ({ ...prev, [itemId]: rows }));
+        })
+        .finally(() => {
+          fetchingTimeline.current.delete(itemId);
+        });
+    }
+    // timelineByItem intentionally omitted — it is a render-mirror of the
+    // module cache and including it would re-fire the effect on every settle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, workflowId]);
+
+  // Click-through from a timeline-session row → prefetch log into the store
+  // and ask the parent to select the right-pane session.
+  // loadedSessions is module-scoped to this component via a ref so clicks on
+  // the same session don't duplicate fetches within the mount.
+  const timelineLoadedSessionsRef = useRef<Set<string>>(new Set());
+  const handleSelectTimelineSession = useCallback(
+    async (itemId: string, sessionId: string) => {
+      await loadSessionIntoStore(sessionId, timelineLoadedSessionsRef.current);
+      onSelectTimelineSession?.(itemId, sessionId);
+    },
+    [onSelectTimelineSession],
+  );
+
+  // Prepost click → no artifact-serving endpoint exists server-side today
+  // (see spec for phase 4); keep the wire-up in place so phase 5/6 can swap
+  // in a real viewer without touching FeatureBoard's tree. For now we
+  // surface a transient placeholder notice via state.
+  const [prepostNotice, setPrepostNotice] = useState<string | null>(null);
+  const handleOpenPrepostOutput = useCallback((row: ItemTimelinePrepostRow) => {
+    const hasOutput = !!(row.stdoutPath ?? row.stderrPath);
+    if (!hasOutput) return;
+    setPrepostNotice('Viewing post-command output is coming soon');
+    window.setTimeout(() => setPrepostNotice(null), 3000);
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Render helpers
   // ---------------------------------------------------------------------------
@@ -248,7 +356,9 @@ export function FeatureBoard({
     const isSelected = selectedItemId === item.id;
     const isHighlighted = highlightedItems.has(item.id);
     const data = itemData[item.id];
-    const isExpanded = itemDataExpanded.has(item.id);
+    const isDataExpanded = itemDataExpanded.has(item.id);
+    const isTimelineExpanded = expanded.has(item.id);
+    const timelineRows = timelineByItem[item.id];
     const stage = stages.find((s) => s.id === item.stageId);
     const displayName = resolveItemDisplayName(item, stage?.run);
 
@@ -268,13 +378,27 @@ export function FeatureBoard({
           setFocusedIdx(flatFiltered.findIndex((i) => i.id === item.id));
         }}
         className={[
-          'px-3 py-2 cursor-pointer border-b border-gray-700/30 transition-colors',
+          'cursor-pointer border-b border-gray-700/30 transition-colors',
           isSelected ? 'bg-gray-700/60 ring-1 ring-inset ring-blue-500/40' : 'hover:bg-gray-700/20',
           isFocused ? 'outline outline-1 outline-blue-400' : '',
           'data-[highlight=true]:animate-pulse',
         ].join(' ')}
       >
-        <div className="flex items-start gap-2">
+        <div className="flex items-start gap-2 px-3 py-2">
+          {/* Disclosure caret — must not propagate to the card's select handler. */}
+          <button
+            type="button"
+            aria-label={isTimelineExpanded ? 'Collapse item timeline' : 'Expand item timeline'}
+            aria-expanded={isTimelineExpanded}
+            data-testid={`item-caret-${item.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleExpanded(item.id);
+            }}
+            className="mt-0.5 w-4 h-4 flex items-center justify-center text-gray-400 hover:text-gray-200 shrink-0 leading-none"
+          >
+            <span aria-hidden="true">{isTimelineExpanded ? '▾' : '▸'}</span>
+          </button>
           {isStreaming && (
             <span
               className="w-2 h-2 mt-0.5 rounded-full bg-blue-400 animate-pulse shrink-0"
@@ -325,7 +449,7 @@ export function FeatureBoard({
                                       → "No data available."
               3. data present        → JSON viewer */}
         {isSelected && (
-          <div className="mt-2 ml-4">
+          <div className="px-3 pb-2 ml-4">
             {fetchingData.current.has(item.id) ? (
               <p className="text-xs text-gray-500">Loading data…</p>
             ) : itemDataCache.has(item.id) && itemDataCache.get(item.id) === null ? (
@@ -344,15 +468,30 @@ export function FeatureBoard({
                   }}
                   className="text-[10px] text-blue-400 hover:text-blue-300"
                 >
-                  {isExpanded ? '▼ Hide data' : '▶ Show data'}
+                  {isDataExpanded ? '▼ Hide data' : '▶ Show data'}
                 </button>
-                {isExpanded && (
+                {isDataExpanded && (
                   <pre className="mt-1 text-[10px] font-mono text-gray-400 bg-gray-800/50 rounded p-2 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre">
                     {JSON.stringify(data, null, 2)}
                   </pre>
                 )}
               </div>
             ) : null}
+          </div>
+        )}
+
+        {/* Inline timeline — rendered under the card body when expanded.
+            The TimelineList button-row clicks already stopPropagation so
+            they don't bubble into the card's select-on-click handler. */}
+        {isTimelineExpanded && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <TimelineList
+              rows={timelineRows}
+              onSelectSession={(sessionId) => {
+                void handleSelectTimelineSession(item.id, sessionId);
+              }}
+              onOpenPrepostOutput={handleOpenPrepostOutput}
+            />
           </div>
         )}
       </div>
@@ -406,6 +545,20 @@ export function FeatureBoard({
           </select>
         </div>
       </div>
+
+      {/* Transient notice for prepost-output clicks — no artifact-serving
+          endpoint exists server-side today, so clicking a prepost row with
+          a non-null output path surfaces a placeholder notice for 3 s. This
+          placeholder will be replaced in a later phase once the artifact
+          endpoint lands. */}
+      {prepostNotice && (
+        <div
+          data-testid="prepost-output-notice"
+          className="shrink-0 px-3 py-1.5 text-[10px] text-amber-300 bg-amber-900/20 border-b border-amber-700/30"
+        >
+          {prepostNotice}
+        </div>
+      )}
 
       {/* Item list with keyboard nav */}
       <div
