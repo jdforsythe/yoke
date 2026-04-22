@@ -17,6 +17,7 @@ export type ServerFrameType =
   | 'stage.complete'
   | 'session.started'
   | 'session.ended'
+  | 'stream.initial_prompt'
   | 'stream.text'
   | 'stream.thinking'
   | 'stream.tool_use'
@@ -201,6 +202,12 @@ export interface SessionEndedPayload {
   exitCode: number | null;
   statusFlags: Record<string, number | boolean>;
   reason: 'ok' | 'fail' | 'cancelled' | 'rate_limited' | 'tainted';
+}
+
+export interface StreamInitialPrompt {
+  sessionId: string;
+  prompt: string;
+  assembledAt: string;
 }
 
 export interface StreamText {

@@ -22,6 +22,7 @@ import { TextBlockRenderer } from './TextBlockRenderer';
 import { ToolCallRenderer } from './ToolCallRenderer';
 import { ThinkingBlockRenderer } from './ThinkingBlockRenderer';
 import { SystemNoticeRenderer } from './SystemNoticeRenderer';
+import { InitialPromptRenderer } from './InitialPromptRenderer';
 
 // ---------------------------------------------------------------------------
 // Scroll-position cache (module-level, survives re-mounts)
@@ -50,6 +51,8 @@ const BlockRouter = memo(function BlockRouter({ block }: { block: RenderBlock })
       return <ThinkingBlockRenderer block={block} />;
     case 'system_notice':
       return <SystemNoticeRenderer block={block} />;
+    case 'initial_prompt':
+      return <InitialPromptRenderer block={block} />;
     default:
       // truncated_sentinel is rendered inline by the parent virtualizer loop.
       return null;
