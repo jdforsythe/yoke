@@ -32,6 +32,9 @@ import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
 import { GraphPane } from '@/components/GraphPane';
+import { NodeSummaryPanel } from '@/components/GraphPane/NodeSummaryPanel';
+import { useWorkflowGraph } from '@/store/graphStore';
+import type { GraphNode, SessionGraphNode, PhaseGraphNode } from '../../../shared/types/graph';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
 import { HistoryPane, type ItemSession } from '@/components/LiveStream/HistoryPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
@@ -132,6 +135,11 @@ export function WorkflowDetailRoute() {
   });
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  // Graph tab selection — when the user clicks a non-session node (or a
+  // session node on the Graph tab), this holds the graph node payload so the
+  // right pane can swap to NodeSummaryPanel. null = nothing selected from
+  // the graph, which also collapses the right pane on empty-canvas clicks.
+  const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [notFound, setNotFound] = useState(false);
   // Track whether the snapshot has arrived so the timeout ref can be cleared.
   const snapshotArrivedRef = useRef(false);
@@ -164,6 +172,28 @@ export function WorkflowDetailRoute() {
     },
     [],
   );
+
+  // Graph store snapshot — consumed by the Graph tab and by the
+  // session-node → item-id resolver below. Read even on the List tab; the
+  // hook is cheap (no render unless the workflow's graph actually changes).
+  const workflowGraph = useWorkflowGraph(workflowId);
+
+  const handleGraphSelectSession = useCallback(
+    (session: SessionGraphNode) => {
+      const phase = workflowGraph?.nodes.find(
+        (n): n is PhaseGraphNode => n.kind === 'phase' && n.id === session.phaseNodeId,
+      );
+      const itemId = phase?.itemId ?? null;
+      if (itemId) setSelectedItemId(itemId);
+      setSelectedGraphNode(session);
+    },
+    [workflowGraph],
+  );
+
+  const handleGraphSelectNode = useCallback((node: GraphNode | null) => {
+    setSelectedGraphNode(node);
+    if (!node) setSelectedItemId(null);
+  }, []);
 
   // Subscribe to the render store so Task tool_use blocks can be detected within
   // one frame of arrival — no polling (RC-1, r3-03).
@@ -200,6 +230,7 @@ export function WorkflowDetailRoute() {
       itemEndedSession: new Map(),
     });
     setSelectedItemId(null);
+    setSelectedGraphNode(null);
     const client = getClient();
     client.subscribe(workflowId);
 
@@ -549,8 +580,27 @@ export function WorkflowDetailRoute() {
 
       {/* Main body: either the existing list (board + stream) or the graph view. */}
       {activeView === 'graph' ? (
-        <div className="flex-1 min-h-0 overflow-auto">
-          <GraphPane workflowId={workflowId!} />
+        <div className="flex flex-1 min-h-0">
+          <div className="flex-1 min-w-0">
+            <GraphPane
+              workflowId={workflowId!}
+              onSelectSession={handleGraphSelectSession}
+              onSelectGraphNode={handleGraphSelectNode}
+              selectedGraphNodeId={selectedGraphNode?.id ?? null}
+            />
+          </div>
+          {selectedGraphNode && workflowGraph && (
+            <div className="w-96 shrink-0 border-l border-gray-700 overflow-hidden flex flex-col">
+              {selectedGraphNode.kind === 'session' ? (
+                <LiveStreamPane
+                  sessionId={selectedGraphNode.sessionId}
+                  workflowId={workflowId!}
+                />
+              ) : (
+                <NodeSummaryPanel node={selectedGraphNode} graph={workflowGraph} />
+              )}
+            </div>
+          )}
         </div>
       ) : (
       <div className="flex flex-1 min-h-0">
