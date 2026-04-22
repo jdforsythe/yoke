@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yoke.local/schemas/yoke-config.schema.json",
-  "title": ".yoke.yml",
+  "title": "yoke template config",
   "description": "User-authored configuration. Mirrors plan-draft3 §Configuration and the pre/post action grammar (§Phase Pre/Post Commands, D50, D53). Revised per beta3-review-feedback.md Issues 1–4: pipeline uses stages (not nodes+edges), items are opaque, review aggregation is user-owned. All object schemas set additionalProperties: false to fail fast on typos.",
   "type": "object",
   "additionalProperties": false,

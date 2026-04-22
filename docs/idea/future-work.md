@@ -6,56 +6,6 @@ Each entry should answer: **what** is deferred, **where** in the codebase it liv
 
 ---
 
-## Prompt templating for manifest path
-
-**What.** `prompts/self-host-implement.md` and `prompts/self-host-review.md` hardcode `docs/idea/fixes-round-1-features.json` as the manifest the agent reads for item metadata. A TODO comment in each prompt flags the follow-up.
-
-**Where.** `prompts/self-host-implement.md` (lines ~9, ~35), `prompts/self-host-review.md` (lines ~9, ~77).
-
-**Why deferred.** Proper fix requires threading `items_from` through the assembler pipeline: `PromptContextInputs.stage` (in `src/server/prompt/context.ts:142`) currently exposes only `{ id, run }`; the scheduler's `PromptAssemblerFn` (`src/server/scheduler/scheduler.ts:101-102`) passes just `stageId`/`stageRun`. Plumbing the field end-to-end touches `PromptAssemblerFn`, `PromptContextInputs`, `buildPromptContext`, the scheduler call site (~line 955), and `src/cli/start.ts`. Deeper than the blocking-fixes round warranted.
-
-**Fix sketch.** Extend `PromptContextInputs.stage` to include `itemsFrom?: string`. Plumb through `buildPromptContext`, the scheduler, and `start.ts`'s `assemblePromptFn`. Replace the hardcoded paths in both prompts with `{{stage.items_from}}`. Add a test in `tests/prompt/` that asserts the variable renders.
-
----
-
-## `tsconfig.build.json` excludes `src/web`
-
-**What.** The root build now ignores the web workspace.
-
-**Where.** `tsconfig.build.json` — added `src/web` to the `exclude` array during the cancel-executor work.
-
-**Why deferred.** Pre-existing break on the `dashboard` branch — `pnpm build` from the root tried to compile `src/web/**/*.tsx` using the root tsconfig, which has no JSX config. The web workspace has its own `src/web/tsconfig.json` exercised via `pnpm --filter web typecheck`. The exclude was a workaround to make `pnpm build` pass during blocking fixes; not caused by any of the round's work.
-
-**Fix sketch.** Two options: (1) switch to TypeScript project references so the root build composes the server and web workspaces correctly, or (2) explicitly scope the root tsconfig's `include` to `src/server`, `src/cli`, `src/shared` and drop the `exclude` line. Option (2) is the smaller change.
-
----
-
-## ~~Pause / resume control actions not implemented~~
-
-~~**What.** The UI `ControlMatrix` surfaces pause and resume buttons, but the server-side `controlExecutor` only accepts `cancel`. Any pause/resume request returns `invalid_action` with status 400.~~
-
-~~**Where.** `src/server/pipeline/control-executor.ts` (the switch over `action`), `src/web/src/components/ControlMatrix/ControlMatrix.tsx` (the buttons).~~
-
-~~**Why deferred.** Cancel was the blocking safety primitive for running workflows through the dashboard. Pause/resume needs a design decision about what "paused" means at the state-machine level — there's no `paused` state in the `State` union today, and retry-ladder timers, rate-limit windows, and in-flight sessions all interact with pause semantics.~~
-
-~~**Fix sketch.** Either (a) add a `paused` workflow status (workflow-scope, not item-scope) that makes the scheduler skip ticking the workflow; resume flips it back. Or (b) hide the buttons in ControlMatrix until a real design lands. (b) is the right interim move to avoid user confusion.~~
-
-**Implemented in templates refactor t-06.** pause/continue are workflow-scoped: pause sets `workflows.paused_at = now()`, continue clears it. The scheduler tick skips workflows where `paused_at IS NOT NULL` (via the `idx_workflows_paused_at` index added by migration 0005). Scheduler startup automatically pauses all non-terminal workflows so no workflow auto-resumes after a server restart. See `src/server/pipeline/control-executor.ts` and `tests/pipeline/control-executor.test.ts`.
-
----
-
-## Item cards show UUID instead of stable id when `displayTitle` is missing
-
-**What.** When an item's `displayTitle` is null (e.g. the placeholder row a per-item stage starts with, or any item whose manifest lacks the configured `items_display.title` JSONPath), FeatureBoard renders the opaque row UUID. The user-facing identifier should be the stable `items_id` extracted from the manifest (e.g. `fix-camelcase-api`), not a UUID.
-
-**Where.** `src/web/src/components/FeatureBoard/FeatureBoard.tsx:286` — `{item.displayTitle ?? item.id}`. The `item.id` is the SQLite row UUID.
-
-**Why deferred.** Shown up while running the fixes-round-1 workflow — the placeholder item displayed a UUID before seeding completed. Fixing properly means surfacing the manifest's stable id (items_id result) as a separate field on `ItemProjection` so the UI has something meaningful to fall back to; right now the stable id isn't threaded through to the projection.
-
-**Fix sketch.** Add `stableId: string | null` to `ItemProjection` (shared type), populate it from the seeder when items are created, and update FeatureBoard fallback chain to `item.displayTitle ?? item.stableId ?? item.id`. For placeholder rows before seeding, render a neutral label like "Seeding…" or the stage id rather than a UUID.
-
----
-
 ## Flaky ControlMatrix e2e test
 
 **What.** During the A5-loop fix verification, the full e2e suite failed on first run with one failure in `control-matrix.spec.ts`; passed on re-run and in isolation. Unrelated to the A5 changes.
@@ -91,29 +41,3 @@ Each entry should answer: **what** is deferred, **where** in the codebase it liv
 5. Pre-requisites before starting: the templates refactor (this document's companion plan) must be landed so the picker UI exists to select between these sibling templates.
 
 **Context (so this is picked up cleanly later).** Design conversation 2026-04-21 established: templates are static YAML, workflows are DB instances with user-supplied names and UUIDs (no template-based dedup), server startup pauses in-flight workflows rather than auto-resuming, and `.yoke.yml` at repo root is fully replaced by `.yoke/templates/*.yml`. The brainstorm stage was extracted from that conversation as a future-work item once templates are in place.
-
-## Prompt shown at top of session logs
-
-The session logs, when you choose a stage and they show in the right pane, need the initial prompt (with replacements injected) that was sent to the session for context (and debugging, to ensure replacements worked).
-
-## Nomenclature
-
-In the dashboard, the stages are called "Templates", and the search says "Search items...". In the config we call them "stages" and they have "phases" which will correspond 1:1 with agent sessions.
-
-We need to be consistent with the naming.
-
-The list view should be grouped/categorized by "stage" and the list items will remain 1:1 with stages, but should expand to show the individual phases/sessions (sessions is probably best here because if it goes through retries we want to be able to see *all* the sessions; so they should be labelled by the phase and ordered chronologically, and include rows for failures, like post command logs on failure with a failure row and describing that it triggered a goto implement, for instance).
-
-The search can still say "Search items..." and should search the stages and phases/sessions (title/id/description, not log content).
-
-## Graph View
-
-We have a dashboard with a workflow list. When a workflow is selected, we show a list of sessions, and when a session is selected we show the logs. These are all in panes/panels.
-
-We want a secondary view of the workflow. It should be similar in layout to something like n8n - an active box-and-arrow workflow diagram. Similar to the list dashboard view, we'd show which are in-progress/complete/pending by color and tag. a button or selecting a session could show the logs in a pane to the right (same way we do now, but hide it if none are selected). clicking outside a session on the "canvas" would de-select. with this diagram, we could easily show the topological dependency order, the stages with the phases/sessions, pre/post commands, and goto arrows (e.g. dotted if they're not "continue") to visualize the entire pipeline config for the user. This should provide all the same functionality as the session list view. The diagram should update with what *actually* happened - for instance if a review fails and it needs to goto the implement, that should *add* a new implement/review/post command stage to the canvas with an arrow showing the goto, or if it's clean enough just an arrow back and a second session in the existing stage/phase. This is an example based on our default pipeline config, but it should work for any config. Essentially the diagram starts as a visualization of the configured pipeline but updates in real time with the progress to become a diagram of what *actually* happened, and when it's finished, all optional paths that didn't get touched (gotos that didn't happen, etc) get removed, so it can be stored as a permanent artifact. it should be serializable as JSON so it can be stored in the db with a reference to the workflow id, so when viewing old workflows it can be loaded, or when continuing paused workflows it can be loaded and continued.
-
-## ~~List view depends_on~~
-
-~~We should add some information in the list view from the depends_on (so e.g. if my concurrency limit is 4, why are only 2 sessions working? i need to see the blockers to understand). the list view and the graph view need to show the description for the session/feature config.~~
-
-**Implemented.** `ItemProjection` now carries `dependsOn` (stable IDs) and `displayDescription` (from `items_display.description` JSONPath). FeatureBoard renders a "Waiting on: …" line for pending/blocked items with unmet deps, and a description line under the title. `blockedReason` UUIDs are translated to stable IDs at render time. Graph view consumption is deferred to that work item. See `src/server/api/ws.ts buildSnapshot` and `src/web/src/components/FeatureBoard/FeatureBoard.tsx`.
