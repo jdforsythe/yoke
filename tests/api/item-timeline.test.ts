@@ -293,6 +293,91 @@ describe('GET /api/workflows/:workflowId/items/:itemId/timeline — actionTaken'
     expect(row.status).toBe('fail');
     expect(row.actionTaken).toEqual({ goto: 'implement' });
   });
+
+  it('parses action_taken for retry / fail / continue boolean flags', async () => {
+    const wfId = insertWorkflow();
+    const itemId = insertItem(wfId);
+
+    // Three prepost rows, each exercising a different action-taken shape so
+    // the retry / fail / continue branches in parseActionTaken are covered.
+    insertPrepost(wfId, itemId, {
+      whenPhase: 'post',
+      commandName: 'a',
+      phase: 'implement',
+      startedAt: '2026-01-01T00:00:01Z',
+      endedAt: '2026-01-01T00:00:02Z',
+      exitCode: 1,
+      actionTaken: '{"retry":true}',
+    });
+    insertPrepost(wfId, itemId, {
+      whenPhase: 'post',
+      commandName: 'b',
+      phase: 'implement',
+      startedAt: '2026-01-01T00:00:03Z',
+      endedAt: '2026-01-01T00:00:04Z',
+      exitCode: 1,
+      actionTaken: '{"fail":true}',
+    });
+    insertPrepost(wfId, itemId, {
+      whenPhase: 'post',
+      commandName: 'c',
+      phase: 'implement',
+      startedAt: '2026-01-01T00:00:05Z',
+      endedAt: '2026-01-01T00:00:06Z',
+      exitCode: 0,
+      actionTaken: '{"continue":true}',
+    });
+
+    const { statusCode, body } = await get(
+      `/api/workflows/${wfId}/items/${itemId}/timeline`,
+    );
+    expect(statusCode).toBe(200);
+    const rows = (body as { rows: ItemTimelineRow[] }).rows as Array<
+      Extract<ItemTimelineRow, { kind: 'prepost' }>
+    >;
+    expect(rows.map((r) => r.actionTaken)).toEqual([
+      { retry: true },
+      { fail: true },
+      { continue: true },
+    ]);
+  });
+
+  it('returns actionTaken null for malformed JSON and non-object JSON', async () => {
+    const wfId = insertWorkflow();
+    const itemId = insertItem(wfId);
+
+    // Malformed JSON — triggers the catch branch. Non-object JSON (a bare
+    // number) — triggers the typeof !== 'object' early return.
+    insertPrepost(wfId, itemId, {
+      whenPhase: 'post',
+      commandName: 'broken',
+      phase: 'implement',
+      startedAt: '2026-01-01T00:00:01Z',
+      endedAt: '2026-01-01T00:00:02Z',
+      exitCode: 1,
+      actionTaken: '{not valid json',
+    });
+    insertPrepost(wfId, itemId, {
+      whenPhase: 'post',
+      commandName: 'scalar',
+      phase: 'implement',
+      startedAt: '2026-01-01T00:00:03Z',
+      endedAt: '2026-01-01T00:00:04Z',
+      exitCode: 0,
+      actionTaken: '42',
+    });
+
+    const { statusCode, body } = await get(
+      `/api/workflows/${wfId}/items/${itemId}/timeline`,
+    );
+    expect(statusCode).toBe(200);
+    const rows = (body as { rows: ItemTimelineRow[] }).rows as Array<
+      Extract<ItemTimelineRow, { kind: 'prepost' }>
+    >;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].actionTaken).toBeNull();
+    expect(rows[1].actionTaken).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
