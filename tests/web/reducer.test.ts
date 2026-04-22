@@ -27,7 +27,7 @@ import {
   upsert,
   removeBySessionId,
 } from '../../src/web/src/store/itemSessionMap';
-import type { RenderModelState, TextBlock, ToolCallBlock, ThinkingBlock, SystemNoticeBlock } from '../../src/web/src/store/types';
+import type { RenderModelState, TextBlock, ToolCallBlock, ThinkingBlock, SystemNoticeBlock, InitialPromptBlock } from '../../src/web/src/store/types';
 import type { ServerFrame, SessionProjection } from '../../src/web/src/ws/types';
 
 // ---------------------------------------------------------------------------
@@ -564,6 +564,87 @@ describe('session.started', () => {
     let state = createInitialState();
     state = startSession(state, SID, 'review');
     expect(state.sessions.get(SID)!.phase).toBe('review');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stream.initial_prompt — prepended block with full rendered prompt
+// ---------------------------------------------------------------------------
+
+describe('stream.initial_prompt', () => {
+  const PROMPT = 'You are a helpful agent.\n\nItem: fix-camelcase-api';
+  const ASSEMBLED_AT = '2026-04-22T12:00:00.000Z';
+
+  function promptFrame(sessionId: string = SID) {
+    return mkFrame(
+      'stream.initial_prompt',
+      { sessionId, prompt: PROMPT, assembledAt: ASSEMBLED_AT },
+      { sessionId },
+    );
+  }
+
+  it('creates an InitialPromptBlock with the full rendered prompt', () => {
+    let state = createInitialState();
+    state = startSession(state);
+    state = applyFrame(state, promptFrame());
+
+    const blocks = getSessionBlocks(state, SID);
+    const prompt = blocks.find((b) => b.type === 'initial_prompt') as InitialPromptBlock | undefined;
+    expect(prompt).toBeDefined();
+    expect(prompt!.prompt).toBe(PROMPT);
+    expect(prompt!.assembledAt).toBe(ASSEMBLED_AT);
+    expect(prompt!.sessionId).toBe(SID);
+  });
+
+  it('places the prompt at the top of the rendered blocks (before session.started notice)', () => {
+    let state = createInitialState();
+    state = startSession(state);
+    state = applyFrame(state, promptFrame());
+
+    const blocks = getSessionBlocks(state, SID);
+    expect(blocks[0]?.type).toBe('initial_prompt');
+  });
+
+  it('remains at the top regardless of arrival order vs session.started', () => {
+    // session.started arrives AFTER initial_prompt (reversed from live order).
+    // Since session.started is only emitted on WS and not logged, this case is
+    // unlikely, but reducer should still put the prompt at the top.
+    let state = createInitialState();
+    state = applyFrame(state, promptFrame());
+    state = startSession(state);
+
+    const blocks = getSessionBlocks(state, SID);
+    expect(blocks[0]?.type).toBe('initial_prompt');
+  });
+
+  it('is idempotent: applying the same prompt frame twice yields one block', () => {
+    let state = createInitialState();
+    state = startSession(state);
+    state = applyFrame(state, promptFrame());
+    state = applyFrame(state, promptFrame());
+
+    const blocks = getSessionBlocks(state, SID);
+    const prompts = blocks.filter((b) => b.type === 'initial_prompt');
+    expect(prompts).toHaveLength(1);
+  });
+
+  it('ignores a frame with no sessionId anywhere', () => {
+    let state = createInitialState();
+    state = applyFrame(
+      state,
+      mkFrame('stream.initial_prompt', { sessionId: '', prompt: PROMPT, assembledAt: ASSEMBLED_AT }),
+    );
+    // No session was created.
+    expect(state.sessions.size).toBe(0);
+  });
+
+  it('creates the session via fallback if session.started has not been seen (historical replay)', () => {
+    let state = createInitialState();
+    state = applyFrame(state, promptFrame());
+
+    const blocks = getSessionBlocks(state, SID);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe('initial_prompt');
   });
 });
 

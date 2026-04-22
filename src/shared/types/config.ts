@@ -102,6 +102,7 @@ export interface Phase {
 export interface ItemsDisplay {
   title?: string;
   subtitle?: string;
+  description?: string;
 }
 
 export interface Stage {

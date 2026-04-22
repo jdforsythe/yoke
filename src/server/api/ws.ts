@@ -44,6 +44,39 @@ import type { Pipeline, Phase, ActionValue } from '../../shared/types/config.js'
 import type { WorkflowGraph } from '../../shared/types/graph.js';
 import { deriveFromHistory } from '../graph/derive.js';
 import { readGraph, writeGraph } from '../graph/persist.js';
+import { JSONPath } from 'jsonpath-plus';
+
+// ---------------------------------------------------------------------------
+// Module-level caches
+// ---------------------------------------------------------------------------
+
+/**
+ * Cache of validated JSONPath expression strings. JSONPath evaluation itself
+ * is not cached (each item has distinct data); the set exists so that
+ * malformed expressions only emit one console warning over the server's
+ * lifetime rather than once per snapshot.
+ */
+const badJsonPathExprs = new Set<string>();
+
+/**
+ * Evaluate a JSONPath expression against json and return the first match as
+ * a string. Returns null if evaluation fails or produces a non-string /
+ * empty result — buildSnapshot treats these as "no description".
+ */
+function evalDescriptionPath(expr: string, json: unknown): string | null {
+  try {
+    const result = JSONPath({ path: expr, json: json as object }) as unknown[];
+    const first = result.length > 0 ? result[0] : undefined;
+    return typeof first === 'string' && first.length > 0 ? first : null;
+  } catch (err) {
+    if (!badJsonPathExprs.has(expr)) {
+      badJsonPathExprs.add(expr);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`items_display.description JSONPath '${expr}' failed: ${msg}`);
+    }
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -262,7 +295,7 @@ function send(socket: WebSocket, frame: ServerFrame): void {
 }
 
 /** Read a workflow snapshot from the read-only SQLite connection. */
-function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload | null {
+export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload | null {
   const reader = db.reader();
 
   const wf = reader
@@ -298,6 +331,12 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
     .get(workflowId) as { pipeline: string } | undefined;
 
   let stages: StageProjection[] = [];
+  /**
+   * Per-stage items_display.description JSONPath, keyed by stage id.
+   * Populated from the pipeline JSON alongside stage projection so both
+   * loops share a single parse.
+   */
+  const stageDescriptionExpr = new Map<string, string>();
   if (pipelineRow?.pipeline) {
     try {
       const pipeline = JSON.parse(pipelineRow.pipeline) as {
@@ -306,19 +345,25 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
           run: 'once' | 'per-item';
           phases: string[];
           needs_approval?: boolean;
+          items_display?: { description?: string };
         }>;
       };
       const items = reader
         .prepare('SELECT stage_id, status FROM items WHERE workflow_id = ?')
         .all(workflowId) as Array<{ stage_id: string; status: string }>;
 
-      stages = (pipeline.stages ?? []).map((s) => ({
-        id: s.id,
-        run: s.run,
-        phases: s.phases,
-        status: computeStageStatus(items, s.id),
-        needsApproval: s.needs_approval ?? false,
-      }));
+      stages = (pipeline.stages ?? []).map((s) => {
+        if (s.items_display?.description) {
+          stageDescriptionExpr.set(s.id, s.items_display.description);
+        }
+        return {
+          id: s.id,
+          run: s.run,
+          phases: s.phases,
+          status: computeStageStatus(items, s.id),
+          needsApproval: s.needs_approval ?? false,
+        };
+      });
     } catch {
       // malformed pipeline JSON — return empty stages rather than crashing
     }
@@ -326,7 +371,7 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
 
   const itemRows = reader
     .prepare(
-      'SELECT id, stage_id, stable_id, status, current_phase, retry_count, blocked_reason FROM items WHERE workflow_id = ? ORDER BY rowid',
+      'SELECT id, stage_id, stable_id, status, current_phase, retry_count, blocked_reason, depends_on, data FROM items WHERE workflow_id = ? ORDER BY rowid',
     )
     .all(workflowId) as Array<{
       id: string;
@@ -336,21 +381,62 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
       current_phase: string | null;
       retry_count: number;
       blocked_reason: string | null;
+      depends_on: string | null;
+      data: string;
     }>;
 
-  const items: ItemProjection[] = itemRows.map((i) => ({
-    id: i.id,
-    stageId: i.stage_id,
-    stableId: i.stable_id ?? null,
-    state: {
-      status: i.status,
-      currentPhase: i.current_phase,
-      retryCount: i.retry_count,
-      blockedReason: i.blocked_reason,
-    },
-    displayTitle: null,
-    displaySubtitle: null,
-  }));
+  // rowId → stableId for translating depends_on row-UUID arrays to
+  // human-readable stable IDs. Falls back to the raw UUID when the
+  // referenced row has no stable_id (once-stage items).
+  const rowIdToStableId = new Map<string, string>();
+  for (const i of itemRows) {
+    if (i.stable_id) rowIdToStableId.set(i.id, i.stable_id);
+  }
+
+  const items: ItemProjection[] = itemRows.map((i) => {
+    // Translate depends_on row UUIDs → stable IDs (UUID fallback).
+    let dependsOn: string[] = [];
+    if (i.depends_on) {
+      try {
+        const raw = JSON.parse(i.depends_on) as unknown;
+        if (Array.isArray(raw)) {
+          dependsOn = raw
+            .filter((x): x is string => typeof x === 'string')
+            .map((rowId) => rowIdToStableId.get(rowId) ?? rowId);
+        }
+      } catch {
+        // malformed depends_on JSON — treat as empty (no crash)
+      }
+    }
+
+    // Evaluate items_display.description if configured for this item's stage.
+    let displayDescription: string | null = null;
+    const expr = stageDescriptionExpr.get(i.stage_id);
+    if (expr) {
+      try {
+        const data = JSON.parse(i.data) as unknown;
+        displayDescription = evalDescriptionPath(expr, data);
+      } catch {
+        // malformed items.data JSON — leave description null
+      }
+    }
+
+    return {
+      id: i.id,
+      stageId: i.stage_id,
+      stableId: i.stable_id ?? null,
+      state: {
+        status: i.status,
+        currentPhase: i.current_phase,
+        retryCount: i.retry_count,
+        blockedReason: i.blocked_reason,
+      },
+      displayTitle: null,
+      displaySubtitle: null,
+      displayDescription,
+      dependsOn,
+    };
+  });
 
   const sessionRows = reader
     .prepare(
@@ -425,6 +511,16 @@ function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotPayload 
  * Returns null only when the pipeline JSON is unavailable or malformed — in
  * every other case, the graph is at minimum the configured-only skeleton.
  */
+function parseDependsOn(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : null;
+  } catch {
+    return null;
+  }
+}
+
 function hydrateGraph(
   db: DbPool,
   workflowId: string,
@@ -502,7 +598,7 @@ function hydrateGraph(
       stableId: r.stable_id,
       status: r.status,
       currentPhase: r.current_phase,
-      dependsOn: r.depends_on ? (JSON.parse(r.depends_on) as string[]) : null,
+      dependsOn: parseDependsOn(r.depends_on),
       displayTitle: null,
     })),
     sessions: sessionRows.map((s) => {

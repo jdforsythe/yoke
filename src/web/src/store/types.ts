@@ -42,6 +42,16 @@ export interface PrepostOutputChunk {
   readonly chunk: string;
 }
 
+export interface InitialPromptBlock {
+  readonly type: 'initial_prompt';
+  readonly blockId: string;
+  readonly sessionId: string;
+  /** Fully-rendered prompt string that was sent to the agent. */
+  readonly prompt: string;
+  /** ISO timestamp when the prompt was assembled. */
+  readonly assembledAt: string;
+}
+
 export interface SystemNoticeBlock {
   readonly type: 'system_notice';
   readonly blockId: string;
@@ -71,6 +81,7 @@ export type RenderBlock =
   | ToolCallBlock
   | ThinkingBlock
   | SystemNoticeBlock
+  | InitialPromptBlock
   | TruncatedSentinel;
 
 export interface SessionUsage {

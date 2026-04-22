@@ -28,7 +28,9 @@ function makeItem(status: string): ItemProjection {
     state: { status, currentPhase: null, retryCount: 0, blockedReason: null },
     displayTitle: null,
     displaySubtitle: null,
+    displayDescription: null,
     stableId: null,
+    dependsOn: [],
   };
 }
 

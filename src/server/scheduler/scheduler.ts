@@ -1381,6 +1381,7 @@ export class Scheduler {
 
     // --- Assemble prompt (AC-3) ---
     let promptText: string;
+    let promptAssembledAt: string;
     try {
       promptText = await this.assemblePromptFn({
         worktreePath,
@@ -1397,6 +1398,32 @@ export class Scheduler {
         itemRetryCount: item.retry_count,
         itemBlockedReason: item.blocked_reason,
       });
+      promptAssembledAt = new Date().toISOString();
+
+      // Persist the fully-rendered prompt as the first JSONL line so historical
+      // replays can verify template substitutions. The frame is shaped like a
+      // ServerFrame so HistoryPane's fetchAllLogFrames path applies it via the
+      // reducer. seq is 0 here because the log-line ordering is what matters
+      // for historical replay; the WS broadcast below re-assigns a per-session
+      // monotonic seq.
+      const promptLogFrame = {
+        v: 1 as const,
+        type: 'stream.initial_prompt' as const,
+        workflowId: wf.id,
+        sessionId,
+        seq: 0,
+        ts: promptAssembledAt,
+        payload: {
+          sessionId,
+          prompt: promptText,
+          assembledAt: promptAssembledAt,
+        },
+      };
+      try {
+        await logWriter.writeLine(JSON.stringify(promptLogFrame));
+      } catch (err) {
+        console.warn(`[scheduler] failed to log initial prompt for ${sessionId}:`, err);
+      }
     } catch (err) {
       console.error(`[scheduler] prompt assembly failed for item ${item.id}:`, err);
       // Route through _applyTransition so the centralized emitter broadcasts
@@ -1513,6 +1540,15 @@ export class Scheduler {
       attempt,
       parentSessionId: null,
       startedAt: sessionStartedAt,
+    });
+
+    // Broadcast the fully-rendered prompt so live viewers can see it at the
+    // top of the session log. The same payload was persisted to the JSONL log
+    // above (first line) for historical replay.
+    this.broadcastFn(wf.id, sessionId, 'stream.initial_prompt', {
+      sessionId,
+      prompt: promptText,
+      assembledAt: promptAssembledAt,
     });
 
     // --- Capture mode: open FixtureWriter if .yoke/record.json is present (AC-2) ---

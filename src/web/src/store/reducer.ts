@@ -29,10 +29,12 @@ import type {
   ToolCallBlock,
   ThinkingBlock,
   SystemNoticeBlock,
+  InitialPromptBlock,
   TruncatedSentinel,
 } from './types';
 import type {
   ServerFrame,
+  StreamInitialPrompt,
   StreamText,
   StreamThinking,
   StreamToolUse,
@@ -179,7 +181,15 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
         source: 'session',
         message: `Session started — phase: ${p.phase}, attempt: ${p.attempt}`,
       };
-      const base = emptySession(sid);
+      // Preserve _prependedBlocks from any pre-existing session (e.g. a
+      // stream.initial_prompt that arrived before session.started in historical
+      // replay). Ring/blockMap are still reset because session.started marks a
+      // fresh run.
+      const existing = getSession(state, sid);
+      const base: SessionRenderState = {
+        ...emptySession(sid),
+        _prependedBlocks: existing?._prependedBlocks ?? [],
+      };
       const session = pushBlock({ ...base, phase: p.phase }, notice);
       return setSession(state, session);
     }
@@ -199,6 +209,29 @@ export function applyFrame(state: RenderModelState, frame: ServerFrame): RenderM
       };
       const updated = pushBlock(existing, notice);
       return setSession(state, { ...updated, frozen: true });
+    }
+
+    // -----------------------------------------------------------------------
+    case 'stream.initial_prompt': {
+      const p = frame.payload as StreamInitialPrompt;
+      const sid = sessionId ?? p.sessionId;
+      if (!sid) return state;
+      const session = getSession(state, sid) ?? emptySession(sid);
+      const blockId = `initial-prompt-${sid}`;
+      // Idempotent: historical replay fetches the same log page multiple times.
+      if (session._prependedBlocks.some((b) => b.blockId === blockId)) return state;
+      const block: InitialPromptBlock = {
+        type: 'initial_prompt',
+        blockId,
+        sessionId: sid,
+        prompt: p.prompt,
+        assembledAt: p.assembledAt,
+      };
+      const updated: SessionRenderState = {
+        ...session,
+        _prependedBlocks: [block, ...session._prependedBlocks],
+      };
+      return setSession(state, updated);
     }
 
     // -----------------------------------------------------------------------

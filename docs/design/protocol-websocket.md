@@ -123,6 +123,9 @@ interface ItemProjection {
   state: ItemStateProjection;        // harness state (Issue 3)
   displayTitle: string | null;       // resolved from items_display config
   displaySubtitle: string | null;
+  displayDescription: string | null; // resolved from items_display.description
+  stableId: string | null;           // manifest items_id (per-item) or null (once)
+  dependsOn: string[];               // stable IDs of deps; row UUIDs as fallback
 }
 
 interface ItemStateProjection {

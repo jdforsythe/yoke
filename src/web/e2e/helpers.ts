@@ -67,6 +67,9 @@ export interface SnapshotOpts {
     stageId: string;
     displayTitle: string | null;
     displaySubtitle: string | null;
+    displayDescription?: string | null;
+    stableId?: string | null;
+    dependsOn?: string[];
     state: { status: string; currentPhase: string | null; retryCount: number; blockedReason: string | null };
   }>;
   activeSessions?: Array<{
@@ -111,7 +114,12 @@ export function snapshotFrame(opts: SnapshotOpts = {}): string {
           needsApproval: false,
         },
       ],
-      items: opts.items ?? [],
+      items: (opts.items ?? []).map((i) => ({
+        displayDescription: null,
+        stableId: null,
+        dependsOn: [],
+        ...i,
+      })),
       activeSessions: opts.activeSessions ?? [],
       pendingAttention: opts.pendingAttention ?? [],
     },
