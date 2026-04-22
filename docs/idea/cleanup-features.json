@@ -1,0 +1,117 @@
+{
+  "project": "yoke",
+  "round": "cleanup",
+  "created": "2026-04-22T00:00:00Z",
+  "_context": "Testing-gap cleanup pipeline. Each item closes a coverage gap surfaced while auditing work shipped since round 3: the InitialPromptRenderer, Graph View, nomenclature phases, and prepost stdout/stderr F3/F4. Deliberately small, parallel-safe items — no depends_on edges between them — so concurrency exercises the new list view / graph view / prepost-output surfaces under load. Run this pipeline as the first real exercise of the multi-workflow scheduler + templates + graph view from the user's own console.",
+  "_topological_order": [
+    "cl-01",
+    "cl-02",
+    "cl-03",
+    "cl-04",
+    "cl-05"
+  ],
+  "features": [
+    {
+      "id": "cl-01",
+      "category": "test-ui",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Add direct UI coverage for InitialPromptRenderer (src/web/src/components/LiveStream/InitialPromptRenderer.tsx). The server-side stream.initial_prompt broadcast and the reducer that prepends the InitialPromptBlock are already tested (tests/scheduler/scheduler.test.ts, tests/web/reducer.test.ts), but the component's toggle / char count / copy button behaviour is asserted nowhere. Prefer a Playwright spec alongside src/web/e2e/stream-pane.spec.ts that mocks a WS session, sends a stream.initial_prompt frame, and asserts: (1) the collapsed toggle appears at the top of the stream with a formatted char count, (2) clicking the toggle expands the body and toggles aria-expanded, (3) clicking the copy button writes the prompt to navigator.clipboard and briefly flips the label to 'copied'. Use the existing mockWs / frame-builder helpers under src/web/e2e/ rather than inventing new ones. If wiring a Playwright test is noisy for this component in particular, fall back to a vitest+jsdom unit test under tests/web/ — one or the other, not both.",
+      "acceptance_criteria": [
+        "A new test (e2e under src/web/e2e/ or unit under tests/web/) renders InitialPromptRenderer with a representative prompt and asserts the initial-prompt-toggle testid is visible",
+        "Test asserts the char count text matches Intl.NumberFormat output for a multi-thousand-char prompt (comma grouping)",
+        "Test asserts aria-expanded toggles between 'false' and 'true' when the toggle is clicked, and that initial-prompt-body becomes visible only when expanded",
+        "Test asserts the copy button writes the exact prompt text to navigator.clipboard (Playwright: grant clipboard-read permission in the spec; unit: stub navigator.clipboard.writeText and assert the call)",
+        "Test asserts the 'copied' label appears for ~1.5s after a successful copy and reverts to 'copy'",
+        "Existing reducer and scheduler tests for stream.initial_prompt remain green",
+        "pnpm test passes; if e2e, pnpm --filter web test:e2e passes"
+      ],
+      "review_criteria": [
+        "Test is not timing-dependent — no page.waitForTimeout(N); use awaited toHaveAttribute / toBeVisible chains",
+        "Clipboard assertion uses a stub or Playwright's clipboard permission, not a screenshot diff",
+        "No changes to InitialPromptRenderer.tsx beyond adding testids if strictly necessary (the existing testids already suffice)"
+      ]
+    },
+    {
+      "id": "cl-02",
+      "category": "test-ui",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Cover NodeSummaryPanel (src/web/src/components/GraphPane/NodeSummaryPanel.tsx). The graph-view e2e spec asserts the panel appears/disappears but never inspects its contents, and PrepostOutputSection's fetch state machine (loading → success / 404 'No output captured' / HTTP error / cache-hit on re-mount) has zero coverage. Two tests: (A) extend src/web/e2e/graph-view.spec.ts (or a new sibling spec) to click each non-session node kind (stage, item, phase, prepost) and assert the expected row labels render (id / run / phases; stableId / itemId / stage / deps / phases; phase / stage / sessions / attempts; when / command / runId / action). (B) a vitest unit test under tests/web/nodeSummaryPanel-prepost.test.ts that uses vi.stubGlobal('fetch', ...) to exercise PrepostOutputSection in isolation: loading state renders 'Loading…', 200 JSON renders the content in the -text testid with a byte count, 404 renders the -error testid with 'No output captured', HTTP 500 renders a generic 'Failed to load (HTTP 500)', and re-mounting with the same runId/stream after a successful fetch hits the module cache (verify by asserting fetch is called only once across two mounts). Call __clearNodeSummaryOutputCache() in afterEach to avoid test-order coupling.",
+      "acceptance_criteria": [
+        "graph-view.spec.ts (or sibling) covers clicking each non-session node kind and asserts ≥2 row labels per kind render correctly",
+        "tests/web/nodeSummaryPanel-prepost.test.ts covers loading / success / 404 / HTTP-5xx / cache-hit branches of PrepostOutputSection",
+        "Unit test uses __clearNodeSummaryOutputCache() in afterEach",
+        "Cache-hit assertion verifies fetch is called once across two mounts with the same runId+stream",
+        "No changes to NodeSummaryPanel.tsx beyond any missing testids required by assertions",
+        "pnpm test passes; pnpm --filter web test:e2e passes"
+      ],
+      "review_criteria": [
+        "Unit test stubs fetch at module scope and restores it — no leak to other tests",
+        "E2E assertions are label-based, not index-based (<dl> ordering is a refactor hazard)",
+        "No new timing waits; use awaited Playwright matchers"
+      ]
+    },
+    {
+      "id": "cl-03",
+      "category": "test-server",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Add integration coverage for the graph diff → prune → persist → broadcast pipeline in scheduler.ts (around line 2477, `pruneUntraveled(nextGraph)`). Today pruneUntraveled is unit-tested (tests/graph/prune.test.ts), finalizedAt-on-complete is tested in isolation via applyEvent (tests/graph/derive.test.ts), and persist round-trip is covered (tests/graph/persist.test.ts), but the wired-up flow that strips un-traveled optional branches at workflow completion and broadcasts the resulting removeNodeIds/removeEdgeIds is not exercised end-to-end. Add tests/scheduler/graph-finalize.test.ts that boots a scheduler with a config containing an optional goto branch (implement → review → goto implement on exit=1), drives a workflow to completion along the traveled branch only (review exits 0 on the first attempt, no goto fired), and asserts: (a) workflows.graph_state in SQLite has finalizedAt set to an ISO8601 timestamp, (b) the persisted graph contains no configured-only phase/prepost nodes for the un-traveled branch (the second implement phase node and its goto target edge are gone), (c) the final broadcast payload captured by a test broadcast stub includes the pruned nodes/edges in removeNodeIds/removeEdgeIds. Piggyback on the existing scheduler test harness (makeTestScheduler / MemoryBroadcaster pattern used by other tests/scheduler/*.test.ts files).",
+      "acceptance_criteria": [
+        "tests/scheduler/graph-finalize.test.ts exists and drives a workflow to completion via the scheduler's real tick loop (not by directly calling applyEvent)",
+        "Assertion (a): readGraph(pool, workflowId).finalizedAt is a non-null ISO8601 string after completion",
+        "Assertion (b): the persisted graph has no nodes with origin='configured' AND status='pending' for the un-traveled goto target; no configured-only edges to pruned nodes remain",
+        "Assertion (c): the broadcast stub captured a graph.update frame whose patch.removeNodeIds (and/or removeEdgeIds) covers the pruned nodes",
+        "Test runs against the migrated SQLite schema (includes 0006_graph_state.sql) via the existing migration helper",
+        "Test uses the same broadcast/scheduler harness as sibling tests — no bespoke DI",
+        "pnpm test passes"
+      ],
+      "review_criteria": [
+        "Test drives through the scheduler tick — mocking pruneUntraveled would defeat the purpose",
+        "No reliance on wall-clock sleeps; tick the scheduler explicitly via its test-hook method",
+        "Fixture config is realistic (one item, one stage, one goto target) so the assertions are meaningful beyond a trivial empty graph"
+      ]
+    },
+    {
+      "id": "cl-04",
+      "category": "test-ui",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Cover the ?view=graph URL round-trip and tab toggle in WorkflowDetailRoute (src/web/src/routes/WorkflowDetailRoute.tsx, tabs near line 655, viewParam read at 103-104). Existing graph-view e2e specs always navigate with ?view=graph already in the URL — they never exercise the user flipping between List and Graph tabs, nor verify that the URL updates when the tab changes (or persists across reload). Add a single Playwright test (in src/web/e2e/graph-view.spec.ts to reuse its mocks) that: (1) navigates to /workflow/:id with no query string, asserts FeatureBoard is visible and the Graph tab is not active; (2) clicks the Graph tab, asserts the URL now ends with ?view=graph (or contains it alongside other params) and the canvas (data-testid='graph-pane') becomes visible; (3) clicks the List tab, asserts the view param is cleared from the URL and FeatureBoard returns; (4) navigates directly to /workflow/:id?view=graph, asserts the Graph tab is active on load without any click required. Test must preserve any existing ?attention=... param through tab switches — read WorkflowDetailRoute.tsx to confirm current behavior and pin it down as an assertion.",
+      "acceptance_criteria": [
+        "New test in src/web/e2e/graph-view.spec.ts (or sibling spec) covers the four transitions above",
+        "Tab switches use Playwright's getByRole('tab') or testid-based locator, not CSS selectors keyed on class names",
+        "URL assertions use expect(page).toHaveURL(/... regex .../) rather than substring match",
+        "Direct navigation to ?view=graph activates the Graph tab without any interaction (step 4)",
+        "Any pre-existing ?attention=... query param is preserved across tab switches (or an explicit assertion notes the current behavior if it is not)",
+        "pnpm --filter web test:e2e passes; no regressions in existing graph-view specs"
+      ],
+      "review_criteria": [
+        "Assertion chain uses awaited Playwright matchers — no timeouts or polling",
+        "Test does not rely on the mocked graph having any specific content beyond one node (it's asserting routing, not rendering)",
+        "If the attention-param preservation behavior is unexpected, the test locks in the current behavior and a comment flags the discovery for follow-up"
+      ]
+    },
+    {
+      "id": "cl-05",
+      "category": "test-ui",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Add a UI-level test for PrepostOutputPane (src/web/src/components/LiveStream/PrepostOutputPane.tsx) — the F4 right-pane surface that fetches stdout/stderr tails from /api/workflows/:wf/prepost-run/:runId/:stream. HTTP-level coverage exists (tests/api/prepost-by-run.test.ts, tests/api/prepost-artifact.test.ts) and live frames are covered by src/web/e2e/prepost-rendering.spec.ts, but no test asserts the fetched tail actually renders in the pane with the expected byte-size header and truncation marker. Extend prepost-rendering.spec.ts (or add a sibling spec) that seeds a completed prepost row in the FeatureBoard timeline via mocked /api/workflows/:wf/items/:item/timeline and /api/workflows/:wf/prepost-run/:runId/{stdout,stderr} responses, clicks the prepost timeline row, and asserts: (1) the PrepostOutputPane mounts in the right pane, (2) both STDOUT and STDERR sections are visible with headers showing byte counts, (3) the rendered content matches the mocked response text, (4) when totalSize > returned content length, a '(truncated)' suffix appears in the header, (5) the 'No output captured' permanent notice does NOT appear (that notice only fires when both stdout_path and stderr_path are NULL). Share fixture setup with cl-02's nodeSummaryPanel-prepost test where possible.",
+      "acceptance_criteria": [
+        "New test in src/web/e2e/prepost-rendering.spec.ts (or sibling) covers clicking a completed prepost timeline row and asserting PrepostOutputPane contents",
+        "STDOUT and STDERR sections both render with byte-count headers matching the mocked totalSize",
+        "Truncated mock response triggers the '(truncated)' header suffix",
+        "Rendered content text exactly matches the mocked response body",
+        "The 'No output captured' notice is asserted absent for this row (regression guard for r3-era legacy-row handling)",
+        "pnpm --filter web test:e2e passes; no regressions in the existing prepost-rendering spec"
+      ],
+      "review_criteria": [
+        "Fetch mocks use Playwright's page.route() rather than intercepting at the component layer",
+        "Assertions are testid-based (prepost-stdout-text etc.), not class-based",
+        "Fixture reuse with cl-02 is opportunistic — do not block on it if the signatures diverge"
+      ]
+    }
+  ]
+}
