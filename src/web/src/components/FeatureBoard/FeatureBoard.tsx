@@ -6,7 +6,7 @@
  * are applied via the `items` prop (managed in WorkflowDetailRoute).
  *
  * Fuzzy search: client-side filter over displayTitle + displaySubtitle,
- * debounced 200 ms. Status and stage/category filters are also client-side.
+ * debounced 200 ms. Status and stage filters are also client-side.
  *
  * Keyboard navigation: j/k move a visible focus ring between items using
  * aria-activedescendant pattern. Enter opens the stream pane for the focused
@@ -100,7 +100,7 @@ export function FeatureBoard({
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [stageFilter, setStageFilter] = useState('all');
   const [focusedIdx, setFocusedIdx] = useState<number>(-1);
   const [itemData, setItemData] = useState<Record<string, unknown>>({});
   const [itemDataExpanded, setItemDataExpanded] = useState<Set<string>>(new Set());
@@ -140,11 +140,11 @@ export function FeatureBoard({
   const flatFiltered = useMemo(() => {
     return items.filter((item) => {
       if (statusFilter !== 'all' && item.state.status !== statusFilter) return false;
-      if (categoryFilter !== 'all' && item.stageId !== categoryFilter) return false;
+      if (stageFilter !== 'all' && item.stageId !== stageFilter) return false;
       if (!fuzzyMatch(item, debouncedSearch)) return false;
       return true;
     });
-  }, [items, statusFilter, categoryFilter, debouncedSearch]);
+  }, [items, statusFilter, stageFilter, debouncedSearch]);
 
   // Deep-link scroll: useLayoutEffect fires after DOM mutations but before
   // the browser paints, preventing any visible flash before the card is
@@ -392,12 +392,12 @@ export function FeatureBoard({
             ))}
           </select>
           <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value)}
             className="flex-1 bg-gray-700/60 text-gray-100 rounded px-2.5 py-1.5 text-xs outline-none"
-            aria-label="Filter by category"
+            aria-label="Filter by stage"
           >
-            <option value="all">All categories</option>
+            <option value="all">All stages</option>
             {stages.map((stage) => (
               <option key={stage.id} value={stage.id}>
                 {stage.id}

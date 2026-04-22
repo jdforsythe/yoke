@@ -6,7 +6,7 @@
  *   - CrashRecoveryBanner (when recoveryState is set)
  *   - AttentionBanner (pending attention items)
  *   - GithubButton + workflow header
- *   - FeatureBoard (item cards, grouped by category)
+ *   - FeatureBoard (item cards, grouped by stage)
  *   - LiveStreamPane (active session output, virtualized)
  *   - HistoryPane (past session logs for selected item)
  *   - ControlMatrix (available manual actions)
