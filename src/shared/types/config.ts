@@ -80,6 +80,8 @@ export interface Heartbeat {
 }
 
 export interface Phase {
+  /** Optional human-readable description shown in the dashboard list view. */
+  description?: string;
   command: string;
   args: string[];
   env?: Record<string, string>;
@@ -107,6 +109,8 @@ export interface ItemsDisplay {
 
 export interface Stage {
   id: string;
+  /** Optional human-readable description shown in the dashboard list view. */
+  description?: string;
   run: 'once' | 'per-item';
   /** Ordered phase keys referencing the top-level phases map. */
   phases: string[];

@@ -782,10 +782,20 @@ export function FeatureBoard({
                 data-testid="stage-header"
                 className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wide bg-gray-800/40 sticky top-0 z-10 border-b border-gray-700/30"
               >
-                <span className="inline-block px-1 mr-1.5 rounded bg-gray-700/60 text-gray-400 font-semibold tracking-wider">
-                  STAGE
-                </span>
-                <span>{stage.id}</span>
+                <div>
+                  <span className="inline-block px-1 mr-1.5 rounded bg-gray-700/60 text-gray-400 font-semibold tracking-wider">
+                    STAGE
+                  </span>
+                  <span>{stage.id}</span>
+                </div>
+                {stage.description !== null && (
+                  <div
+                    data-testid="stage-description"
+                    className="mt-0.5 text-[10px] text-gray-500 normal-case tracking-normal font-normal"
+                  >
+                    {stage.description}
+                  </div>
+                )}
               </div>
               {sorted.map((item) =>
                 renderItemCard(item, item.id === streamingItemId),

@@ -803,8 +803,8 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const reader = db.reader();
 
       const wf = reader
-        .prepare('SELECT id FROM workflows WHERE id = ?')
-        .get(workflowId) as { id: string } | undefined;
+        .prepare('SELECT id, config FROM workflows WHERE id = ?')
+        .get(workflowId) as { id: string; config: string } | undefined;
       if (!wf) return notFound(reply, 'workflow not found');
 
       const item = reader
@@ -812,6 +812,25 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         .get(itemId, workflowId) as { id: string } | undefined;
       // Cross-workflow access returns 404 — do not leak existence.
       if (!item) return notFound(reply, 'item not found');
+
+      // Build phaseName → description from the workflow's resolved config.
+      // Phases missing from config (e.g. legacy rows after a config change)
+      // emit `null` in phaseDescription.
+      const phaseDescByName = new Map<string, string>();
+      try {
+        const parsed = JSON.parse(wf.config) as {
+          phases?: Record<string, { description?: string }>;
+        };
+        if (parsed.phases) {
+          for (const [name, phase] of Object.entries(parsed.phases)) {
+            if (phase && typeof phase.description === 'string') {
+              phaseDescByName.set(name, phase.description);
+            }
+          }
+        }
+      } catch {
+        // Malformed config JSON — every phaseDescription falls through to null.
+      }
 
       const sessionRows = reader
         .prepare(
@@ -845,6 +864,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           kind: 'session',
           id: r.id,
           phase: r.phase,
+          phaseDescription: phaseDescByName.get(r.phase) ?? null,
           attempt: next,
           status: r.status,
           startedAt: r.started_at,
@@ -864,6 +884,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           whenPhase: r.when_phase,
           commandName: r.command_name,
           phase: r.phase,
+          phaseDescription: phaseDescByName.get(r.phase) ?? null,
           status,
           exitCode: r.exit_code,
           actionTaken: parseActionTaken(r.action_taken),
