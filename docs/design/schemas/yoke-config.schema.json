@@ -125,6 +125,10 @@
         "subtitle": {
           "type": "string",
           "description": "Optional JSONPath expression per item for secondary dashboard text."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional JSONPath expression per item for a longer description line shown under the title in list views."
         }
       }
     },

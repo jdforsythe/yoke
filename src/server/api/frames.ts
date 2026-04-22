@@ -114,7 +114,14 @@ export interface ItemProjection {
   state: ItemStateProjection;
   displayTitle: string | null;
   displaySubtitle: string | null;
+  /** Long-form description extracted via items_display.description JSONPath. */
+  displayDescription: string | null;
   stableId: string | null;
+  /**
+   * Stable IDs of items this item depends on. Row UUIDs appear only as
+   * fallback when the dep row has no stable_id (once-stage items).
+   */
+  dependsOn: string[];
 }
 
 export interface ItemStateProjection {

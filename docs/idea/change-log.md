@@ -400,3 +400,17 @@ stdin JSON. When `true`, the hook has already fired once this turn and
 triggered a continuation — the hook should exit 0 to break the cycle.
 The example templates should use this instead of maintaining a counter
 file. `.yoke/hook-state.json` is unnecessary for this purpose.
+
+---
+
+## S. List-view `depends_on` surfacing (2026-04-22)
+
+**S01 — `ItemProjection` gains `dependsOn` and `displayDescription`.**
+The FeatureBoard list view now shows a "Waiting on: …" line for
+pending/blocked items whose deps aren't `complete`, answering the
+"concurrency budget free but sessions idle" question directly. The
+`blocked_reason` row UUIDs are translated to stable IDs at render
+time. `items_display.description` is a new optional JSONPath that
+feeds a per-card description line. Backend projection is
+snapshot-only (dep lists only mutate in the seeder). Closes the
+`## List view depends_on` future-work entry.
