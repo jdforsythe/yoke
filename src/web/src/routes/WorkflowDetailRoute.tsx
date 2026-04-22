@@ -329,11 +329,13 @@ export function WorkflowDetailRoute() {
           githubState?: WorkflowSnapshotPayload['workflow']['githubState'];
           pendingAttention?: WorkflowSnapshotPayload['pendingAttention'];
           retried?: boolean;
+          seeded?: boolean;
         };
-        // After user_retry the server broadcasts {retried:true}. Cycle the
-        // subscription so the server re-sends a workflow.snapshot with updated
-        // item states (subscribe() deduplicates, so unsubscribe first).
-        if (patch.retried) {
+        // After user_retry or per-item seeding the server broadcasts {retried:true}
+        // or {seeded:true}. Cycle the subscription so the server re-sends a
+        // workflow.snapshot with the updated item list (subscribe() deduplicates,
+        // so unsubscribe first).
+        if (patch.retried || patch.seeded) {
           client.unsubscribe(workflowId);
           client.subscribe(workflowId);
           return;

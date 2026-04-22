@@ -214,6 +214,47 @@ describe('graphLayout', () => {
     expect(second).toBe(first);
   });
 
+  it('per-item stage with template phases + real items: no ELK shape-reference error', async () => {
+    // Regression: configured template phase nodes (itemId=null) are orphaned
+    // once real items are seeded.  Edges referencing them (e.g. goto edges from
+    // configured prepost nodes back to the template phase) must be filtered out
+    // before being passed to ELK, otherwise ELK throws
+    // "Referenced shape does not exist: phase:bootstrap:_:implement".
+    const nodes: GraphNode[] = [
+      node({ id: 'stage:bootstrap', kind: 'stage', stageId: 'bootstrap', run: 'per-item' }),
+      // Configured template phases (itemId=null) — exist in graph.nodes but
+      // should NOT appear in the ELK tree once real items are present.
+      node({ id: 'phase:bootstrap:_:implement', kind: 'phase', stageId: 'bootstrap', itemId: null, phase: 'implement' }),
+      node({ id: 'phase:bootstrap:_:review', kind: 'phase', stageId: 'bootstrap', itemId: null, phase: 'review' }),
+      // Configured prepost with a goto action back to the template implement phase.
+      node({ id: 'prepost:cfg:bootstrap:_:review:post:check-verdict', kind: 'prepost', phaseNodeId: 'phase:bootstrap:_:review', when: 'post', commandName: 'check-verdict', prepostRunId: 'cfg:bootstrap:_:review:post:check-verdict', actionTaken: null }),
+      // Real items seeded at runtime.
+      node({ id: 'item:bootstrap:item-x', kind: 'item', stageId: 'bootstrap', itemId: 'item-x', stableId: 'x' }),
+      node({ id: 'phase:bootstrap:item-x:implement', kind: 'phase', stageId: 'bootstrap', itemId: 'item-x', phase: 'implement' }),
+      node({ id: 'phase:bootstrap:item-x:review', kind: 'phase', stageId: 'bootstrap', itemId: 'item-x', phase: 'review' }),
+    ];
+    const edges: GraphEdge[] = [
+      // Template edges (built by builder.ts at configured time).
+      edge('e1', 'stage:bootstrap', 'phase:bootstrap:_:implement'),
+      edge('e2', 'phase:bootstrap:_:implement', 'phase:bootstrap:_:review'),
+      edge('e3', 'phase:bootstrap:_:review', 'prepost:cfg:bootstrap:_:review:post:check-verdict', 'prepost'),
+      // The goto edge that was previously causing the ELK error.
+      edge('e-goto', 'prepost:cfg:bootstrap:_:review:post:check-verdict', 'phase:bootstrap:_:implement', 'goto'),
+      // Runtime item edges.
+      edge('e4', 'stage:bootstrap', 'item:bootstrap:item-x'),
+      edge('e5', 'item:bootstrap:item-x', 'phase:bootstrap:item-x:implement'),
+      edge('e6', 'phase:bootstrap:item-x:implement', 'phase:bootstrap:item-x:review'),
+    ];
+    const graph: WorkflowGraph = { version: 1, workflowId: 'wf-reg', nodes, edges, finalizedAt: null };
+    // Should not throw.
+    const out = await layoutGraph(graph);
+    const outNodeIds = new Set(out.nodes.map((n) => n.id));
+    // Real nodes must be present; orphaned template nodes must not cause errors.
+    expect(outNodeIds.has('stage:bootstrap')).toBe(true);
+    expect(outNodeIds.has('item:bootstrap:item-x')).toBe(true);
+    expect(outNodeIds.has('phase:bootstrap:item-x:implement')).toBe(true);
+  });
+
   it('memoization cache differentiates structurally-distinct graphs', async () => {
     const graph = makeFixtureGraph();
     const first = await layoutGraph(graph);

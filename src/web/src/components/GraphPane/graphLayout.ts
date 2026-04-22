@@ -244,6 +244,21 @@ function _buildElkTree(graph: WorkflowGraph): ElkChild {
   }
 
   const stages = graph.nodes.filter((n): n is Extract<GraphNode, { kind: 'stage' }> => n.kind === 'stage');
+
+  // Configured template nodes (phases/preposts with itemId=null) for per-item
+  // stages that already have real items are placed in phaseBuckets but NOT added
+  // to the ELK tree (the stage switches to item-subflow layout). Any edges
+  // referencing them must be filtered out or ELK throws
+  // "Referenced shape does not exist".
+  const orphanedNodeIds = new Set<string>();
+  for (const s of stages) {
+    if (items.some((it) => it.stageId === s.stageId)) {
+      for (const n of phaseBuckets.get(s.id) ?? []) orphanedNodeIds.add(n.id);
+    }
+  }
+  const notOrphaned = (e: GraphEdge) =>
+    !orphanedNodeIds.has(e.from) && !orphanedNodeIds.has(e.to);
+
   const stageChildren: ElkChild[] = stages.map((s) => {
     const owns = items.filter((it) => it.stageId === s.stageId);
     const children: ElkChild[] = [];
@@ -275,7 +290,7 @@ function _buildElkTree(graph: WorkflowGraph): ElkChild {
       for (const k of kids) children.push(makeLeaf(k));
     }
 
-    const stageSubEdges = (bucket.get(s.id) ?? []).map((e) => ({
+    const stageSubEdges = (bucket.get(s.id) ?? []).filter(notOrphaned).map((e) => ({
       id: e.id,
       sources: [e.from],
       targets: [e.to],
@@ -297,7 +312,7 @@ function _buildElkTree(graph: WorkflowGraph): ElkChild {
     };
   });
 
-  const rootEdges = (bucket.get('') ?? []).map((e) => ({
+  const rootEdges = (bucket.get('') ?? []).filter(notOrphaned).map((e) => ({
     id: e.id,
     sources: [e.from],
     targets: [e.to],

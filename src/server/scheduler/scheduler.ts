@@ -927,58 +927,65 @@ export class Scheduler {
           // item.data === '{}' identifies the placeholder (created by ingest
           // with no manifest data). Real seeded items have actual manifest
           // data and must NOT be re-seeded — they fall through to phase_start.
+          //
+          // If the worktree does not exist yet (pipeline that begins with a
+          // per-item stage, with no preceding run:once stage to create it),
+          // fall through to the phase_start path below so _doBootstrapThenSpawn
+          // creates the worktree first. Seeding runs there after bootstrap_ok.
           // ------------------------------------------------------------------
           if (stage.run === 'per-item' && item.data === '{}') {
             const worktreePath = wf.worktree_path;
-            if (!worktreePath) {
-              // Worktree not yet created — wait for the bootstrap phase of a
-              // preceding stage to populate it.
-              break;
-            }
-            const seedResult = seedPerItemStage({
-              db: this.db,
-              workflowId: wf.id,
-              placeholderItemId: item.id,
-              worktreePath,
-              stage,
-            });
-            if (seedResult.kind === 'error') {
-              // Truncate very long error messages to keep the payload human-readable.
-              const truncated = seedResult.message.length > 500
-                ? seedResult.message.slice(0, 500) + '…'
-                : seedResult.message;
-              console.error(
-                `[scheduler] per-item seeding failed for stage '${stage.id}':`,
-                truncated,
-              );
-              // Transition placeholder to awaiting_user and insert pending_attention
-              // so the user is notified. The _applyTransition wrapper broadcasts the
-              // notice frame and schedules a workflow.index.update debounce.
-              const failResult = this._applyTransition({
+            if (worktreePath) {
+              const seedResult = seedPerItemStage({
                 db: this.db,
                 workflowId: wf.id,
-                itemId: item.id,
-                sessionId: null,
-                stage: item.stage_id,
-                phase: item.current_phase ?? '',
-                attempt: item.retry_count + 1,
-                event: 'seed_failed',
-                guardCtx: {
-                  customAttentionPayload: {
-                    message: truncated,
-                    stage: item.stage_id,
-                    item_id: item.id,
-                  },
-                },
+                placeholderItemId: item.id,
+                worktreePath,
+                stage,
               });
-              this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
-            } else {
-              this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
+              if (seedResult.kind === 'error') {
+                // Truncate very long error messages to keep the payload human-readable.
+                const truncated = seedResult.message.length > 500
+                  ? seedResult.message.slice(0, 500) + '…'
+                  : seedResult.message;
+                console.error(
+                  `[scheduler] per-item seeding failed for stage '${stage.id}':`,
+                  truncated,
+                );
+                // Transition placeholder to awaiting_user and insert pending_attention
+                // so the user is notified. The _applyTransition wrapper broadcasts the
+                // notice frame and schedules a workflow.index.update debounce.
+                const failResult = this._applyTransition({
+                  db: this.db,
+                  workflowId: wf.id,
+                  itemId: item.id,
+                  sessionId: null,
+                  stage: item.stage_id,
+                  phase: item.current_phase ?? '',
+                  attempt: item.retry_count + 1,
+                  event: 'seed_failed',
+                  guardCtx: {
+                    customAttentionPayload: {
+                      message: truncated,
+                      stage: item.stage_id,
+                      item_id: item.id,
+                    },
+                  },
+                });
+                this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
+              } else {
+                this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
+                // Notify the frontend to re-fetch the item list (new items aren't
+                // known to the client until a fresh workflow.snapshot arrives).
+                this.broadcastFn(wf.id, null, 'workflow.update', { seeded: true });
+              }
+              // On success: placeholder deleted, real items pending — next tick
+              // picks them up.  On seed_failed: placeholder now in awaiting_user —
+              // no further seeding until user_retry fires (handled in in_progress).
+              break;
             }
-            // On success: placeholder deleted, real items pending — next tick
-            // picks them up.  On seed_failed: placeholder now in awaiting_user —
-            // no further seeding until user_retry fires (handled in in_progress).
-            break;
+            // worktree_path is null: fall through to phase_start → bootstrapping
+            // so the worktree is created before seeding begins.
           }
 
           const phaseIdx = stage.phases.indexOf(item.current_phase ?? '');
@@ -1072,6 +1079,7 @@ export class Scheduler {
               this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
             } else {
               this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
+              this.broadcastFn(wf.id, null, 'workflow.update', { seeded: true });
             }
             // On success: placeholder deleted, real items pending — next tick picks up.
             // On error: back to awaiting_user — user must retry again.
@@ -1231,14 +1239,59 @@ export class Scheduler {
       this._broadcastItemState(wf.id, item.id, item.stage_id, result);
 
       if (result.newState === 'in_progress') {
-        console.log(`[scheduler] bootstrap ok for ${item.stage_id}, spawning session`);
-        // Bootstrap succeeded — continue to session spawn without a tick delay.
-        const freshItem = this._readItem(item.id);
-        if (freshItem) {
+        // Per-item placeholder that needed a worktree first: seed now instead of spawn.
+        if (stage.run === 'per-item' && item.data === '{}') {
           const freshWf = this._readWorkflow(wf.id);
-          if (freshWf) {
-            await this._runSession(freshWf, freshItem, stage);
-            return;
+          if (freshWf?.worktree_path) {
+            const seedResult = seedPerItemStage({
+              db: this.db,
+              workflowId: wf.id,
+              placeholderItemId: item.id,
+              worktreePath: freshWf.worktree_path,
+              stage,
+            });
+            if (seedResult.kind === 'error') {
+              const truncated = seedResult.message.length > 500
+                ? seedResult.message.slice(0, 500) + '…'
+                : seedResult.message;
+              console.error(
+                `[scheduler] per-item seeding failed after bootstrap for stage '${stage.id}':`,
+                truncated,
+              );
+              const failResult = this._applyTransition({
+                db: this.db,
+                workflowId: wf.id,
+                itemId: item.id,
+                sessionId: null,
+                stage: item.stage_id,
+                phase: item.current_phase ?? '',
+                attempt: item.retry_count + 1,
+                event: 'seed_failed',
+                guardCtx: {
+                  customAttentionPayload: {
+                    message: truncated,
+                    stage: item.stage_id,
+                    item_id: item.id,
+                  },
+                },
+              });
+              this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
+            } else {
+              this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
+              this.broadcastFn(wf.id, null, 'workflow.update', { seeded: true });
+            }
+          }
+          // Fall through to this.inFlight.delete(item.id) below.
+        } else {
+          console.log(`[scheduler] bootstrap ok for ${item.stage_id}, spawning session`);
+          // Bootstrap succeeded — continue to session spawn without a tick delay.
+          const freshItem = this._readItem(item.id);
+          if (freshItem) {
+            const freshWf = this._readWorkflow(wf.id);
+            if (freshWf) {
+              await this._runSession(freshWf, freshItem, stage);
+              return;
+            }
           }
         }
       } else {
