@@ -8,9 +8,9 @@
  *
  * React binding is via useSyncExternalStore; see useWorkflowGraph().
  *
- * A small LRU (last 4 workflows) is enforced to match the WS client's
- * concurrent-subscription cap. Without it, switching between many workflows
- * in one tab would grow the store unbounded.
+ * A small LRU (last 8 workflows) is enforced to bound memory while still
+ * covering common navigation patterns (tab-switch back and forth across a
+ * handful of workflows) without dropping cached graphs.
  *
  * Graph-pane consumers are read-only; the only writer is the frame dispatcher
  * in WorkflowDetailRoute.
@@ -31,7 +31,7 @@ import type { ServerFrame, WorkflowSnapshotPayload, GraphUpdatePayload } from '.
 // Internal state
 // ---------------------------------------------------------------------------
 
-const MAX_ENTRIES = 4;
+const MAX_ENTRIES = 8;
 
 /** Insertion-order Map; re-inserting a key bumps it to most-recent. */
 const _graphs = new Map<string, WorkflowGraph>();
@@ -48,6 +48,7 @@ function _touch(workflowId: string, graph: WorkflowGraph): void {
   while (_graphs.size > MAX_ENTRIES) {
     const oldest = _graphs.keys().next().value;
     if (oldest === undefined) break;
+    console.debug('[graphStore] evicting', oldest);
     _graphs.delete(oldest);
   }
 }

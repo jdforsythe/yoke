@@ -11,8 +11,16 @@ import type {
 } from '../../../../shared/types/graph';
 import { graphStatusClass } from './graphStatus';
 
+/**
+ * Session nodes are routed to LiveStreamPane by WorkflowDetailRoute, so they
+ * never reach this panel.  Narrowing the prop type makes the routing
+ * invariant explicit and keeps the switch below exhaustive without a dead
+ * branch.
+ */
+type SummaryNode = Exclude<GraphNode, { kind: 'session' }>;
+
 interface Props {
-  node: GraphNode;
+  node: SummaryNode;
   graph: WorkflowGraph;
 }
 
@@ -29,7 +37,7 @@ export function NodeSummaryPanel({ node, graph }: Props) {
   );
 }
 
-function Header({ node }: { node: GraphNode }) {
+function Header({ node }: { node: SummaryNode }) {
   return (
     <div className="flex items-center gap-2 border-b border-gray-700 pb-2">
       <span className="text-[10px] uppercase tracking-wide text-gray-500">{node.kind}</span>
@@ -41,7 +49,7 @@ function Header({ node }: { node: GraphNode }) {
   );
 }
 
-function Body({ node, graph }: { node: GraphNode; graph: WorkflowGraph }) {
+function Body({ node, graph }: { node: SummaryNode; graph: WorkflowGraph }) {
   switch (node.kind) {
     case 'stage':
       return <StageBody node={node} graph={graph} />;
@@ -51,15 +59,6 @@ function Body({ node, graph }: { node: GraphNode; graph: WorkflowGraph }) {
       return <PhaseBody node={node} graph={graph} />;
     case 'prepost':
       return <PrePostBody node={node} />;
-    case 'session':
-      // The LiveStreamPane owns session rendering; this branch is here only
-      // for exhaustiveness — GraphPane routes session clicks to the stream.
-      return (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-          <Row label="sessionId" value={node.sessionId} />
-          <Row label="attempt" value={String(node.attempt)} />
-        </dl>
-      );
   }
 }
 

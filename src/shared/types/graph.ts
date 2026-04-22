@@ -18,8 +18,7 @@ export type GraphNodeStatus =
   | 'in_progress'
   | 'complete'
   | 'blocked'
-  | 'abandoned'
-  | 'skipped';
+  | 'abandoned';
 
 export type GraphNodeOrigin = 'configured' | 'runtime';
 

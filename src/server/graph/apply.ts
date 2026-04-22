@@ -125,7 +125,7 @@ function applyItemSeeded(
       const node: ItemGraphNode = {
         id: itemId,
         kind: 'item',
-        label: itm.displayTitle ?? itm.stableId ?? itm.itemId,
+        label: itm.stableId ?? itm.itemId,
         stageId: event.stageId,
         itemId: itm.itemId,
         stableId: itm.stableId,
@@ -488,8 +488,6 @@ function normalizeItemStatus(raw: string): GraphNodeStatus | null {
       return 'blocked';
     case 'abandoned':
       return 'abandoned';
-    case 'skipped':
-      return 'skipped';
     default:
       return null;
   }

@@ -168,6 +168,32 @@ describe('graphLayout', () => {
     expect(sessA?.parentId).toBe('i-a');
   });
 
+  it('cross-item dependency edges survive the layout with valid endpoints', async () => {
+    // Regression guard: dependency edges between items under a per-item stage
+    // must be emitted by layoutGraph and reference real xyflow node ids, so
+    // ReactFlow renders them rather than silently dropping them.
+    const graph = makeFixtureGraph();
+    const out = await layoutGraph(graph);
+
+    const nodeIds = new Set(out.nodes.map((n) => n.id));
+
+    const depEdges = out.edges.filter((e) => {
+      const data = e.data as { graphEdge?: GraphEdge } | undefined;
+      return data?.graphEdge?.kind === 'dependency';
+    });
+    expect(depEdges).toHaveLength(2);
+    for (const e of depEdges) {
+      expect(nodeIds.has(e.source)).toBe(true);
+      expect(nodeIds.has(e.target)).toBe(true);
+    }
+
+    // Both specific dep edges are present.
+    const ab = depEdges.find((e) => e.source === 'i-a' && e.target === 'i-b');
+    const bc = depEdges.find((e) => e.source === 'i-b' && e.target === 'i-c');
+    expect(ab).toBeDefined();
+    expect(bc).toBeDefined();
+  });
+
   it('topological ordering: dependency roots have smaller x than dependents', async () => {
     const graph = makeFixtureGraph();
     const out = await layoutGraph(graph);

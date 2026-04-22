@@ -15,7 +15,6 @@ export type GraphEvent =
       items: Array<{
         itemId: string;
         stableId: string | null;
-        displayTitle?: string | null;
         dependsOn?: string[];
       }>;
     }

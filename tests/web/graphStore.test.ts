@@ -7,7 +7,7 @@
  *  - graph.update patches apply add/update/remove for nodes and edges,
  *    and pick up finalizedAt.
  *  - graph.update on an unseeded workflow is dropped.
- *  - LRU eviction kicks in at > 4 workflows.
+ *  - LRU eviction kicks in at > 8 workflows.
  *  - subscribers are notified; snapshots are stable references between dispatches.
  */
 
@@ -266,14 +266,14 @@ describe('graphStore reducer', () => {
     expect(stored.nodes.filter((n) => n.id === 'stage:build')).toHaveLength(1);
   });
 
-  it('LRU cap evicts the oldest workflow past 4 entries', () => {
-    for (let i = 1; i <= 5; i++) {
+  it('LRU cap evicts the oldest workflow past 8 entries', () => {
+    for (let i = 1; i <= 9; i++) {
       const id = `wf${i}`;
       dispatchGraphFrame(mkSnapshotFrame(id, seedGraph(id)));
     }
     expect(getWorkflowGraph('wf1')).toBeNull();
     expect(getWorkflowGraph('wf2')).not.toBeNull();
-    expect(getWorkflowGraph('wf5')).not.toBeNull();
+    expect(getWorkflowGraph('wf9')).not.toBeNull();
   });
 
   it('notifies subscribers on dispatch', () => {

@@ -1,0 +1,52 @@
+name: e2e
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  playwright:
+    name: Playwright e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm --filter web exec playwright install --with-deps chromium
+
+      - name: Build server
+        run: pnpm build
+
+      - name: Build web
+        run: pnpm --filter web build
+
+      - name: Run mocked Playwright project
+        run: pnpm --filter web test:e2e --project chromium
+        env:
+          CI: 'true'
+
+      - name: Run real-backend Playwright project
+        run: pnpm --filter web test:e2e --project real-backend
+        env:
+          CI: 'true'
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: src/web/playwright-report
+          retention-days: 7

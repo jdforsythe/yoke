@@ -23,7 +23,6 @@ export interface HistoryItemRow {
   status: string;
   currentPhase: string | null;
   dependsOn: string[] | null;
-  displayTitle?: string | null;
 }
 
 export interface HistorySessionRow {
@@ -96,7 +95,6 @@ function buildEventStream(input: DeriveInput): GraphEvent[] {
       items: rows.map((r) => ({
         itemId: r.id,
         stableId: r.stableId,
-        displayTitle: r.displayTitle,
         dependsOn: r.dependsOn?.filter((dep) => stableToItem.has(dep)) ?? [],
       })),
     });

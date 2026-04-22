@@ -500,6 +500,18 @@ export class Scheduler {
   private stopped = false;
 
   /**
+   * Count of graph.update emissions that threw.  Exposed so tests and
+   * operators can detect silent regressions; a non-zero value means the
+   * persisted graph may be out of sync with the latest event until the next
+   * successful emission re-derives from history.
+   */
+  private _graphUpdateFailures = 0;
+
+  get graphUpdateFailures(): number {
+    return this._graphUpdateFailures;
+  }
+
+  /**
    * Per-workflow timers for coalesced workflow.index.update broadcasts.
    * Keyed by workflowId; replaced on each scheduleIndexUpdate call within
    * the 500 ms debounce window so rapid status/attention changes produce
@@ -2473,7 +2485,12 @@ export class Scheduler {
         patch: finalPatch,
       });
     } catch (err) {
-      console.warn('[scheduler] graph.update emission failed:', err);
+      this._graphUpdateFailures += 1;
+      const stack = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      console.error(
+        `[scheduler] graph.update emission failed (workflowId=${workflowId}, kind=${event.kind}, failures=${this._graphUpdateFailures}):`,
+        stack,
+      );
     }
   }
 

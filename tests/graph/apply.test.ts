@@ -118,6 +118,91 @@ describe('applyEvent — session stacking on post-command goto', () => {
     expect(review?.status).toBe('complete');
   });
 
+  it('two-cycle goto loop produces two distinct runtime prepost nodes and two goto edges', () => {
+    // Regression guard: each prepost firing (distinct prepostRunId) materializes
+    // its own runtime node — the configured template is consumed on first fire
+    // but subsequent runs must stack cleanly without clobbering prior state.
+    const cfg = implementReviewWithGoto();
+    const initial = buildConfiguredGraph('wf-goto-2x', cfg);
+    const implementPhaseId = 'phase:work:_:implement';
+    const reviewPhaseId = 'phase:work:_:review';
+
+    const events: GraphEvent[] = [
+      { kind: 'stage_started', stageId: 'work' },
+      // cycle 1: implement → review → goto implement
+      { kind: 'session_started', stageId: 'work', itemId: null, phase: 'implement', sessionId: 's1', attempt: 1, parentSessionId: null, startedAt: '2026-04-22T10:00:00Z' },
+      { kind: 'session_ended', sessionId: 's1', endedAt: '2026-04-22T10:01:00Z', exitCode: 0 },
+      { kind: 'session_started', stageId: 'work', itemId: null, phase: 'review', sessionId: 's2', attempt: 1, parentSessionId: null, startedAt: '2026-04-22T10:02:00Z' },
+      { kind: 'session_ended', sessionId: 's2', endedAt: '2026-04-22T10:03:00Z', exitCode: 0 },
+      {
+        kind: 'prepost_ended',
+        stageId: 'work',
+        itemId: null,
+        phase: 'review',
+        when: 'post',
+        commandName: 'check-verdict',
+        prepostRunId: 'run:s2:post:check-verdict:2026-04-22T10:03:00Z',
+        actionTaken: { kind: 'goto', goto: 'implement', maxRevisits: 3 },
+      },
+      // cycle 2: implement → review → goto implement (again — must not collide)
+      { kind: 'session_started', stageId: 'work', itemId: null, phase: 'implement', sessionId: 's3', attempt: 2, parentSessionId: 's1', startedAt: '2026-04-22T10:04:00Z' },
+      { kind: 'session_ended', sessionId: 's3', endedAt: '2026-04-22T10:05:00Z', exitCode: 0 },
+      { kind: 'session_started', stageId: 'work', itemId: null, phase: 'review', sessionId: 's4', attempt: 2, parentSessionId: 's2', startedAt: '2026-04-22T10:06:00Z' },
+      { kind: 'session_ended', sessionId: 's4', endedAt: '2026-04-22T10:07:00Z', exitCode: 0 },
+      {
+        kind: 'prepost_ended',
+        stageId: 'work',
+        itemId: null,
+        phase: 'review',
+        when: 'post',
+        commandName: 'check-verdict',
+        prepostRunId: 'run:s4:post:check-verdict:2026-04-22T10:07:00Z',
+        actionTaken: { kind: 'goto', goto: 'implement', maxRevisits: 3 },
+      },
+    ];
+
+    const final = drive(initial, events);
+
+    // Both runtime prepost nodes exist under the review phase.
+    const prepostNodes = final.nodes.filter(
+      (n): n is PrePostGraphNode => n.kind === 'prepost' && n.phaseNodeId === reviewPhaseId,
+    );
+    expect(prepostNodes).toHaveLength(2);
+    const runIds = prepostNodes.map((p) => p.prepostRunId).sort();
+    expect(runIds).toEqual([
+      'run:s2:post:check-verdict:2026-04-22T10:03:00Z',
+      'run:s4:post:check-verdict:2026-04-22T10:07:00Z',
+    ]);
+    // Each has its own actionTaken retained.
+    for (const p of prepostNodes) {
+      expect(p.actionTaken?.kind).toBe('goto');
+      expect(p.actionTaken?.goto).toBe('implement');
+    }
+
+    // Configured prepost template is gone (consumed on first fire).
+    const configuredId = 'prepost:cfg:work:_:review:post:check-verdict';
+    expect(final.nodes.find((n) => n.id === configuredId)).toBeUndefined();
+
+    // Both runtime preposts have their own prepost edge from the review phase.
+    const prepostEdges = final.edges.filter(
+      (e) => e.kind === 'prepost' && e.from === reviewPhaseId,
+    );
+    const prepostEdgeTargets = new Set(prepostEdges.map((e) => e.to));
+    for (const p of prepostNodes) {
+      expect(prepostEdgeTargets.has(p.id)).toBe(true);
+    }
+
+    // Both runtime preposts have a dotted goto edge to the implement phase, traveled.
+    for (const p of prepostNodes) {
+      const gotoEdge = final.edges.find(
+        (e) => e.kind === 'goto' && e.from === p.id && e.to === implementPhaseId,
+      );
+      expect(gotoEdge).toBeDefined();
+      expect(gotoEdge?.style).toBe('dotted');
+      expect(gotoEdge?.traveled).toBe(true);
+    }
+  });
+
   it('phase status rolls up to abandoned when latest session exits non-zero, then back to in_progress on retry', () => {
     const cfg = implementReviewWithGoto();
     const g0 = buildConfiguredGraph('wf-2', cfg);

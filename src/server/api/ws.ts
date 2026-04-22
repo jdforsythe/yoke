@@ -59,6 +59,12 @@ import { JSONPath } from 'jsonpath-plus';
 const badJsonPathExprs = new Set<string>();
 
 /**
+ * Workflow IDs for which we've already warned about a legacy pipeline JSON
+ * lacking a `phases` block — one warn per workflow over the server's lifetime.
+ */
+const warnedLegacyPipelines = new Set<string>();
+
+/**
  * Evaluate a JSONPath expression against json and return the first match as
  * a string. Returns null if evaluation fails or produces a non-string /
  * empty result — buildSnapshot treats these as "no description".
@@ -540,6 +546,16 @@ function hydrateGraph(
   if (!pipelineParsed.stages || pipelineParsed.stages.length === 0) return null;
 
   const pipeline: Pipeline = { stages: pipelineParsed.stages };
+  // Legacy workflows (pre-graph) persisted pipeline JSON without a `phases`
+  // block; the graph still derives from sessions/items at runtime but will
+  // lack configured prepost nodes.  Warn once per workflow so operators can
+  // spot the shortfall in logs without drowning in noise.
+  if (!pipelineParsed.phases && !warnedLegacyPipelines.has(workflowId)) {
+    warnedLegacyPipelines.add(workflowId);
+    console.warn(
+      `[graph] workflow ${workflowId}: pipeline JSON has no 'phases' block; configured prepost nodes will be absent from the graph`,
+    );
+  }
   const phases = pipelineParsed.phases ?? {};
 
   const reader = db.reader();
@@ -558,7 +574,7 @@ function hydrateGraph(
     }>;
   const sessionRows = reader
     .prepare(
-      'SELECT id, item_id, stage, phase, parent_session_id, started_at, ended_at, exit_code FROM sessions WHERE workflow_id = ? ORDER BY started_at',
+      'SELECT id, item_id, stage, phase, parent_session_id, started_at, ended_at, exit_code FROM sessions WHERE workflow_id = ? ORDER BY started_at, id',
     )
     .all(workflowId) as Array<{
       id: string;
@@ -572,7 +588,7 @@ function hydrateGraph(
     }>;
   const prepostRows = reader
     .prepare(
-      'SELECT session_id, stage, phase, item_id, when_phase, command_name, started_at, ended_at, action_taken FROM prepost_runs WHERE workflow_id = ? ORDER BY started_at',
+      'SELECT session_id, stage, phase, item_id, when_phase, command_name, started_at, ended_at, action_taken FROM prepost_runs WHERE workflow_id = ? ORDER BY started_at, id',
     )
     .all(workflowId) as Array<{
       session_id: string | null;
@@ -599,7 +615,6 @@ function hydrateGraph(
       status: r.status,
       currentPhase: r.current_phase,
       dependsOn: parseDependsOn(r.depends_on),
-      displayTitle: null,
     })),
     sessions: sessionRows.map((s) => {
       const key = `${s.item_id ?? '_'}:${s.phase}`;
