@@ -57,6 +57,7 @@ export interface SnapshotOpts {
   };
   stages?: Array<{
     id: string;
+    description?: string | null;
     run: 'once' | 'per-item';
     phases: string[];
     status: 'pending' | 'in_progress' | 'complete' | 'blocked';
@@ -105,7 +106,7 @@ export function snapshotFrame(opts: SnapshotOpts = {}): string {
     seq: 1,
     payload: {
       workflow: { ...defaultWorkflow, ...opts.workflow },
-      stages: opts.stages ?? [
+      stages: (opts.stages ?? [
         {
           id: 'stage-1',
           run: 'once',
@@ -113,7 +114,7 @@ export function snapshotFrame(opts: SnapshotOpts = {}): string {
           status: 'in_progress',
           needsApproval: false,
         },
-      ],
+      ]).map((s) => ({ description: null, ...s })),
       items: (opts.items ?? []).map((i) => ({
         displayDescription: null,
         stableId: null,

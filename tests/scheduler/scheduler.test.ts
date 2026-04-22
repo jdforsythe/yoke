@@ -1061,6 +1061,8 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       exitCode: 0,
       actionTaken: 'continue' as const,
       output: '',
+      stdoutPath: null,
+      stderrPath: null,
     };
 
     const { workflowId } = createWorkflow(db, config, { name: 'prepost-pre-ok-test' });
@@ -1135,6 +1137,8 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       exitCode: 1,
       actionTaken: 'stop-and-ask' as const,
       output: '',
+      stdoutPath: null,
+      stderrPath: null,
     };
 
     let spawnCount = 0;
@@ -1230,6 +1234,8 @@ describe('AC-6: prepost_runs rows persisted (AC-6, RC-4)', () => {
       exitCode: 0,
       actionTaken: 'continue' as const,
       output: '',
+      stdoutPath: null,
+      stderrPath: null,
     };
 
     const { workflowId } = createWorkflow(db, config, { name: 'prepost-post-test' });
@@ -1953,6 +1959,8 @@ describe('feat-pipeline-hardening: post_command_action goto injects handoff entr
               exitCode: 1,
               actionTaken: null,
               output: 'check failed: missing required changes',
+              stdoutPath: null,
+              stderrPath: null,
             }],
           };
         }

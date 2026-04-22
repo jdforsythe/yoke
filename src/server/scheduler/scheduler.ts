@@ -76,7 +76,7 @@ import {
 } from '../pipeline/engine.js';
 import type { ApplyItemTransitionResult } from '../pipeline/engine.js';
 import type { SessionUsage } from '../pipeline/engine.js';
-import { openSessionLog } from '../session-log/writer.js';
+import { openSessionLog, makePrepostOutputDir } from '../session-log/writer.js';
 import { StreamJsonParser } from '../process/stream-json.js';
 import type { RateLimitDetectedEvent, StreamSystemNoticeEvent, StreamUsageEvent } from '../process/stream-json.js';
 import { classify } from '../state-machine/classifier.js';
@@ -1351,6 +1351,14 @@ export class Scheduler {
       sessionId,
     });
 
+    // F3: directory where per-command stdout/stderr capture files live.
+    // Mirrors the session-log fingerprint scheme so parallel yoke projects
+    // on the same machine never collide (RC-4).
+    const prepostOutputDir = makePrepostOutputDir({
+      configDir: this.config.configDir,
+      workflowId: wf.id,
+    });
+
     // --- Pre: commands (AC-4) ---
     // Collect runs for later persistence via the engine (AC-6, RC-4).
     let preRuns: PrePostRunRecord[] = [];
@@ -1361,6 +1369,7 @@ export class Scheduler {
         logWriter,
         when: 'pre',
         env: correlationEnv,
+        outputDir: prepostOutputDir,
       });
       preRuns = preResult.runs;
       this._emitGraphPrepostRuns(wf.id, sessionId, item.stage_id, item.id, phaseKey, preRuns);
@@ -1837,6 +1846,7 @@ export class Scheduler {
           logWriter,
           when: 'post',
           env: correlationEnv,
+          outputDir: prepostOutputDir,
         });
         console.log(`[scheduler] post-commands result: kind=${postResult.kind}${postResult.kind === 'action' ? ` action=${JSON.stringify(postResult.action)}` : ''}`);
         this._emitGraphPrepostRuns(wf.id, sessionId, freshItem.stage_id, freshItem.id, phaseKey, postResult.runs);

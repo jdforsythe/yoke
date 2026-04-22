@@ -6,7 +6,9 @@
  * round-trip: item select → History tab enabled → session click → log renders.
  *
  * Covers AC:
- *   - GET /api/items/:id/sessions returns sessions for the selected item
+ *   - GET /api/workflows/:workflowId/items/:itemId/timeline returns the
+ *     session rows HistoryPane renders (filtered client-side to
+ *     `kind === 'session'`)
  *   - History tab is disabled when no sessions exist
  *   - History tab is enabled and shows count when sessions exist
  *   - Selecting a past session renders its log via LiveStreamPane

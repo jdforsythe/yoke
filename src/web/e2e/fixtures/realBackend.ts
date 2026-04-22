@@ -33,6 +33,13 @@ export interface BackendHandle {
   baseURL: string;
   /** URL of the real Fastify backend (http://127.0.0.1:PORT). */
   backendUrl: string;
+  /**
+   * The per-test config directory (also used as homeDir for fingerprint-
+   * scoped paths like the prepost output tree). Exposed so tests that seed
+   * artifact files can compute the expected on-disk path via
+   * makePrepostOutputDir({ configDir, workflowId, homeDir: configDir }).
+   */
+  configDir: string;
   /** Writer DbPool — use db.writer to seed rows before page.goto(). */
   db: DbPool;
   /**
@@ -134,6 +141,7 @@ export const test = base.extend<{ backend: BackendHandle }>({
       await use({
         baseURL: 'http://localhost:4173',
         backendUrl,
+        configDir: tempDir,
         db: handle.db,
         scheduleIndexUpdate: (wfId) => handle!.scheduler.scheduleIndexUpdate(wfId),
         broadcast: (wfId, sessId, frameType, payload) =>
