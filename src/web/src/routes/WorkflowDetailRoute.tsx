@@ -527,9 +527,14 @@ export function WorkflowDetailRoute() {
           .reverse();
         setItemSessions(sessions);
         // Auto-switch to History when the item has past sessions but no active
-        // or recently-ended session in view.
+        // or recently-ended session in view — unless the user just clicked a
+        // prepost row (which sets streamTab='prepost' synchronously; stomping
+        // it here loses the F4 captured-output view).
         setState((prev) => {
+          const prepostOnThisItem =
+            prepostSelection !== null && prepostSelection.itemId === selectedItemId;
           if (
+            !prepostOnThisItem &&
             sessions.length > 0 &&
             !prev.itemActiveSession.has(selectedItemId) &&
             !prev.itemEndedSession.has(selectedItemId)

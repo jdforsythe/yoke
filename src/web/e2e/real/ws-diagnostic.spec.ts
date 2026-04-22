@@ -19,7 +19,11 @@ function seedWfAndItem(db: BackendHandle['db'], id: string, name: string): void 
   ).run(`item-${id}`, id, 'test-stage', '{}', 'pending', now);
 }
 
-test('WS connection establishes after navigation to root', async ({ page }) => {
+test('WS connection establishes after navigation to root', async ({ page, backend: _backend }) => {
+  // Requests the `backend` fixture (even though unused) so its setup runs
+  // and installs the page.addInitScript WebSocket override — without it,
+  // new WebSocket('/stream') goes to the vite preview server which has no
+  // WS handler and the client never transitions to 'connected'.
   await page.goto('/');
   await expect(page.getByText('Connected')).toBeVisible({ timeout: 5000 });
 });
