@@ -16,10 +16,12 @@
  *   - No 0.0.0.0 bind path exists anywhere in this file.
  */
 
+import * as path from 'path';
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import fastifyWebsocket, { type SocketStream } from '@fastify/websocket';
 import type { DbPool } from '../storage/db.js';
-import { readLogPage } from '../session-log/reader.js';
+import { readArtifactFile, readLogPage } from '../session-log/reader.js';
+import { makePrepostOutputDir } from '../session-log/writer.js';
 import {
   SessionSeqStore,
   BackfillBuffer,
@@ -112,26 +114,6 @@ function mapTimelineEvent(e: DbTimelineEvent) {
     level: e.level,
     message: e.message,
     extra: e.extra ? (() => { try { return JSON.parse(e.extra!); } catch { return e.extra; } })() : null,
-  };
-}
-
-interface DbItemSession {
-  id: string;
-  phase: string;
-  status: string;
-  started_at: string;
-  ended_at: string | null;
-  exit_code: number | null;
-}
-
-function mapItemSession(row: DbItemSession) {
-  return {
-    id: row.id,
-    phase: row.phase,
-    status: row.status,
-    startedAt: row.started_at,
-    endedAt: row.ended_at,
-    exitCode: row.exit_code,
   };
 }
 
@@ -372,6 +354,22 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   createWorkflow?: CreateWorkflowFn;
+  /**
+   * Absolute path to the directory containing the active .yoke.yml. Used by
+   * the prepost-artifact endpoint to compute the expected root for a given
+   * workflow (via makePrepostOutputDir) so the path-traversal guard can
+   * reject any stored DB path that does not resolve under that root.
+   *
+   * When omitted, the endpoint returns 501 Not Implemented — the server
+   * cannot validate artifact paths without knowing the configDir.
+   */
+  configDir?: string;
+  /**
+   * Override for os.homedir() used when computing the expected root for the
+   * prepost-artifact guard. Tests pass a per-test tmp dir so captured files
+   * and the guard agree on the same tree.
+   */
+  homeDir?: string;
 }
 
 /**
@@ -763,32 +761,6 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
     },
   );
 
-  // GET /api/items/:id/sessions
-  // Returns past sessions for an item ordered by started_at DESC.
-  fastify.get(
-    '/api/items/:id/sessions',
-    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const { id } = req.params;
-      const reader = db.reader();
-
-      const item = reader
-        .prepare('SELECT id FROM items WHERE id = ?')
-        .get(id) as { id: string } | undefined;
-      if (!item) return notFound(reply, 'item not found');
-
-      const sessions = reader
-        .prepare(
-          `SELECT id, phase, status, started_at, ended_at, exit_code
-           FROM sessions
-           WHERE item_id = ?
-           ORDER BY started_at DESC`,
-        )
-        .all(id) as DbItemSession[];
-
-      return reply.send({ sessions: sessions.map(mapItemSession) });
-    },
-  );
-
   // GET /api/workflows/:workflowId/items/:itemId/timeline
   // Returns a chronologically merged list of sessions + prepost_runs for the
   // item, ascending by started_at, tie-broken by row id (lexicographic).
@@ -803,8 +775,8 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       const reader = db.reader();
 
       const wf = reader
-        .prepare('SELECT id FROM workflows WHERE id = ?')
-        .get(workflowId) as { id: string } | undefined;
+        .prepare('SELECT id, config FROM workflows WHERE id = ?')
+        .get(workflowId) as { id: string; config: string } | undefined;
       if (!wf) return notFound(reply, 'workflow not found');
 
       const item = reader
@@ -812,6 +784,25 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         .get(itemId, workflowId) as { id: string } | undefined;
       // Cross-workflow access returns 404 — do not leak existence.
       if (!item) return notFound(reply, 'item not found');
+
+      // Build phaseName → description from the workflow's resolved config.
+      // Phases missing from config (e.g. legacy rows after a config change)
+      // emit `null` in phaseDescription.
+      const phaseDescByName = new Map<string, string>();
+      try {
+        const parsed = JSON.parse(wf.config) as {
+          phases?: Record<string, { description?: string }>;
+        };
+        if (parsed.phases) {
+          for (const [name, phase] of Object.entries(parsed.phases)) {
+            if (phase && typeof phase.description === 'string') {
+              phaseDescByName.set(name, phase.description);
+            }
+          }
+        }
+      } catch {
+        // Malformed config JSON — every phaseDescription falls through to null.
+      }
 
       const sessionRows = reader
         .prepare(
@@ -845,6 +836,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           kind: 'session',
           id: r.id,
           phase: r.phase,
+          phaseDescription: phaseDescByName.get(r.phase) ?? null,
           attempt: next,
           status: r.status,
           startedAt: r.started_at,
@@ -864,6 +856,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
           whenPhase: r.when_phase,
           commandName: r.command_name,
           phase: r.phase,
+          phaseDescription: phaseDescByName.get(r.phase) ?? null,
           status,
           exitCode: r.exit_code,
           actionTaken: parseActionTaken(r.action_taken),
@@ -885,6 +878,96 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       });
 
       return reply.send({ rows });
+    },
+  );
+
+  // GET /api/workflows/:workflowId/items/:itemId/prepost/:prepostId/:stream
+  // Returns the captured stdout or stderr for one prepost_runs row as
+  // { content, totalSize, truncated }. Files are already capped at
+  // OUTPUT_CAPTURE_LIMIT (32 KiB) on write so a single response is fine —
+  // no pagination needed.
+  //
+  // Security — the stored stdout_path / stderr_path is server-written by the
+  // runner, but a malicious or corrupted DB row could still point outside the
+  // workflow's output tree. We defend against that by recomputing the expected
+  // root via makePrepostOutputDir({ configDir, workflowId }) and asserting
+  // the resolved stored path starts with the resolved root. Cross-workflow /
+  // cross-item mismatches return 404 (do not leak existence via 400).
+  fastify.get(
+    '/api/workflows/:workflowId/items/:itemId/prepost/:prepostId/:stream',
+    async (
+      req: FastifyRequest<{
+        Params: { workflowId: string; itemId: string; prepostId: string; stream: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      const { workflowId, itemId, prepostId, stream } = req.params;
+
+      if (stream !== 'stdout' && stream !== 'stderr') {
+        return badRequest(reply, "stream must be 'stdout' or 'stderr'");
+      }
+
+      if (!callbacks.configDir) {
+        return reply.status(501).send({ error: 'prepost artifact serving not configured' });
+      }
+
+      const reader = db.reader();
+      // Look up the row by id only; cross-workflow / cross-item mismatches
+      // return 404 in the next step (no differentiated error code to avoid
+      // leaking whether a given id exists in a different workflow).
+      const prepostIdNum = Number(prepostId);
+      if (!Number.isInteger(prepostIdNum) || prepostIdNum <= 0) {
+        return notFound(reply, 'prepost run not found');
+      }
+
+      const row = reader
+        .prepare(
+          'SELECT id, workflow_id, item_id, stdout_path, stderr_path FROM prepost_runs WHERE id = ?',
+        )
+        .get(prepostIdNum) as
+        | {
+            id: number;
+            workflow_id: string;
+            item_id: string | null;
+            stdout_path: string | null;
+            stderr_path: string | null;
+          }
+        | undefined;
+
+      if (!row) return notFound(reply, 'prepost run not found');
+      if (row.workflow_id !== workflowId || row.item_id !== itemId) {
+        return notFound(reply, 'prepost run not found');
+      }
+
+      const storedPath = stream === 'stdout' ? row.stdout_path : row.stderr_path;
+      if (!storedPath) {
+        return reply.status(404).send({ error: 'no output captured' });
+      }
+
+      // Path-traversal guard. We recompute the expected root from the
+      // server-local configDir (+ optional homeDir override for tests) and
+      // assert the stored path resolves under it. path.resolve() canonicalises
+      // the input without requiring the file to exist (unlike fs.realpath),
+      // which is fine because the root itself is not a symlink target in
+      // normal yoke operation.
+      const expectedRoot = path.resolve(
+        makePrepostOutputDir({
+          configDir: callbacks.configDir,
+          workflowId,
+          homeDir: callbacks.homeDir,
+        }),
+      );
+      const resolvedPath = path.resolve(storedPath);
+      // Append a sep so "/a/b" does not spuriously contain "/a/bc".
+      const rootWithSep = expectedRoot.endsWith(path.sep) ? expectedRoot : expectedRoot + path.sep;
+      if (!resolvedPath.startsWith(rootWithSep)) {
+        return badRequest(reply, 'stored artifact path is outside the expected root');
+      }
+
+      const file = await readArtifactFile(resolvedPath);
+      if (!file) return notFound(reply, 'artifact file not found');
+
+      return reply.send(file);
     },
   );
 

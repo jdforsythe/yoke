@@ -27,6 +27,13 @@ export interface ItemTimelineSessionRow {
   kind: 'session';
   id: string;
   phase: string;
+  /**
+   * Optional human-readable description of the phase, looked up from the
+   * workflow's resolved config at serialisation time. `null` when the phase
+   * has no description set, or when the phase is not present in the current
+   * config (e.g. a legacy session row after a config change).
+   */
+  phaseDescription?: string | null;
   attempt: number;
   status: string;
   startedAt: string;
@@ -51,6 +58,13 @@ export interface ItemTimelinePrepostRow {
   whenPhase: 'pre' | 'post';
   commandName: string;
   phase: string;
+  /**
+   * Optional human-readable description of the phase this prepost run is
+   * attached to. Looked up from the workflow's resolved config at
+   * serialisation time. `null` when the phase has no description, or when
+   * it is not present in the current config.
+   */
+  phaseDescription?: string | null;
   status: 'ok' | 'fail';
   exitCode: number | null;
   actionTaken: {

@@ -6,7 +6,7 @@ template:
 
 pipeline:
   stages:
-    - id: templates
+    - id: bootstrap
       run: per-item
       items_from: docs/idea/templates-features.json
       items_list: "$.features"

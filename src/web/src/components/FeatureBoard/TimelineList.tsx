@@ -50,12 +50,29 @@ export function TimelineList({ rows, onSelectSession, onOpenPrepostOutput }: Pro
     );
   }
 
+  // Track phase names we have already emitted a description for, so the
+  // description renders once per phase group (on the first row of that
+  // phase in chronological order) rather than on every attempt.
+  const describedPhases = new Set<string>();
+
   return (
     <ul className="pl-6 pr-3 py-1 space-y-0.5 border-t border-gray-700/30 bg-gray-800/20">
       {rows.map((row) => {
+        const showDescription =
+          row.phaseDescription != null && !describedPhases.has(row.phase);
+        if (showDescription) describedPhases.add(row.phase);
+
         if (row.kind === 'session') {
           return (
             <li key={`s-${row.id}`}>
+              {showDescription && (
+                <div
+                  data-testid={`timeline-phase-description-${row.phase}`}
+                  className="px-1.5 pt-1 text-[10px] text-gray-500 italic"
+                >
+                  {row.phaseDescription}
+                </div>
+              )}
               <button
                 type="button"
                 data-testid={`timeline-session-${row.id}`}
@@ -89,6 +106,14 @@ export function TimelineList({ rows, onSelectSession, onOpenPrepostOutput }: Pro
             : 'bg-red-500/20 text-red-300';
         return (
           <li key={`p-${row.id}`}>
+            {showDescription && (
+              <div
+                data-testid={`timeline-phase-description-${row.phase}`}
+                className="px-1.5 pt-1 text-[10px] text-gray-500 italic"
+              >
+                {row.phaseDescription}
+              </div>
+            )}
             <button
               type="button"
               data-testid={`timeline-prepost-${row.id}`}

@@ -71,6 +71,10 @@
           "minLength": 1,
           "description": "Stable stage identifier. Unique within the pipeline."
         },
+        "description": {
+          "type": "string",
+          "description": "Optional human-readable description shown in the dashboard list view under the stage id."
+        },
         "run": {
           "type": "string",
           "enum": ["once", "per-item"],
@@ -138,6 +142,10 @@
       "additionalProperties": false,
       "required": ["command", "args", "prompt_template"],
       "properties": {
+        "description": {
+          "type": "string",
+          "description": "Optional human-readable description shown in the dashboard list view under the phase name."
+        },
         "command": {
           "type": "string",
           "description": "Command to spawn. Default in docs is 'claude'; jig is one documented alternative but not required (D55)."

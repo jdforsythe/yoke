@@ -103,6 +103,12 @@ export interface WorkflowSnapshotPayload {
 
 export interface StageProjection {
   id: string;
+  /**
+   * Optional human-readable description from the stage config. The dashboard
+   * list view renders it under the STAGE · {id} header. Null when the stage
+   * has no description set in config.
+   */
+  description: string | null;
   run: 'once' | 'per-item';
   phases: string[];
   status: 'pending' | 'in_progress' | 'complete' | 'blocked';

@@ -93,6 +93,12 @@ export interface PendingAttention {
 
 export interface StageProjection {
   id: string;
+  /**
+   * Optional human-readable description from the stage config. Null when the
+   * stage has no description set. Rendered under the STAGE · {id} header in
+   * the dashboard list view.
+   */
+  description: string | null;
   run: 'once' | 'per-item';
   phases: string[];
   status: 'pending' | 'in_progress' | 'complete' | 'blocked';

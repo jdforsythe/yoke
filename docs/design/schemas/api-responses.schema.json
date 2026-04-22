@@ -166,30 +166,6 @@
     "ItemsDataResponse": {
       "description": "Opaque JSON — the parsed contents of items.data. No fixed shape enforced; any valid JSON value is accepted."
     },
-    "ItemSession": {
-      "type": "object",
-      "required": ["id", "phase", "status", "startedAt", "endedAt", "exitCode"],
-      "additionalProperties": false,
-      "properties": {
-        "id": { "type": "string" },
-        "phase": { "type": "string" },
-        "status": { "type": "string" },
-        "startedAt": { "type": "string" },
-        "endedAt": { "type": ["string", "null"] },
-        "exitCode": { "type": ["integer", "null"] }
-      }
-    },
-    "ItemSessionsResponse": {
-      "type": "object",
-      "required": ["sessions"],
-      "additionalProperties": false,
-      "properties": {
-        "sessions": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ItemSession" }
-        }
-      }
-    },
     "SessionLogResponse": {
       "type": "object",
       "required": ["entries", "nextSeq", "hasMore"],

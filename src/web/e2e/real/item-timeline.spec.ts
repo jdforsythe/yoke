@@ -7,8 +7,10 @@
  *     against /api/workflows/:id/items/:itemId/timeline and the rows render
  *   - click a session row → loadSessionIntoStore pulls the log, the route
  *     swings to the History tab, and the log renders in the right pane
- *   - click a prepost row with a recorded output path → the "Viewing
- *     post-command output is coming soon" placeholder notice appears
+ *   - click a prepost row with a captured stdout path (F4) → the right pane
+ *     fetches /api/workflows/:wf/items/:item/prepost/:id/stdout and renders
+ *     the real captured text; the old "prepost-output-notice" placeholder
+ *     testid is gone
  *
  * Seeded path is used (not mock-only) because the realBackend fixture
  * boots the full Fastify + SQLite stack, the timeline endpoint was
@@ -22,6 +24,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { makePrepostOutputDir } from '../../../server/session-log/writer.js';
 
 const PIPELINE = JSON.stringify({
   stages: [{ id: 'stage-1', run: 'once', phases: ['implement'] }],
@@ -170,7 +173,7 @@ test.describe('item-timeline (phase 7)', () => {
     }
   });
 
-  test('expand item → click prepost row → placeholder notice shown', async ({
+  test('expand item → click prepost row → captured output rendered in right pane', async ({
     page,
     backend,
   }) => {
@@ -179,11 +182,21 @@ test.describe('item-timeline (phase 7)', () => {
     const sessionId = `sess-tl-pp-${randomUUID().slice(0, 8)}`;
     const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yoke-tl-pp-log-'));
     const sessionLogPath = path.join(logDir, `${sessionId}.jsonl`);
-    // stdout_path must be non-null for the prepost click to surface the
-    // placeholder notice — FeatureBoard's handler short-circuits when both
-    // stdout/stderr are null.
-    const stdoutPath = path.join(logDir, 'post-check.stdout.log');
-    fs.writeFileSync(stdoutPath, 'post-command stdout\n');
+
+    // F4: the artifact endpoint's path-traversal guard requires stdout_path
+    // to resolve under makePrepostOutputDir({ configDir, workflowId }). The
+    // server uses the default homeDir (os.homedir()), so the seeded file
+    // must live under that same tree. The per-workflow directory is
+    // fingerprint-scoped (SHA-256 of configDir) so it's isolated per test
+    // run and safe to write/remove under $HOME.
+    const outputRoot = makePrepostOutputDir({
+      configDir: backend.configDir,
+      workflowId: wfId,
+    });
+    fs.mkdirSync(outputRoot, { recursive: true });
+    const stdoutPath = path.join(outputRoot, 'post-check.stdout.log');
+    const capturedText = 'hello stdout\ntriggered goto implement\n';
+    fs.writeFileSync(stdoutPath, capturedText);
 
     try {
       writeTestSessionLog(sessionLogPath, sessionId, wfId);
@@ -213,15 +226,21 @@ test.describe('item-timeline (phase 7)', () => {
         .filter({ hasText: 'triggered goto implement' });
       await expect(prepostRow).toBeVisible({ timeout: 5000 });
 
-      // Click it — no artifact-serving endpoint exists yet, so we expect the
-      // placeholder notice to appear via the FeatureBoard state.
+      // Click it — F4 fetches /api/workflows/:wf/items/:item/prepost/:id/stdout
+      // and renders the captured text in the right pane.
       await prepostRow.click();
 
-      const notice = page.getByTestId('prepost-output-notice');
-      await expect(notice).toBeVisible();
-      await expect(notice).toContainText('Viewing post-command output is coming soon');
+      const pane = page.getByTestId('prepost-output-pane');
+      await expect(pane).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('prepost-output-text')).toContainText('hello stdout');
+
+      // The F3-era placeholder testid must no longer appear anywhere in the
+      // DOM — the 3-second disappearing notice was removed in F4.
+      await expect(page.getByTestId('prepost-output-notice')).toHaveCount(0);
     } finally {
       fs.rmSync(logDir, { recursive: true, force: true });
+      // Clean up the fingerprint-scoped output dir under $HOME/.yoke/.
+      fs.rmSync(outputRoot, { recursive: true, force: true });
     }
   });
 });

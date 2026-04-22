@@ -196,7 +196,11 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   // ackAttention handler (which needs state.registry, only available
   // post-construction).  Route handlers read callbacks at request time so
   // this is safe: no HTTP request can arrive before fastify.listen() completes.
-  const callbacks: ServerCallbacks = {};
+  // configDir is threaded into the API layer so the prepost-artifact endpoint
+  // can compute the expected output root for path-traversal validation. The
+  // resolved configDir from loadTemplate() is authoritative (it applies any
+  // $dir / realpath normalisation).
+  const callbacks: ServerCallbacks = { configDir: config.configDir };
   const { fastify, state } = await createServer(db, callbacks);
   await fastify.listen({ host: '127.0.0.1', port });
 
