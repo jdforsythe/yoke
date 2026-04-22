@@ -5,8 +5,13 @@
  * snapshot (rebuilt on items change, not on each render). item.state WS frames
  * are applied via the `items` prop (managed in WorkflowDetailRoute).
  *
- * Fuzzy search: client-side filter over displayTitle + displaySubtitle,
- * debounced 200 ms. Status and stage filters are also client-side.
+ * Fuzzy search: client-side filter over displayTitle, displaySubtitle,
+ * the owning stage id, and any already-cached timeline rows (phase,
+ * session id, prepost commandName). Debounced 200 ms. Typing does NOT
+ * fetch timelines — phase/id/command matches only land for items whose
+ * timeline is already in the module-level cache. Items whose only match
+ * is via a cached row are auto-expanded so the hit is visible. Status
+ * and stage filters are also client-side.
  *
  * Keyboard navigation: j/k move a visible focus ring between items using
  * aria-activedescendant pattern. Enter opens the stream pane for the focused
@@ -52,16 +57,10 @@ import {
   fetchItemTimeline,
   getCachedTimeline,
 } from './timelineCache';
+import { fuzzyMatch, matchesOnlyViaTimeline } from './fuzzyMatch';
 import { loadSessionIntoStore } from '@/components/LiveStream/sessionDisplay';
 
-function fuzzyMatch(item: ItemProjection, query: string): boolean {
-  if (!query) return true;
-  const q = query.toLowerCase();
-  return (
-    (item.displayTitle ?? '').toLowerCase().includes(q) ||
-    (item.displaySubtitle ?? '').toLowerCase().includes(q)
-  );
-}
+export { fuzzyMatch } from './fuzzyMatch';
 
 // ---------------------------------------------------------------------------
 // Item data cache
@@ -208,14 +207,56 @@ export function FeatureBoard({
   }, [items]);
 
   // Filtered flat list for keyboard navigation.
-  const flatFiltered = useMemo(() => {
-    return items.filter((item) => {
-      if (statusFilter !== 'all' && item.state.status !== statusFilter) return false;
-      if (stageFilter !== 'all' && item.stageId !== stageFilter) return false;
-      if (!fuzzyMatch(item, debouncedSearch)) return false;
-      return true;
+  //
+  // fuzzyMatch consults `item.displayTitle/displaySubtitle`, the owning
+  // stage id, and any already-cached timeline rows (via getCachedTimeline,
+  // which is a cheap module-level Map lookup). `matchesViaTimeline`
+  // records the subset of matches that are only reachable via cached
+  // timeline rows — FeatureBoard auto-expands those items below so the
+  // hit is visible to the user. The memo is keyed on `timelineByItem` so
+  // a newly-settled fetch re-runs the filter (and the auto-expand effect)
+  // once the rows for a previously-expanded item land.
+  const { flatFiltered, matchesViaTimeline } = useMemo(() => {
+    const matched: ItemProjection[] = [];
+    const viaTimeline = new Set<string>();
+    for (const item of items) {
+      if (statusFilter !== 'all' && item.state.status !== statusFilter) continue;
+      if (stageFilter !== 'all' && item.stageId !== stageFilter) continue;
+      const cachedRows = getCachedTimeline(workflowId, item.id);
+      if (!fuzzyMatch(item, debouncedSearch, item.stageId, cachedRows)) continue;
+      matched.push(item);
+      if (
+        debouncedSearch &&
+        matchesOnlyViaTimeline(item, debouncedSearch, item.stageId, cachedRows)
+      ) {
+        viaTimeline.add(item.id);
+      }
+    }
+    return { flatFiltered: matched, matchesViaTimeline: viaTimeline };
+    // `timelineByItem` is listed so the filter re-runs when a previously-
+    // fetched timeline settles (the module cache is the source of truth;
+    // timelineByItem is the render-mirror that tells us when it changed).
+  }, [items, statusFilter, stageFilter, debouncedSearch, workflowId, timelineByItem]);
+
+  // Auto-expand items whose only match is via a cached timeline row, so the
+  // user can see the hit without having to manually open the caret. We only
+  // ever GROW `expanded` — clearing the query must not contract it, because
+  // the user may have opened rows manually (and because contracting here
+  // would fight against the toggleExpanded callback).
+  useEffect(() => {
+    if (matchesViaTimeline.size === 0) return;
+    setExpanded((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of matchesViaTimeline) {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
     });
-  }, [items, statusFilter, stageFilter, debouncedSearch]);
+  }, [matchesViaTimeline]);
 
   // Deep-link scroll: useLayoutEffect fires after DOM mutations but before
   // the browser paints, preventing any visible flash before the card is
