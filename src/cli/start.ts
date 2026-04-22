@@ -1,7 +1,7 @@
 /**
  * yoke start — spawn the Yoke pipeline engine.
  *
- * 1. Loads and validates .yoke.yml via loadConfig (exits non-zero on failure).
+ * 1. Discovers and validates templates under .yoke/templates/ via listTemplates/loadTemplate.
  * 2. Opens the SQLite database under .yoke/yoke.db; runs forward-only migrations.
  * 3. Calls createServer on 127.0.0.1 at the configured port (default 7777).
  * 4. Logs the server URL.
