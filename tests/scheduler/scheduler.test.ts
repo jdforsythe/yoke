@@ -495,6 +495,70 @@ describe('AC-7: stream events are broadcast', () => {
 
     await scheduler.stop();
   });
+
+  it('broadcasts stream.initial_prompt and writes it as the first JSONL log line', async () => {
+    const RENDERED_PROMPT = 'RENDERED PROMPT: item=42 retry=0';
+    const config = makeConfig();
+    const pm = new StubProcessManager([{ type: 'exit', code: 0 }]);
+    const { workflowId } = createWorkflow(db, config, { name: 'initial-prompt-test' });
+
+    const broadcasts: TestSchedulerResult['broadcasts'] = [];
+    const scheduler = new Scheduler({
+      db,
+      config,
+      processManager: pm,
+      worktreeManager: makeWorktreeManager(),
+      prepostRunner: async () => ({ kind: 'complete', runs: [] }),
+      assemblePrompt: async () => RENDERED_PROMPT,
+      broadcast: (wid, sid, ft, p) => broadcasts.push({ workflowId: wid, sessionId: sid, frameType: ft, payload: p }),
+      maxParallel: 4,
+      pollIntervalMs: 50,
+      gracePeriodMs: 500,
+      skipStartupPause: true,
+    });
+    activeSchedulers.push(scheduler);
+
+    await scheduler.start();
+
+    await pollUntil(() => {
+      const wf = db.reader()
+        .prepare('SELECT status FROM workflows WHERE id = ?')
+        .get(workflowId) as { status: string } | undefined;
+      return wf?.status === 'completed';
+    }, { timeoutMs: 10_000 });
+
+    const promptFrames = broadcasts.filter((b) => b.frameType === 'stream.initial_prompt');
+    expect(promptFrames.length).toBeGreaterThan(0);
+    const payload = promptFrames[0].payload as { sessionId: string; prompt: string; assembledAt: string };
+    expect(payload.prompt).toBe(RENDERED_PROMPT);
+    expect(typeof payload.sessionId).toBe('string');
+    expect(typeof payload.assembledAt).toBe('string');
+
+    // session.started must be broadcast BEFORE stream.initial_prompt so the
+    // reducer's session.started handler doesn't wipe the prepended prompt.
+    const sessionId = payload.sessionId;
+    const thisSessionFrames = broadcasts
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => b.sessionId === sessionId);
+    const startedIdx = thisSessionFrames.findIndex(({ b }) => b.frameType === 'session.started');
+    const promptIdx = thisSessionFrames.findIndex(({ b }) => b.frameType === 'stream.initial_prompt');
+    expect(startedIdx).toBeGreaterThanOrEqual(0);
+    expect(promptIdx).toBeGreaterThan(startedIdx);
+
+    // First JSONL log line should be the rendered prompt frame.
+    const row = db.reader()
+      .prepare('SELECT session_log_path FROM sessions WHERE id = ?')
+      .get(sessionId) as { session_log_path: string | null } | undefined;
+    expect(row?.session_log_path).toBeTruthy();
+    const logContent = fs.readFileSync(row!.session_log_path!, 'utf8');
+    const firstLine = logContent.split('\n')[0];
+    const parsed = JSON.parse(firstLine) as { type: string; payload: { prompt: string; sessionId: string } };
+    expect(parsed.type).toBe('stream.initial_prompt');
+    expect(parsed.payload.prompt).toBe(RENDERED_PROMPT);
+    expect(parsed.payload.sessionId).toBe(sessionId);
+
+    await scheduler.stop();
+  });
 });
 
 // ---------------------------------------------------------------------------
