@@ -2096,3 +2096,104 @@ describe('feat-hook-contract: artifact_writes rows persisted inside transaction'
     expect(rows[0].written_at).toBe(rows[1].written_at);
   });
 });
+
+// ---------------------------------------------------------------------------
+// applyItemTransition — prepost_runs.stdout_path / stderr_path persistence (F3)
+// ---------------------------------------------------------------------------
+
+describe('applyItemTransition — prepost_runs output paths (F3)', () => {
+  it('round-trips stdoutPath/stderrPath through writePrepostRun into the DB row', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    const sessId = `sess-f3-${wfId}`;
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+    insertSession(sessId, wfId, { itemId, status: 'running', phase: 'implement' });
+
+    const stdoutPath = '/home/fake/.yoke/fp/prepost/wf/2026-01-01T00-00-00.000Z-post-lint.stdout.log';
+    const stderrPath = '/home/fake/.yoke/fp/prepost/wf/2026-01-01T00-00-00.000Z-post-lint.stderr.log';
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: sessId,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: {
+        morePhases: false,
+        allPostCommandsOk: true,
+        validatorsOk: true,
+        diffCheckOk: true,
+        prepostRuns: [{
+          commandName: 'lint',
+          argv: ['./lint.sh'],
+          when: 'post',
+          startedAt: '2026-01-01T00:00:00Z',
+          endedAt: '2026-01-01T00:00:01Z',
+          exitCode: 0,
+          actionTaken: 'continue',
+          output: 'stdout bytes',
+          stdoutPath,
+          stderrPath,
+        }],
+      },
+    });
+
+    const row = pool.reader()
+      .prepare('SELECT stdout_path, stderr_path FROM prepost_runs WHERE workflow_id = ?')
+      .get(wfId) as { stdout_path: string | null; stderr_path: string | null } | undefined;
+
+    expect(row).toBeDefined();
+    expect(row!.stdout_path).toBe(stdoutPath);
+    expect(row!.stderr_path).toBe(stderrPath);
+  });
+
+  it('persists NULL stdout_path / stderr_path when the record carries null values', () => {
+    const wfId = makeWfId();
+    const itemId = makeItemId();
+    const sessId = `sess-f3-null-${wfId}`;
+    insertWorkflow(wfId);
+    insertItem(itemId, wfId, 'stage1', { status: 'in_progress' });
+    insertSession(sessId, wfId, { itemId, status: 'running', phase: 'implement' });
+
+    applyItemTransition({
+      db: pool,
+      workflowId: wfId,
+      itemId,
+      sessionId: sessId,
+      stage: 'stage1',
+      phase: 'implement',
+      attempt: 1,
+      event: 'session_ok',
+      guardCtx: {
+        morePhases: false,
+        allPostCommandsOk: true,
+        validatorsOk: true,
+        diffCheckOk: true,
+        prepostRuns: [{
+          commandName: 'noop',
+          argv: ['true'],
+          when: 'pre',
+          startedAt: '2026-01-02T00:00:00Z',
+          endedAt: '2026-01-02T00:00:01Z',
+          exitCode: 0,
+          actionTaken: 'continue',
+          output: '',
+          stdoutPath: null,
+          stderrPath: null,
+        }],
+      },
+    });
+
+    const row = pool.reader()
+      .prepare('SELECT stdout_path, stderr_path FROM prepost_runs WHERE workflow_id = ?')
+      .get(wfId) as { stdout_path: string | null; stderr_path: string | null } | undefined;
+
+    expect(row).toBeDefined();
+    expect(row!.stdout_path).toBeNull();
+    expect(row!.stderr_path).toBeNull();
+  });
+});

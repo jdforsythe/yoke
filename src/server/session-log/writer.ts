@@ -61,6 +61,31 @@ export function makeSessionLogPath(opts: {
   return path.join(homeDir, '.yoke', fingerprint, 'logs', workflowId, `${sessionId}.jsonl`);
 }
 
+/**
+ * Constructs the absolute directory path for prepost command stdout/stderr
+ * capture files for a given workflow.
+ *
+ * Format: <homeDir>/.yoke/<fingerprint>/prepost/<workflowId>/
+ *
+ * Mirrors makeSessionLogPath() so both log families share the same fingerprint
+ * scheme (RC-4 — parallel yoke projects on the same machine never collide).
+ * The directory is not created here; callers are expected to mkdir -p before
+ * opening files inside it.
+ *
+ * @param configDir  Absolute path to the directory containing .yoke.yml.
+ * @param workflowId Workflow row ID.
+ * @param homeDir    Override for os.homedir() (tests only).
+ */
+export function makePrepostOutputDir(opts: {
+  configDir: string;
+  workflowId: string;
+  homeDir?: string;
+}): string {
+  const { configDir, workflowId, homeDir = os.homedir() } = opts;
+  const fingerprint = makeFingerprint(configDir);
+  return path.join(homeDir, '.yoke', fingerprint, 'prepost', workflowId);
+}
+
 // ---------------------------------------------------------------------------
 // SessionLogWriter
 // ---------------------------------------------------------------------------

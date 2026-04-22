@@ -834,8 +834,9 @@ function writePrepostRun(
   db.prepare(`
     INSERT INTO prepost_runs
       (session_id, workflow_id, item_id, stage, phase, when_phase,
-       command_name, argv, started_at, ended_at, exit_code, action_taken)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       command_name, argv, started_at, ended_at, exit_code, action_taken,
+       stdout_path, stderr_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.sessionId,
     p.workflowId,
@@ -849,6 +850,8 @@ function writePrepostRun(
     run.endedAt,
     run.exitCode,
     run.actionTaken !== null ? JSON.stringify(run.actionTaken) : null,
+    run.stdoutPath,
+    run.stderrPath,
   );
 }
 
