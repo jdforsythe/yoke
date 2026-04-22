@@ -269,6 +269,22 @@ describe('loadTemplate — unknown keys', () => {
     expect(err!.detail.message).toMatch(/totally_unknown_key/);
   });
 
+  it('rejects the old project: key with a readable error that names "project"', () => {
+    // AC-6: a stale config using `project:` instead of `template:` must produce
+    // an AJV error that names the unknown property so the user knows what to fix.
+    const staleYaml = MINIMAL_VALID.replace('template:\n  name: test-project\n', 'project:\n  name: test-project\n');
+    writeTemplate(staleYaml);
+    let err: ConfigLoadError | undefined;
+    try {
+      loadTemplate(tmpDir, 'default');
+    } catch (e) {
+      err = e as ConfigLoadError;
+    }
+    expect(err).toBeInstanceOf(ConfigLoadError);
+    expect(err!.detail.kind).toBe('validation_error');
+    expect(err!.detail.message).toMatch(/project/);
+  });
+
   it('rejects an unknown key inside a phase (additionalProperties:false at nested level)', () => {
     const yaml = MINIMAL_VALID.replace(
       '    prompt_template: prompts/implement.md',
