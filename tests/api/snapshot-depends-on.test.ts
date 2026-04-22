@@ -282,3 +282,58 @@ describe('buildSnapshot displayDescription projection', () => {
     expect(snap!.items[0].displayDescription).toBeNull();
   });
 });
+
+describe('buildSnapshot graph hydration', () => {
+  it('derives graph on first call and serves from cache on subsequent calls', () => {
+    const wfId = 'wf-graph-1';
+    insertWorkflow(wfId, [{ id: 'stage-1', run: 'per-item', phases: ['main'] }]);
+    insertItem({ id: 'row-1', workflowId: wfId, stageId: 'stage-1', stableId: 'feat-1', data: {} });
+
+    const first = buildSnapshot(db, wfId);
+    expect(first!.graph).toBeDefined();
+    expect(first!.graph!.workflowId).toBe(wfId);
+
+    // Second call hits the persisted-graph branch in hydrateGraph.
+    const second = buildSnapshot(db, wfId);
+    expect(second!.graph).toEqual(first!.graph);
+  });
+
+  it('returns null graph when pipeline JSON is empty', () => {
+    const wfId = 'wf-graph-2';
+    db.writer
+      .prepare(
+        `INSERT INTO workflows (id, name, spec, pipeline, config, status, created_at, updated_at)
+         VALUES (?, 'noop', '{}', '', '{}', 'in_progress', datetime('now'), datetime('now'))`,
+      )
+      .run(wfId);
+
+    const snap = buildSnapshot(db, wfId);
+    expect(snap!.graph).toBeUndefined();
+  });
+
+  it('returns null graph when pipeline JSON is malformed', () => {
+    const wfId = 'wf-graph-3';
+    db.writer
+      .prepare(
+        `INSERT INTO workflows (id, name, spec, pipeline, config, status, created_at, updated_at)
+         VALUES (?, 'bad', '{}', 'not-json', '{}', 'in_progress', datetime('now'), datetime('now'))`,
+      )
+      .run(wfId);
+
+    const snap = buildSnapshot(db, wfId);
+    expect(snap!.graph).toBeUndefined();
+  });
+
+  it('returns null graph when pipeline has no stages', () => {
+    const wfId = 'wf-graph-4';
+    db.writer
+      .prepare(
+        `INSERT INTO workflows (id, name, spec, pipeline, config, status, created_at, updated_at)
+         VALUES (?, 'empty', '{}', '{"stages":[]}', '{}', 'in_progress', datetime('now'), datetime('now'))`,
+      )
+      .run(wfId);
+
+    const snap = buildSnapshot(db, wfId);
+    expect(snap!.graph).toBeUndefined();
+  });
+});
