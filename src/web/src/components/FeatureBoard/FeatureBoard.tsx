@@ -124,6 +124,21 @@ interface Props {
    */
   onSelectTimelineSession?: (itemId: string, sessionId: string) => void;
   /**
+   * Fires when the user clicks a prepost row that has at least one captured
+   * output path. The parent is expected to select the item and switch the
+   * right pane to the PrepostOutputPane for the given row. `stream` is
+   * whichever of stdout/stderr has a non-null path (stdout wins when both
+   * are set, as it is the more common case for post-command diagnostics).
+   */
+  onSelectTimelinePrepost?: (
+    itemId: string,
+    selection: {
+      prepostId: string;
+      stream: 'stdout' | 'stderr';
+      commandName: string;
+    },
+  ) => void;
+  /**
    * Phase 5: per-item timeline refetch signals. The parent route owns the
    * counter and bumps it (keyed by itemId) when a session lifecycle frame
    * arrives for an item currently in `expanded`. When the count for an
@@ -154,6 +169,7 @@ export function FeatureBoard({
   selectedItemId,
   onSelectItem,
   onSelectTimelineSession,
+  onSelectTimelinePrepost,
   timelineInvalidations,
   onExpandedChange,
 }: Props) {
@@ -477,17 +493,46 @@ export function FeatureBoard({
     [onSelectTimelineSession],
   );
 
-  // Prepost click → no artifact-serving endpoint exists server-side today
-  // (see spec for phase 4); keep the wire-up in place so phase 5/6 can swap
-  // in a real viewer without touching FeatureBoard's tree. For now we
-  // surface a transient placeholder notice via state.
-  const [prepostNotice, setPrepostNotice] = useState<string | null>(null);
-  const handleOpenPrepostOutput = useCallback((row: ItemTimelinePrepostRow) => {
-    const hasOutput = !!(row.stdoutPath ?? row.stderrPath);
-    if (!hasOutput) return;
-    setPrepostNotice('Viewing post-command output is coming soon');
-    window.setTimeout(() => setPrepostNotice(null), 3000);
-  }, []);
+  // Prepost click → either route the request up to the parent so it can show
+  // the real artifact in the right pane (new in F4), or — for legacy rows
+  // from before F3 where both stdout_path and stderr_path are NULL — show a
+  // permanent static notice. The previous 3-second transient placeholder
+  // and its `prepost-output-notice` testid were removed in F4.
+  const [legacyPrepostNotice, setLegacyPrepostNotice] = useState(false);
+  const handleOpenPrepostOutput = useCallback(
+    (row: ItemTimelinePrepostRow) => {
+      const hasStdout = !!row.stdoutPath;
+      const hasStderr = !!row.stderrPath;
+      if (!hasStdout && !hasStderr) {
+        // Legacy row (pre-F3): nothing to serve. Show a permanent notice so
+        // the user understands why nothing is rendered.
+        setLegacyPrepostNotice(true);
+        return;
+      }
+      setLegacyPrepostNotice(false);
+      // Which row does this belong to? Find the owning itemId by scanning
+      // the fetched timelines — each row's id is unique across items only
+      // for session rows, but prepost row ids are globally unique integers
+      // (SQLite rowid), so any mapping across item scopes is safe.
+      let owningItemId: string | null = null;
+      for (const [itemId, rows] of Object.entries(timelineByItem)) {
+        if (rows?.some((r) => r.kind === 'prepost' && r.id === row.id)) {
+          owningItemId = itemId;
+          break;
+        }
+      }
+      if (!owningItemId) return;
+      // stdout wins when both are present — more common for post-command
+      // diagnostics — matching the behaviour documented on the prop.
+      const stream: 'stdout' | 'stderr' = hasStdout ? 'stdout' : 'stderr';
+      onSelectTimelinePrepost?.(owningItemId, {
+        prepostId: row.id,
+        stream,
+        commandName: row.commandName,
+      });
+    },
+    [onSelectTimelinePrepost, timelineByItem],
+  );
 
   // ---------------------------------------------------------------------------
   // Render helpers
@@ -728,17 +773,16 @@ export function FeatureBoard({
         </div>
       </div>
 
-      {/* Transient notice for prepost-output clicks — no artifact-serving
-          endpoint exists server-side today, so clicking a prepost row with
-          a non-null output path surfaces a placeholder notice for 3 s. This
-          placeholder will be replaced in a later phase once the artifact
-          endpoint lands. */}
-      {prepostNotice && (
+      {/* Permanent notice shown when the user clicks a legacy prepost row
+          (both stdout_path and stderr_path NULL — e.g. rows written before
+          F3 started capturing output). Dismissed by clicking any other
+          row — no auto-dismiss timer. */}
+      {legacyPrepostNotice && (
         <div
-          data-testid="prepost-output-notice"
-          className="shrink-0 px-3 py-1.5 text-[10px] text-amber-300 bg-amber-900/20 border-b border-amber-700/30"
+          data-testid="prepost-no-output-notice"
+          className="shrink-0 px-3 py-1.5 text-[10px] text-gray-400 bg-gray-800/60 border-b border-gray-700"
         >
-          {prepostNotice}
+          No output captured for this run
         </div>
       )}
 

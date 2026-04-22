@@ -16,10 +16,12 @@
  *   - No 0.0.0.0 bind path exists anywhere in this file.
  */
 
+import * as path from 'path';
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import fastifyWebsocket, { type SocketStream } from '@fastify/websocket';
 import type { DbPool } from '../storage/db.js';
-import { readLogPage } from '../session-log/reader.js';
+import { readArtifactFile, readLogPage } from '../session-log/reader.js';
+import { makePrepostOutputDir } from '../session-log/writer.js';
 import {
   SessionSeqStore,
   BackfillBuffer,
@@ -372,6 +374,22 @@ export interface ServerCallbacks {
    * If omitted, the endpoint returns 501 Not Implemented.
    */
   createWorkflow?: CreateWorkflowFn;
+  /**
+   * Absolute path to the directory containing the active .yoke.yml. Used by
+   * the prepost-artifact endpoint to compute the expected root for a given
+   * workflow (via makePrepostOutputDir) so the path-traversal guard can
+   * reject any stored DB path that does not resolve under that root.
+   *
+   * When omitted, the endpoint returns 501 Not Implemented — the server
+   * cannot validate artifact paths without knowing the configDir.
+   */
+  configDir?: string;
+  /**
+   * Override for os.homedir() used when computing the expected root for the
+   * prepost-artifact guard. Tests pass a per-test tmp dir so captured files
+   * and the guard agree on the same tree.
+   */
+  homeDir?: string;
 }
 
 /**
@@ -906,6 +924,96 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       });
 
       return reply.send({ rows });
+    },
+  );
+
+  // GET /api/workflows/:workflowId/items/:itemId/prepost/:prepostId/:stream
+  // Returns the captured stdout or stderr for one prepost_runs row as
+  // { content, totalSize, truncated }. Files are already capped at
+  // OUTPUT_CAPTURE_LIMIT (32 KiB) on write so a single response is fine —
+  // no pagination needed.
+  //
+  // Security — the stored stdout_path / stderr_path is server-written by the
+  // runner, but a malicious or corrupted DB row could still point outside the
+  // workflow's output tree. We defend against that by recomputing the expected
+  // root via makePrepostOutputDir({ configDir, workflowId }) and asserting
+  // the resolved stored path starts with the resolved root. Cross-workflow /
+  // cross-item mismatches return 404 (do not leak existence via 400).
+  fastify.get(
+    '/api/workflows/:workflowId/items/:itemId/prepost/:prepostId/:stream',
+    async (
+      req: FastifyRequest<{
+        Params: { workflowId: string; itemId: string; prepostId: string; stream: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      const { workflowId, itemId, prepostId, stream } = req.params;
+
+      if (stream !== 'stdout' && stream !== 'stderr') {
+        return badRequest(reply, "stream must be 'stdout' or 'stderr'");
+      }
+
+      if (!callbacks.configDir) {
+        return reply.status(501).send({ error: 'prepost artifact serving not configured' });
+      }
+
+      const reader = db.reader();
+      // Look up the row by id only; cross-workflow / cross-item mismatches
+      // return 404 in the next step (no differentiated error code to avoid
+      // leaking whether a given id exists in a different workflow).
+      const prepostIdNum = Number(prepostId);
+      if (!Number.isInteger(prepostIdNum) || prepostIdNum <= 0) {
+        return notFound(reply, 'prepost run not found');
+      }
+
+      const row = reader
+        .prepare(
+          'SELECT id, workflow_id, item_id, stdout_path, stderr_path FROM prepost_runs WHERE id = ?',
+        )
+        .get(prepostIdNum) as
+        | {
+            id: number;
+            workflow_id: string;
+            item_id: string | null;
+            stdout_path: string | null;
+            stderr_path: string | null;
+          }
+        | undefined;
+
+      if (!row) return notFound(reply, 'prepost run not found');
+      if (row.workflow_id !== workflowId || row.item_id !== itemId) {
+        return notFound(reply, 'prepost run not found');
+      }
+
+      const storedPath = stream === 'stdout' ? row.stdout_path : row.stderr_path;
+      if (!storedPath) {
+        return reply.status(404).send({ error: 'no output captured' });
+      }
+
+      // Path-traversal guard. We recompute the expected root from the
+      // server-local configDir (+ optional homeDir override for tests) and
+      // assert the stored path resolves under it. path.resolve() canonicalises
+      // the input without requiring the file to exist (unlike fs.realpath),
+      // which is fine because the root itself is not a symlink target in
+      // normal yoke operation.
+      const expectedRoot = path.resolve(
+        makePrepostOutputDir({
+          configDir: callbacks.configDir,
+          workflowId,
+          homeDir: callbacks.homeDir,
+        }),
+      );
+      const resolvedPath = path.resolve(storedPath);
+      // Append a sep so "/a/b" does not spuriously contain "/a/bc".
+      const rootWithSep = expectedRoot.endsWith(path.sep) ? expectedRoot : expectedRoot + path.sep;
+      if (!resolvedPath.startsWith(rootWithSep)) {
+        return badRequest(reply, 'stored artifact path is outside the expected root');
+      }
+
+      const file = await readArtifactFile(resolvedPath);
+      if (!file) return notFound(reply, 'artifact file not found');
+
+      return reply.send(file);
     },
   );
 
