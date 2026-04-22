@@ -12,6 +12,8 @@
  *    backfill replays preserve original seq.
  */
 
+import type { WorkflowGraph, GraphPatch } from '../../shared/types/graph.js';
+
 // ---------------------------------------------------------------------------
 // Envelope types (§8)
 // ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ export type ServerFrameType =
   | 'prepost.command.started'
   | 'prepost.command.output'
   | 'prepost.command.ended'
+  | 'graph.update'
   | 'notice'
   | 'error'
   | 'pong'
@@ -98,6 +101,13 @@ export interface WorkflowSnapshotPayload {
   items: ItemProjection[];
   activeSessions: SessionProjection[];
   pendingAttention: PendingAttentionEntry[];
+  graph?: WorkflowGraph;
+}
+
+/** Graph-view live update — incremental patch over the last known WorkflowGraph. */
+export interface GraphUpdatePayload {
+  workflowId: string;
+  patch: GraphPatch;
 }
 
 export interface StageProjection {
