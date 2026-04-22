@@ -150,6 +150,39 @@ interface DbTimelinePrepostRow {
  * treats any parse failure as "no action recorded" rather than 500, since
  * a malformed row should not break the rest of the timeline.
  */
+/**
+ * Parse a graph `prepostRunId` of the form `run:<sid>:<when>:<cmd>:<startedAt>`
+ * back into its coordinates.  startedAt (ISO 8601) contains colons, so we split
+ * left-to-right up to the first three delimiters and treat the remainder as
+ * startedAt.  `sid === '_'` maps back to `null` (no session attached).
+ */
+function parsePrepostRunId(
+  id: string,
+): { sessionId: string | null; when: 'pre' | 'post'; commandName: string; startedAt: string } | null {
+  if (!id.startsWith('run:')) return null;
+  const rest = id.slice(4);
+  const i1 = rest.indexOf(':');
+  if (i1 < 0) return null;
+  const sidRaw = rest.slice(0, i1);
+  const rest1 = rest.slice(i1 + 1);
+  const i2 = rest1.indexOf(':');
+  if (i2 < 0) return null;
+  const when = rest1.slice(0, i2);
+  if (when !== 'pre' && when !== 'post') return null;
+  const rest2 = rest1.slice(i2 + 1);
+  const i3 = rest2.indexOf(':');
+  if (i3 < 0) return null;
+  const commandName = rest2.slice(0, i3);
+  const startedAt = rest2.slice(i3 + 1);
+  if (!startedAt) return null;
+  return {
+    sessionId: sidRaw === '_' ? null : sidRaw,
+    when,
+    commandName,
+    startedAt,
+  };
+}
+
 function parseActionTaken(raw: string | null): ItemTimelinePrepostRow['actionTaken'] {
   if (raw == null || raw === '') return null;
   try {
@@ -959,6 +992,82 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       );
       const resolvedPath = path.resolve(storedPath);
       // Append a sep so "/a/b" does not spuriously contain "/a/bc".
+      const rootWithSep = expectedRoot.endsWith(path.sep) ? expectedRoot : expectedRoot + path.sep;
+      if (!resolvedPath.startsWith(rootWithSep)) {
+        return badRequest(reply, 'stored artifact path is outside the expected root');
+      }
+
+      const file = await readArtifactFile(resolvedPath);
+      if (!file) return notFound(reply, 'artifact file not found');
+
+      return reply.send(file);
+    },
+  );
+
+  // GET /api/workflows/:workflowId/prepost-run/:runId/:stream
+  // Graph-view sibling of the /items/:itemId/prepost/:prepostId/:stream
+  // endpoint above.  The Graph View knows a prepost node by its synthetic
+  // runId (`run:<sessionId>:<when>:<cmd>:<startedAt>`) which encodes the
+  // coordinates uniquely identifying a prepost_runs row — but not the
+  // numeric DB id.  This endpoint parses the synthetic id, looks up the
+  // matching row, and serves the artifact using the same path-traversal
+  // guard as the timeline endpoint.
+  fastify.get(
+    '/api/workflows/:workflowId/prepost-run/:runId/:stream',
+    async (
+      req: FastifyRequest<{
+        Params: { workflowId: string; runId: string; stream: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      const { workflowId, runId, stream } = req.params;
+
+      if (stream !== 'stdout' && stream !== 'stderr') {
+        return badRequest(reply, "stream must be 'stdout' or 'stderr'");
+      }
+      if (!callbacks.configDir) {
+        return reply.status(501).send({ error: 'prepost artifact serving not configured' });
+      }
+
+      const parsed = parsePrepostRunId(runId);
+      if (!parsed) return notFound(reply, 'prepost run not found');
+
+      const reader = db.reader();
+      const row = reader
+        .prepare(
+          `SELECT stdout_path, stderr_path FROM prepost_runs
+           WHERE workflow_id = ?
+             AND (session_id IS ? OR session_id = ?)
+             AND when_phase = ?
+             AND command_name = ?
+             AND started_at = ?`,
+        )
+        .get(
+          workflowId,
+          parsed.sessionId,
+          parsed.sessionId,
+          parsed.when,
+          parsed.commandName,
+          parsed.startedAt,
+        ) as
+        | { stdout_path: string | null; stderr_path: string | null }
+        | undefined;
+
+      if (!row) return notFound(reply, 'prepost run not found');
+
+      const storedPath = stream === 'stdout' ? row.stdout_path : row.stderr_path;
+      if (!storedPath) {
+        return reply.status(404).send({ error: 'no output captured' });
+      }
+
+      const expectedRoot = path.resolve(
+        makePrepostOutputDir({
+          configDir: callbacks.configDir,
+          workflowId,
+          homeDir: callbacks.homeDir,
+        }),
+      );
+      const resolvedPath = path.resolve(storedPath);
       const rootWithSep = expectedRoot.endsWith(path.sep) ? expectedRoot : expectedRoot + path.sep;
       if (!resolvedPath.startsWith(rootWithSep)) {
         return badRequest(reply, 'stored artifact path is outside the expected root');

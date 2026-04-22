@@ -4,6 +4,7 @@
  */
 
 import type { WorkflowStatus } from '../../../shared/types/workflow';
+import type { WorkflowGraph, GraphPatch } from '../../../shared/types/graph';
 
 export type ServerFrameType =
   | 'hello'
@@ -27,6 +28,7 @@ export type ServerFrameType =
   | 'prepost.command.started'
   | 'prepost.command.output'
   | 'prepost.command.ended'
+  | 'graph.update'
   | 'notice'
   | 'error'
   | 'pong'
@@ -153,6 +155,15 @@ export interface WorkflowSnapshotPayload {
   items: ItemProjection[];
   activeSessions: SessionProjection[];
   pendingAttention: PendingAttention[];
+  /** Optional graph projection (Graph View). Absent on workflows that have
+   *  never received a graph frame. */
+  graph?: WorkflowGraph;
+}
+
+/** Graph-view live update — incremental patch over the last known WorkflowGraph. */
+export interface GraphUpdatePayload {
+  workflowId: string;
+  patch: GraphPatch;
 }
 
 export interface WorkflowIndexUpdatePayload {

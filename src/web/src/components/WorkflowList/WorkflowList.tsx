@@ -146,12 +146,23 @@ export function WorkflowList() {
     setRows([]);
     void fetchPage();
 
-    // Sync URL query string for deep-link support.
-    const qp = new URLSearchParams();
-    if (statusFilter !== 'all') qp.set('status', statusFilter);
-    if (debouncedSearch) qp.set('q', debouncedSearch);
-    if (showArchived) qp.set('archived', 'true');
-    setSearchParams(qp, { replace: true });
+    // Sync URL query string for deep-link support — but only the sidebar's
+    // own keys.  Rebuilding the full URLSearchParams here would drop
+    // detail-route params like ?view=graph that can be present concurrently
+    // (the sidebar is always mounted alongside WorkflowDetailRoute).
+    setSearchParams(
+      (prev) => {
+        const qp = new URLSearchParams(prev);
+        if (statusFilter !== 'all') qp.set('status', statusFilter);
+        else qp.delete('status');
+        if (debouncedSearch) qp.set('q', debouncedSearch);
+        else qp.delete('q');
+        if (showArchived) qp.set('archived', 'true');
+        else qp.delete('archived');
+        return qp;
+      },
+      { replace: true },
+    );
   }, [statusFilter, debouncedSearch, showArchived, fetchPage, setSearchParams]);
 
   // WS: patch rows in-place on workflow.index.update.

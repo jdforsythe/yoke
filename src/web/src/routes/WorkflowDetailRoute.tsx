@@ -21,6 +21,7 @@ import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset, subscribe as subscribeRenderStore, getSessionBlocksSnapshot } from '@/store/renderStore';
 import { setAttentionCount } from '@/store/attentionStore';
+import { dispatchGraphFrame } from '@/store/graphStore';
 import { buildFromSnapshot, upsert, removeBySessionId } from '@/store/itemSessionMap';
 import type { ActiveSession } from '@/store/itemSessionMap';
 import { shouldUseReviewPanel } from '@/store/reviewPanelDetection';
@@ -30,6 +31,10 @@ import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
+import { GraphPane } from '@/components/GraphPane';
+import { NodeSummaryPanel } from '@/components/GraphPane/NodeSummaryPanel';
+import { useWorkflowGraph } from '@/store/graphStore';
+import type { GraphNode, SessionGraphNode, PhaseGraphNode } from '../../../shared/types/graph';
 import { fetchItemTimeline, invalidateItemTimeline } from '@/components/FeatureBoard/timelineCache';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
 import { HistoryPane } from '@/components/LiveStream/HistoryPane';
@@ -88,11 +93,30 @@ interface WorkflowDetailState {
 export function WorkflowDetailRoute() {
   const { workflowId } = useParams<{ workflowId: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  // Capture the attention deep-link ID at initial render, before WorkflowList's
-  // setSearchParams effect clears it (WorkflowList runs its effect on mount and
-  // replaces all URL params with its own filter state, dropping ?attention).
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Capture the attention deep-link ID at initial render.  The effect below
+  // removes it from the visible URL once consumed so it does not persist
+  // across refreshes or appear in the address bar.
   const initialAttentionIdRef = useRef(searchParams.get('attention'));
+
+  // View tab — 'list' (default, FeatureBoard) or 'graph' (GraphPane).
+  // Persisted in the URL query string as ?view=graph for link/refresh.
+  const viewParam = searchParams.get('view');
+  const activeView: 'list' | 'graph' = viewParam === 'graph' ? 'graph' : 'list';
+  const setView = useCallback(
+    (next: 'list' | 'graph') => {
+      setSearchParams(
+        (prev) => {
+          const qp = new URLSearchParams(prev);
+          if (next === 'graph') qp.set('view', 'graph');
+          else qp.delete('view');
+          return qp;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   // RC-3: explicitly remove the consumed ?attention param from the URL so it
   // does not persist in the address bar or browser history.
@@ -114,6 +138,11 @@ export function WorkflowDetailRoute() {
   });
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  // Graph tab selection — when the user clicks a non-session node (or a
+  // session node on the Graph tab), this holds the graph node payload so the
+  // right pane can swap to NodeSummaryPanel. null = nothing selected from
+  // the graph, which also collapses the right pane on empty-canvas clicks.
+  const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [notFound, setNotFound] = useState(false);
 
   // Phase 5: mirror FeatureBoard's expanded item set so the WS frame handlers
@@ -201,6 +230,28 @@ export function WorkflowDetailRoute() {
     [],
   );
 
+  // Graph store snapshot — consumed by the Graph tab and by the
+  // session-node → item-id resolver below. Read even on the List tab; the
+  // hook is cheap (no render unless the workflow's graph actually changes).
+  const workflowGraph = useWorkflowGraph(workflowId);
+
+  const handleGraphSelectSession = useCallback(
+    (session: SessionGraphNode) => {
+      const phase = workflowGraph?.nodes.find(
+        (n): n is PhaseGraphNode => n.kind === 'phase' && n.id === session.phaseNodeId,
+      );
+      const itemId = phase?.itemId ?? null;
+      if (itemId) setSelectedItemId(itemId);
+      setSelectedGraphNode(session);
+    },
+    [workflowGraph],
+  );
+
+  const handleGraphSelectNode = useCallback((node: GraphNode | null) => {
+    setSelectedGraphNode(node);
+    if (!node) setSelectedItemId(null);
+  }, []);
+
   // Subscribe to the render store so Task tool_use blocks can be detected within
   // one frame of arrival — no polling (RC-1, r3-03).
   // _activeSessionId is derived from current state before any early return so
@@ -236,6 +287,7 @@ export function WorkflowDetailRoute() {
       itemEndedSession: new Map(),
     });
     setSelectedItemId(null);
+    setSelectedGraphNode(null);
     const client = getClient();
     client.subscribe(workflowId);
 
@@ -254,6 +306,18 @@ export function WorkflowDetailRoute() {
           itemActiveSession: buildFromSnapshot(p.activeSessions),
           itemEndedSession: new Map(),
         });
+        // Pick up the optional `graph` field into the graph store. Always call
+        // — dispatchGraphFrame is a no-op when payload.graph is absent.
+        dispatchGraphFrame(frame);
+      }),
+    );
+
+    // Graph view live patches. Scoped to the currently subscribed workflow; the
+    // store also keys on workflowId so cross-talk is impossible.
+    offs.push(
+      client.on('graph.update', (frame: ServerFrame) => {
+        if (frame.workflowId !== workflowId) return;
+        dispatchGraphFrame(frame);
       }),
     );
 
@@ -463,9 +527,14 @@ export function WorkflowDetailRoute() {
           .reverse();
         setItemSessions(sessions);
         // Auto-switch to History when the item has past sessions but no active
-        // or recently-ended session in view.
+        // or recently-ended session in view — unless the user just clicked a
+        // prepost row (which sets streamTab='prepost' synchronously; stomping
+        // it here loses the F4 captured-output view).
         setState((prev) => {
+          const prepostOnThisItem =
+            prepostSelection !== null && prepostSelection.itemId === selectedItemId;
           if (
+            !prepostOnThisItem &&
             sessions.length > 0 &&
             !prev.itemActiveSession.has(selectedItemId) &&
             !prev.itemEndedSession.has(selectedItemId)
@@ -583,7 +652,61 @@ export function WorkflowDetailRoute() {
         />
       </div>
 
-      {/* Main body: board + stream pane side-by-side */}
+      {/* List / Graph view tabs (URL-synced via ?view=graph) */}
+      <div className="shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-gray-700 bg-gray-900">
+        <button
+          onClick={() => setView('list')}
+          data-testid="view-tab-list"
+          className={`text-xs px-3 py-1 rounded font-medium transition-colors ${
+            activeView === 'list'
+              ? 'bg-gray-700 text-gray-100'
+              : 'text-gray-400 hover:text-gray-200'
+          }`}
+        >
+          List
+        </button>
+        <button
+          onClick={() => setView('graph')}
+          data-testid="view-tab-graph"
+          className={`text-xs px-3 py-1 rounded font-medium transition-colors ${
+            activeView === 'graph'
+              ? 'bg-gray-700 text-gray-100'
+              : 'text-gray-400 hover:text-gray-200'
+          }`}
+        >
+          Graph
+        </button>
+      </div>
+
+      {/* Main body: either the existing list (board + stream) or the graph view. */}
+      {activeView === 'graph' ? (
+        <div className="flex flex-1 min-h-0">
+          <div className="flex-1 min-w-0">
+            <GraphPane
+              workflowId={workflowId!}
+              onSelectSession={handleGraphSelectSession}
+              onSelectGraphNode={handleGraphSelectNode}
+              selectedGraphNodeId={selectedGraphNode?.id ?? null}
+            />
+          </div>
+          {selectedGraphNode && workflowGraph && (
+            <div className="w-96 shrink-0 border-l border-gray-700 overflow-hidden flex flex-col">
+              {selectedGraphNode.kind === 'session' ? (
+                <LiveStreamPane
+                  sessionId={selectedGraphNode.sessionId}
+                  workflowId={workflowId!}
+                />
+              ) : (
+                <NodeSummaryPanel
+                  node={selectedGraphNode}
+                  graph={workflowGraph}
+                  workflowId={workflowId!}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="flex flex-1 min-h-0">
         {/* Feature board */}
         <div className="w-80 shrink-0 border-r border-gray-700 overflow-hidden flex flex-col">
@@ -747,6 +870,7 @@ export function WorkflowDetailRoute() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

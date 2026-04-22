@@ -40,6 +40,10 @@ import type {
 } from './frames.js';
 import { makeFrame, makeErrorFrame } from './frames.js';
 import type { IdempotencyStore } from './idempotency.js';
+import type { Pipeline, Phase, ActionValue } from '../../shared/types/config.js';
+import type { WorkflowGraph } from '../../shared/types/graph.js';
+import { deriveFromHistory } from '../graph/derive.js';
+import { readGraph, writeGraph } from '../graph/persist.js';
 import { JSONPath } from 'jsonpath-plus';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +57,12 @@ import { JSONPath } from 'jsonpath-plus';
  * lifetime rather than once per snapshot.
  */
 const badJsonPathExprs = new Set<string>();
+
+/**
+ * Workflow IDs for which we've already warned about a legacy pipeline JSON
+ * lacking a `phases` block — one warn per workflow over the server's lifetime.
+ */
+const warnedLegacyPipelines = new Set<string>();
 
 /**
  * Evaluate a JSONPath expression against json and return the first match as
@@ -484,6 +494,8 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
     createdAt: a.created_at,
   }));
 
+  const graph = hydrateGraph(db, workflowId, pipelineRow?.pipeline, wf.status);
+
   return {
     workflow: {
       id: wf.id,
@@ -499,7 +511,148 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
     items,
     activeSessions,
     pendingAttention,
+    ...(graph ? { graph } : {}),
   };
+}
+
+/**
+ * Return the workflow's graph from `workflows.graph_state`, deriving it from
+ * durable history on first subscribe and persisting the result.
+ *
+ * Returns null only when the pipeline JSON is unavailable or malformed — in
+ * every other case, the graph is at minimum the configured-only skeleton.
+ */
+function parseDependsOn(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : null;
+  } catch {
+    return null;
+  }
+}
+
+function hydrateGraph(
+  db: DbPool,
+  workflowId: string,
+  pipelineJson: string | undefined,
+  workflowStatus: string,
+): WorkflowGraph | null {
+  const persisted = readGraph(db, workflowId);
+  if (persisted) return persisted;
+  if (!pipelineJson) return null;
+
+  let pipelineParsed: { stages?: Pipeline['stages']; phases?: Record<string, Phase> };
+  try {
+    pipelineParsed = JSON.parse(pipelineJson);
+  } catch {
+    return null;
+  }
+  if (!pipelineParsed.stages || pipelineParsed.stages.length === 0) return null;
+
+  const pipeline: Pipeline = { stages: pipelineParsed.stages };
+  // Legacy workflows (pre-graph) persisted pipeline JSON without a `phases`
+  // block; the graph still derives from sessions/items at runtime but will
+  // lack configured prepost nodes.  Warn once per workflow so operators can
+  // spot the shortfall in logs without drowning in noise.
+  if (!pipelineParsed.phases && !warnedLegacyPipelines.has(workflowId)) {
+    warnedLegacyPipelines.add(workflowId);
+    console.warn(
+      `[graph] workflow ${workflowId}: pipeline JSON has no 'phases' block; configured prepost nodes will be absent from the graph`,
+    );
+  }
+  const phases = pipelineParsed.phases ?? {};
+
+  const reader = db.reader();
+  const itemRows = reader
+    .prepare(
+      'SELECT id, stage_id, stable_id, status, current_phase, depends_on, data FROM items WHERE workflow_id = ? ORDER BY rowid',
+    )
+    .all(workflowId) as Array<{
+      id: string;
+      stage_id: string;
+      stable_id: string | null;
+      status: string;
+      current_phase: string | null;
+      depends_on: string | null;
+      data: string;
+    }>;
+  const sessionRows = reader
+    .prepare(
+      'SELECT id, item_id, stage, phase, parent_session_id, started_at, ended_at, exit_code FROM sessions WHERE workflow_id = ? ORDER BY started_at, id',
+    )
+    .all(workflowId) as Array<{
+      id: string;
+      item_id: string | null;
+      stage: string;
+      phase: string;
+      parent_session_id: string | null;
+      started_at: string;
+      ended_at: string | null;
+      exit_code: number | null;
+    }>;
+  const prepostRows = reader
+    .prepare(
+      'SELECT session_id, stage, phase, item_id, when_phase, command_name, started_at, ended_at, action_taken FROM prepost_runs WHERE workflow_id = ? ORDER BY started_at, id',
+    )
+    .all(workflowId) as Array<{
+      session_id: string | null;
+      stage: string;
+      phase: string;
+      item_id: string | null;
+      when_phase: 'pre' | 'post';
+      command_name: string;
+      started_at: string;
+      ended_at: string | null;
+      action_taken: string | null;
+    }>;
+
+  // Attempt count per (itemId, phase) from prior sessions with matching coords.
+  const attemptSeq = new Map<string, number>();
+  const derived = deriveFromHistory({
+    workflowId,
+    pipeline,
+    phases,
+    items: itemRows.map((r) => ({
+      id: r.id,
+      stageId: r.stage_id,
+      stableId: r.stable_id,
+      status: r.status,
+      currentPhase: r.current_phase,
+      dependsOn: parseDependsOn(r.depends_on),
+    })),
+    sessions: sessionRows.map((s) => {
+      const key = `${s.item_id ?? '_'}:${s.phase}`;
+      const attempt = (attemptSeq.get(key) ?? 0) + 1;
+      attemptSeq.set(key, attempt);
+      return {
+        id: s.id,
+        itemId: s.item_id,
+        stage: s.stage,
+        phase: s.phase,
+        attempt,
+        parentSessionId: s.parent_session_id,
+        startedAt: s.started_at,
+        endedAt: s.ended_at,
+        exitCode: s.exit_code,
+      };
+    }),
+    prepostRuns: prepostRows.map((p) => ({
+      sessionId: p.session_id,
+      stage: p.stage,
+      phase: p.phase,
+      itemId: p.item_id,
+      when: p.when_phase,
+      commandName: p.command_name,
+      startedAt: p.started_at,
+      endedAt: p.ended_at,
+      actionTaken: p.action_taken ? (JSON.parse(p.action_taken) as ActionValue) : null,
+    })),
+    workflowStatus,
+  });
+
+  writeGraph(db, workflowId, derived);
+  return derived;
 }
 
 /**

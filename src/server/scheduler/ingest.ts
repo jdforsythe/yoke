@@ -104,7 +104,10 @@ export function createWorkflow(
         opts.name,
         config.template.name,
         JSON.stringify({ stages: config.pipeline.stages.map((s) => s.id) }),
-        JSON.stringify({ stages: config.pipeline.stages }),
+        // Persist phases alongside the pipeline stages so the Graph view can
+        // materialize pre/post command nodes on derive-from-history without
+        // re-reading the template file (which may have changed since ingest).
+        JSON.stringify({ stages: config.pipeline.stages, phases: config.phases }),
         JSON.stringify({ configDir: config.configDir }),
         firstStageId,
         now,

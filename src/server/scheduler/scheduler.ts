@@ -91,6 +91,12 @@ import type { ArtifactWriteRecord } from '../pipeline/engine.js';
 import { readLastCheckManifest } from '../hook-contract/manifest-reader.js';
 import { seedPerItemStage } from './per-item-seeder.js';
 import { injectHookFailure } from '../prepost/handoff-injector.js';
+import type { GraphEvent } from '../graph/events.js';
+import { applyEvent, applyPatch } from '../graph/apply.js';
+import { readGraph, writeGraph } from '../graph/persist.js';
+import { pruneUntraveled } from '../graph/prune.js';
+import { buildConfiguredGraph } from '../graph/builder.js';
+import { prepostRunId as deriveGraphPrepostRunId } from '../graph/derive.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -492,6 +498,18 @@ export class Scheduler {
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+
+  /**
+   * Count of graph.update emissions that threw.  Exposed so tests and
+   * operators can detect silent regressions; a non-zero value means the
+   * persisted graph may be out of sync with the latest event until the next
+   * successful emission re-derives from history.
+   */
+  private _graphUpdateFailures = 0;
+
+  get graphUpdateFailures(): number {
+    return this._graphUpdateFailures;
+  }
 
   /**
    * Per-workflow timers for coalesced workflow.index.update broadcasts.
@@ -954,6 +972,8 @@ export class Scheduler {
                 },
               });
               this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
+            } else {
+              this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
             }
             // On success: placeholder deleted, real items pending — next tick
             // picks them up.  On seed_failed: placeholder now in awaiting_user —
@@ -1050,6 +1070,8 @@ export class Scheduler {
                 },
               });
               this._broadcastItemState(wf.id, item.id, item.stage_id, failResult);
+            } else {
+              this._emitGraphUpdate(wf.id, buildItemSeededEvent(this.db, wf.id, stage.id));
             }
             // On success: placeholder deleted, real items pending — next tick picks up.
             // On error: back to awaiting_user — user must retry again.
@@ -1350,6 +1372,7 @@ export class Scheduler {
         outputDir: prepostOutputDir,
       });
       preRuns = preResult.runs;
+      this._emitGraphPrepostRuns(wf.id, sessionId, item.stage_id, item.id, phaseKey, preRuns);
 
       if (preResult.kind !== 'complete') {
         // Pre-command blocked spawn.
@@ -1521,12 +1544,23 @@ export class Scheduler {
     this.inFlight.set(item.id, inFlightEntry);
 
     // Broadcast session.started with itemId so the client can upsert itemActiveSession.
+    const sessionStartedAt = new Date().toISOString();
     this.broadcastFn(wf.id, sessionId, 'session.started', {
       sessionId,
       itemId: item.id,
       phase: phaseKey,
       attempt,
-      startedAt: new Date().toISOString(),
+      startedAt: sessionStartedAt,
+    });
+    this._emitGraphUpdate(wf.id, {
+      kind: 'session_started',
+      stageId: item.stage_id,
+      itemId: item.id,
+      phase: phaseKey,
+      sessionId,
+      attempt,
+      parentSessionId: null,
+      startedAt: sessionStartedAt,
     });
 
     // Broadcast the fully-rendered prompt so live viewers can see it at the
@@ -1656,12 +1690,11 @@ export class Scheduler {
         this._broadcastItemState(wf.id, item.id, item.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
-        this.broadcastFn(wf.id, sessionId, 'session.ended', {
-          sessionId,
+        this._broadcastSessionEnded(wf.id, sessionId, {
           endedAt: new Date().toISOString(),
           exitCode,
           statusFlags: { parseErrors },
-          reason: 'fail' as const,
+          reason: 'fail',
         });
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -1681,12 +1714,11 @@ export class Scheduler {
       // Session was cancelled due to rate limit or item no longer exists.
       fixtureWriter?.close(exitCode);
       if (fixtureWriter) clearRecordMarker(this.config.configDir);
-      this.broadcastFn(wf.id, sessionId, 'session.ended', {
-        sessionId,
+      this._broadcastSessionEnded(wf.id, sessionId, {
         endedAt: new Date().toISOString(),
         exitCode,
         statusFlags: {},
-        reason: 'rate_limited' as const,
+        reason: 'rate_limited',
       });
       await logWriter.close();
       endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -1734,12 +1766,11 @@ export class Scheduler {
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
-        this.broadcastFn(wf.id, sessionId, 'session.ended', {
-          sessionId,
+        this._broadcastSessionEnded(wf.id, sessionId, {
           endedAt: new Date().toISOString(),
           exitCode,
           statusFlags: { parseErrors },
-          reason: 'validator_fail' as const,
+          reason: 'validator_fail',
         });
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -1792,12 +1823,11 @@ export class Scheduler {
         this._broadcastItemState(wf.id, freshItem.id, freshItem.stage_id, result);
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
-        this.broadcastFn(wf.id, sessionId, 'session.ended', {
-          sessionId,
+        this._broadcastSessionEnded(wf.id, sessionId, {
           endedAt: new Date().toISOString(),
           exitCode,
           statusFlags: { parseErrors },
-          reason: 'diff_check_fail' as const,
+          reason: 'diff_check_fail',
         });
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -1819,6 +1849,7 @@ export class Scheduler {
           outputDir: prepostOutputDir,
         });
         console.log(`[scheduler] post-commands result: kind=${postResult.kind}${postResult.kind === 'action' ? ` action=${JSON.stringify(postResult.action)}` : ''}`);
+        this._emitGraphPrepostRuns(wf.id, sessionId, freshItem.stage_id, freshItem.id, phaseKey, postResult.runs);
       }
 
       // All runs (pre + post) are persisted together with the state transition.
@@ -1914,12 +1945,11 @@ export class Scheduler {
         // successful even though a post-command returned a non-continue action.
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
-        this.broadcastFn(wf.id, sessionId, 'session.ended', {
-          sessionId,
+        this._broadcastSessionEnded(wf.id, sessionId, {
           endedAt: new Date().toISOString(),
           exitCode,
           statusFlags: { parseErrors },
-          reason: 'post_command_action' as const,
+          reason: 'post_command_action',
         });
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -1968,12 +1998,11 @@ export class Scheduler {
         // which hides the post-command timeout / spawn failure from the UI.
         fixtureWriter?.close(exitCode);
         if (fixtureWriter) clearRecordMarker(this.config.configDir);
-        this.broadcastFn(wf.id, sessionId, 'session.ended', {
-          sessionId,
+        this._broadcastSessionEnded(wf.id, sessionId, {
           endedAt: new Date().toISOString(),
           exitCode,
           statusFlags: { parseErrors },
-          reason: 'post_command_fail' as const,
+          reason: 'post_command_fail',
         });
         await logWriter.close();
         endSession(this.db, sessionId, { exitCode, usage: inFlightEntry.usage });
@@ -2040,12 +2069,11 @@ export class Scheduler {
     // --- Wrap up session ---
     fixtureWriter?.close(exitCode);
     if (fixtureWriter) clearRecordMarker(this.config.configDir);
-    this.broadcastFn(wf.id, sessionId, 'session.ended', {
-      sessionId,
+    this._broadcastSessionEnded(wf.id, sessionId, {
       endedAt: new Date().toISOString(),
       exitCode,
       statusFlags: { parseErrors },
-      reason: exitCode === 0 ? 'ok' as const : 'fail' as const,
+      reason: exitCode === 0 ? 'ok' : 'fail',
     });
     // Free the scheduling slot in DB before the async log flush so that
     // effectiveRunning drops immediately. Previously logWriter.close() ran
@@ -2185,6 +2213,14 @@ export class Scheduler {
     };
     this.broadcastFn(workflowId, null, 'item.state', payload);
 
+    this._emitGraphUpdate(workflowId, {
+      kind: 'item_state',
+      stageId,
+      itemId,
+      status: result.newState,
+      currentPhase: result.newPhase,
+    });
+
     // If the stage just completed, advance the workflow (last stage → terminal status).
     if (result.stageComplete) {
       this._handleStageComplete(workflowId, stageId);
@@ -2209,6 +2245,8 @@ export class Scheduler {
       // Not the last stage — advance current_stage pointer via engine function.
       const nextStage = stages[idx + 1];
       applyStageAdvance(this.db, workflowId, nextStage.id);
+      this._emitGraphUpdate(workflowId, { kind: 'stage_complete', stageId: completedStageId });
+      this._emitGraphUpdate(workflowId, { kind: 'stage_started', stageId: nextStage.id });
     } else {
       // Last stage completed — determine final workflow status.
       // Guard: if the workflow was user-cancelled (abandoned) before the last
@@ -2230,6 +2268,8 @@ export class Scheduler {
         status: finalStatus,
         completedAt: new Date().toISOString(),
       });
+      this._emitGraphUpdate(workflowId, { kind: 'stage_complete', stageId: completedStageId });
+      this._emitGraphUpdate(workflowId, { kind: 'workflow_status', status: finalStatus });
 
       // Coalesced index update — sidebar chip needs the new terminal status.
       this.scheduleIndexUpdate(workflowId);
@@ -2341,6 +2381,130 @@ export class Scheduler {
   }
 
   /**
+   * Emit a prepost_ended graph event for each run record returned by the
+   * prepost runner.  Runs are written to SQLite by the engine inside the next
+   * transition's transaction, but the graph cache only needs deterministic ids
+   * derived from (sessionId, when, commandName, startedAt) so we can emit
+   * before the DB row exists.
+   */
+  private _emitGraphPrepostRuns(
+    workflowId: string,
+    sessionId: string | null,
+    stageId: string,
+    itemId: string | null,
+    phase: string,
+    runs: readonly PrePostRunRecord[],
+  ): void {
+    for (const run of runs) {
+      this._emitGraphUpdate(workflowId, {
+        kind: 'prepost_ended',
+        stageId,
+        itemId,
+        phase,
+        when: run.when,
+        commandName: run.commandName,
+        prepostRunId: deriveGraphPrepostRunId(sessionId, run.when, run.commandName, run.startedAt),
+        actionTaken: run.actionTaken ? this._toResolvedAction(run.actionTaken) : null,
+      });
+    }
+  }
+
+  /**
+   * Broadcast session.ended plus the matching graph.update frame.
+   *
+   * Wraps both emits so every session.ended call site stays a one-liner and
+   * the graph patch stays in lockstep with the user-visible session state.
+   */
+  private _broadcastSessionEnded(
+    workflowId: string,
+    sessionId: string,
+    payload: {
+      endedAt: string;
+      exitCode: number | null;
+      statusFlags: Record<string, number | boolean>;
+      reason: string;
+    },
+  ): void {
+    this.broadcastFn(workflowId, sessionId, 'session.ended', {
+      sessionId,
+      endedAt: payload.endedAt,
+      exitCode: payload.exitCode,
+      statusFlags: payload.statusFlags,
+      reason: payload.reason,
+    });
+    this._emitGraphUpdate(workflowId, {
+      kind: 'session_ended',
+      sessionId,
+      endedAt: payload.endedAt,
+      exitCode: payload.exitCode,
+    });
+  }
+
+  /**
+   * Apply a GraphEvent to the stored graph and broadcast the resulting patch.
+   *
+   * The scheduler never recomputes graph state itself — every call site next
+   * to an existing broadcast invokes this helper with the matching GraphEvent.
+   * If the graph has not been materialized yet (workflows.graph_state NULL),
+   * we lazily build the configured skeleton so subsequent patches have
+   * something to mutate.  Errors are swallowed: the graph cache is an
+   * accessory surface and must never disrupt the primary scheduling loop.
+   */
+  private _emitGraphUpdate(workflowId: string, event: GraphEvent): void {
+    try {
+      let graph = readGraph(this.db, workflowId);
+      if (!graph) {
+        graph = buildConfiguredGraph(workflowId, {
+          pipeline: this.config.pipeline,
+          phases: this.config.phases,
+        });
+      }
+      const patch = applyEvent(graph, event);
+      const hasPatch =
+        (patch.addNodes && patch.addNodes.length > 0) ||
+        (patch.addEdges && patch.addEdges.length > 0) ||
+        (patch.updateNodes && patch.updateNodes.length > 0) ||
+        (patch.updateEdges && patch.updateEdges.length > 0) ||
+        (patch.removeNodeIds && patch.removeNodeIds.length > 0) ||
+        (patch.removeEdgeIds && patch.removeEdgeIds.length > 0) ||
+        patch.finalizedAt !== undefined;
+      if (!hasPatch) return;
+
+      let nextGraph = applyPatch(graph, patch);
+
+      let finalPatch = patch;
+      if (event.kind === 'workflow_status' && nextGraph.finalizedAt) {
+        const pruned = pruneUntraveled(nextGraph);
+        const removedNodeIds = nextGraph.nodes
+          .filter((n) => !pruned.nodes.some((p) => p.id === n.id))
+          .map((n) => n.id);
+        const removedEdgeIds = nextGraph.edges
+          .filter((e) => !pruned.edges.some((p) => p.id === e.id))
+          .map((e) => e.id);
+        nextGraph = pruned;
+        finalPatch = {
+          ...patch,
+          removeNodeIds: [...(patch.removeNodeIds ?? []), ...removedNodeIds],
+          removeEdgeIds: [...(patch.removeEdgeIds ?? []), ...removedEdgeIds],
+        };
+      }
+
+      writeGraph(this.db, workflowId, nextGraph);
+      this.broadcastFn(workflowId, null, 'graph.update', {
+        workflowId,
+        patch: finalPatch,
+      });
+    } catch (err) {
+      this._graphUpdateFailures += 1;
+      const stack = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      console.error(
+        `[scheduler] graph.update emission failed (workflowId=${workflowId}, kind=${event.kind}, failures=${this._graphUpdateFailures}):`,
+        stack,
+      );
+    }
+  }
+
+  /**
    * Converts ActionValue from the prepost grammar into a ResolvedAction
    * understood by the engine's applyItemTransition.
    */
@@ -2364,4 +2528,32 @@ export class Scheduler {
     }
     return { kind: 'fail' };
   }
+}
+
+function buildItemSeededEvent(db: DbPool, workflowId: string, stageId: string): GraphEvent {
+  const rows = db
+    .reader()
+    .prepare(
+      'SELECT id, stable_id, depends_on FROM items WHERE workflow_id = ? AND stage_id = ? AND data != \'{}\' ORDER BY rowid',
+    )
+    .all(workflowId, stageId) as Array<{
+      id: string;
+      stable_id: string | null;
+      depends_on: string | null;
+    }>;
+  const rowIdToStable = new Map<string, string>();
+  for (const r of rows) if (r.stable_id) rowIdToStable.set(r.id, r.stable_id);
+  return {
+    kind: 'item_seeded',
+    stageId,
+    items: rows.map((r) => {
+      const rawDeps = r.depends_on ? (JSON.parse(r.depends_on) as string[]) : [];
+      const stableDeps = rawDeps.map((d) => rowIdToStable.get(d)).filter((s): s is string => !!s);
+      return {
+        itemId: r.id,
+        stableId: r.stable_id,
+        dependsOn: stableDeps,
+      };
+    }),
+  };
 }

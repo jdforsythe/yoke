@@ -130,7 +130,7 @@ describe('AC-1: all seven tables present after migration 0001', () => {
     });
   }
 
-  it('workflows has exactly 21 columns', () => {
+  it('workflows has exactly 22 columns', () => {
     const db = makeDb();
     const names = colNames(db, 'workflows');
     db.close();
@@ -145,6 +145,8 @@ describe('AC-1: all seven tables present after migration 0001', () => {
       'archived_at',
       // migration 0005: template support
       'paused_at', 'template_name',
+      // migration 0006: graph view cache
+      'graph_state',
     ]);
   });
 
@@ -456,7 +458,7 @@ describe('AC-6: no extra columns in any table', () => {
   it('column counts match the schema exactly', () => {
     const db = makeDb();
     const counts: Record<string, number> = {
-      workflows: 21,  // 12 original + 6 github_state (0002) + archived_at (0003) + paused_at + template_name (0005)
+      workflows: 22,  // 12 original + 6 github_state (0002) + archived_at (0003) + paused_at + template_name (0005) + graph_state (0006)
       items: 14,  // 13 original + stable_id (migration 0004)
       sessions: 22,
       events: 12,
