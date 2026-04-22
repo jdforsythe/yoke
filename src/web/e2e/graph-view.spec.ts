@@ -158,23 +158,14 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('Graph tab renders stage + phase + session nodes from the snapshot graph', async ({ page }) => {
-  // Wait on the incoming workflow.snapshot frame at the browser level — avoids
-  // the control-matrix flake class where the WS send races with page.goto.
-  const snapshotSeen = page.waitForEvent('websocket').then((ws) => {
-    return new Promise<void>((resolve) => {
-      ws.on('framereceived', (ev) => {
-        if (typeof ev.payload === 'string' && ev.payload.includes('"workflow.snapshot"')) {
-          resolve();
-        }
-      });
-    });
-  });
-
   await setupGraphWs(page, mkGraph());
   await page.goto(`/workflow/${WF_ID}?view=graph`);
 
-  await snapshotSeen;
-
+  // page.waitForEvent('websocket') is unreliable with page.routeWebSocket():
+  // the route handler intercepts at the Playwright level so no
+  // browser-visible websocket event is emitted. Wait on the DOM directly
+  // instead — graph-pane only becomes visible once the snapshot's graph
+  // has been dispatched into the store and layoutGraph has resolved.
   await expect(page.getByTestId('graph-pane')).toBeVisible();
   await expect(page.getByTestId('graph-node-stage')).toBeVisible();
   await expect(page.getByTestId('graph-node-phase')).toBeVisible();
@@ -241,10 +232,11 @@ test('retry/goto edges render with a dotted stroke', async ({ page }) => {
 
   // The retry edge is rendered by xyflow inside a <g data-id="..."> wrapper;
   // the inner <path> carries the dashed stroke style we set on the edge.
+  // We assert on the style attribute directly rather than toBeVisible() —
+  // xyflow's <g> wrappers have no intrinsic bbox, so Playwright's visibility
+  // heuristic is flaky on SVG edge paths even when they render correctly.
   const edgePath = page
     .locator('g.react-flow__edge[data-id="e:retry:session:sess-1->session:sess-2"] path.react-flow__edge-path')
     .first();
-  await expect(edgePath).toBeVisible();
-  const style = (await edgePath.getAttribute('style')) ?? '';
-  expect(style).toMatch(/4[, ]\s*4/);
+  await expect(edgePath).toHaveAttribute('style', /stroke-dasharray:\s*4[, ]\s*4/);
 });

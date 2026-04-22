@@ -311,6 +311,11 @@ function _buildElkTree(graph: WorkflowGraph): ElkChild {
       'elk.layered.spacing.nodeNodeBetweenLayers': '80',
       'elk.spacing.nodeNode': '40',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      // Allow root-level edges to reference nested children (e.g. a run:once
+      // stage → nested-phase sequence edge).  Without this, ELK throws
+      // UnsupportedGraphException when the edge's endpoints are at different
+      // hierarchy levels.
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
     },
     children: stageChildren,
     edges: rootEdges,

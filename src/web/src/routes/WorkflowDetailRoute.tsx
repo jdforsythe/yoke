@@ -94,9 +94,9 @@ export function WorkflowDetailRoute() {
   const { workflowId } = useParams<{ workflowId: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  // Capture the attention deep-link ID at initial render, before WorkflowList's
-  // setSearchParams effect clears it (WorkflowList runs its effect on mount and
-  // replaces all URL params with its own filter state, dropping ?attention).
+  // Capture the attention deep-link ID at initial render.  The effect below
+  // removes it from the visible URL once consumed so it does not persist
+  // across refreshes or appear in the address bar.
   const initialAttentionIdRef = useRef(searchParams.get('attention'));
 
   // View tab — 'list' (default, FeatureBoard) or 'graph' (GraphPane).
