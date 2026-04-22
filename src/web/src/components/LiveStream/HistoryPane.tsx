@@ -18,24 +18,23 @@ import {
   sessionStatusClass,
   loadSessionIntoStore,
 } from './sessionDisplay';
+import type { ItemTimelineSessionRow } from '@shared/types/timeline';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export interface ItemSession {
-  id: string;
-  phase: string;
-  status: string;
-  startedAt: string;
-  endedAt: string | null;
-  exitCode: number | null;
-}
-
+/**
+ * HistoryPane consumes session rows straight off the `/timeline` response —
+ * the `ItemTimelineSessionRow` shape already carries every field the pane
+ * needs (`id`, `phase`, `status`, `startedAt`, `endedAt`, `exitCode`).
+ * WorkflowDetailRoute filters the timeline rows to `kind === 'session'`
+ * before handing them here.
+ */
 interface Props {
   itemId: string;
   workflowId: string;
-  sessions: ItemSession[];
+  sessions: ItemTimelineSessionRow[];
   /**
    * Optional — when provided, the pane pre-loads and selects this session on
    * mount (or whenever it changes to a non-null value). Used by FeatureBoard's

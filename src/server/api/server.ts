@@ -117,26 +117,6 @@ function mapTimelineEvent(e: DbTimelineEvent) {
   };
 }
 
-interface DbItemSession {
-  id: string;
-  phase: string;
-  status: string;
-  started_at: string;
-  ended_at: string | null;
-  exit_code: number | null;
-}
-
-function mapItemSession(row: DbItemSession) {
-  return {
-    id: row.id,
-    phase: row.phase,
-    status: row.status,
-    startedAt: row.started_at,
-    endedAt: row.ended_at,
-    exitCode: row.exit_code,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Item timeline helpers (GET /api/workflows/:id/items/:itemId/timeline)
 // ---------------------------------------------------------------------------
@@ -778,32 +758,6 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
       }
 
       return reply.send(parsed);
-    },
-  );
-
-  // GET /api/items/:id/sessions
-  // Returns past sessions for an item ordered by started_at DESC.
-  fastify.get(
-    '/api/items/:id/sessions',
-    async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const { id } = req.params;
-      const reader = db.reader();
-
-      const item = reader
-        .prepare('SELECT id FROM items WHERE id = ?')
-        .get(id) as { id: string } | undefined;
-      if (!item) return notFound(reply, 'item not found');
-
-      const sessions = reader
-        .prepare(
-          `SELECT id, phase, status, started_at, ended_at, exit_code
-           FROM sessions
-           WHERE item_id = ?
-           ORDER BY started_at DESC`,
-        )
-        .all(id) as DbItemSession[];
-
-      return reply.send({ sessions: sessions.map(mapItemSession) });
     },
   );
 

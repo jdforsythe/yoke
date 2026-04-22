@@ -153,8 +153,9 @@ triggered a goto implement" UX from the spec.
 #### Server endpoint
 
 - New route `GET /api/workflows/:workflowId/items/:itemId/timeline` in
-  `src/server/api/server.ts` (alongside the existing
-  `GET /api/workflows/:id/items/:itemId/sessions`).
+  `src/server/api/server.ts`. (The earlier `GET /api/items/:id/sessions`
+  endpoint was retired in F5 — HistoryPane now consumes session rows
+  straight off the `/timeline` response.)
 - Implementation joins `sessions` and `prepost_runs` filtered by `item_id`,
   emits a single list ordered by `started_at`. Session `attempt` comes from
   the row's explicit `attempt` column where available, otherwise from
@@ -163,10 +164,10 @@ triggered a goto implement" UX from the spec.
   `ws.ts:367` hardcoded-zero TODO does **not** block the timeline endpoint;
   that TODO is for the WS `session.started` frame, which this endpoint
   doesn't rely on.
-- Keep `/sessions` endpoint so existing `HistoryPane` usage
-  (`src/web/src/components/LiveStream/HistoryPane.tsx`) keeps working
-  during the migration. Delete it in a follow-up once `HistoryPane` is
-  either retired or refactored to consume `/timeline`.
+- `HistoryPane` now consumes session rows directly from the
+  `/timeline` response (filtered to `kind === 'session'` in
+  `WorkflowDetailRoute`). The old `/sessions` endpoint was removed in F5
+  — no deprecation shim was kept.
 
 #### UI: expand / collapse
 
@@ -293,4 +294,4 @@ Explicitly out of scope: searching log content. The spec calls this out.
 - `depends_on` surfacing in the list view (separate future-work item).
 - Adding `description` / `label` fields to `Stage` or `Phase` in the
   config schema — flagged as a follow-on that would enhance N-2.
-- Retiring `/sessions` once `HistoryPane` is migrated — follow-on cleanup.
+- ~~Retiring `/sessions` once `HistoryPane` is migrated — follow-on cleanup.~~ (Done in F5.)

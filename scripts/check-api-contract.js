@@ -125,7 +125,6 @@ async function main() {
     Timeline:      ref('TimelineResponse'),
     Usage:         ref('UsageResponse'),
     Timeseries:    ref('TimeseriesResponse'),
-    ItemSessions:  ref('ItemSessionsResponse'),
     SessionLog:    ref('SessionLogResponse'),
   };
 
@@ -208,12 +207,6 @@ async function main() {
       await res.json(); // verify parseable
       results.push({ ok: true, label: 'GET /api/workflows/:id/items/:itemId/data' });
     }
-  }
-
-  // ── GET /api/items/:id/sessions ───────────────────────────────────────────
-  {
-    const data = await fetchJson(`${base}/api/items/${itemId}/sessions`);
-    results.push(check('GET /api/items/:id/sessions', data, validators.ItemSessions));
   }
 
   // ── GET /api/sessions/:id/log ─────────────────────────────────────────────

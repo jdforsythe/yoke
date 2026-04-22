@@ -30,9 +30,10 @@ import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
-import { invalidateItemTimeline } from '@/components/FeatureBoard/timelineCache';
+import { fetchItemTimeline, invalidateItemTimeline } from '@/components/FeatureBoard/timelineCache';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
-import { HistoryPane, type ItemSession } from '@/components/LiveStream/HistoryPane';
+import { HistoryPane } from '@/components/LiveStream/HistoryPane';
+import type { ItemTimelineSessionRow } from '@shared/types/timeline';
 import { PrepostOutputPane } from '@/components/LiveStream/PrepostOutputPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
 import { ControlMatrix } from '@/components/ControlMatrix/ControlMatrix';
@@ -150,7 +151,7 @@ export function WorkflowDetailRoute() {
 
   // History tab state — tab and past sessions for the currently selected item.
   const [streamTab, setStreamTab] = useState<'live' | 'history' | 'prepost'>('live');
-  const [itemSessions, setItemSessions] = useState<ItemSession[]>([]);
+  const [itemSessions, setItemSessions] = useState<ItemTimelineSessionRow[]>([]);
   // When the user clicks a session row inside an item's inline timeline
   // (FeatureBoard), we switch the right pane to History and seed HistoryPane's
   // selection. Cleared when the user deselects or changes item.
@@ -435,7 +436,7 @@ export function WorkflowDetailRoute() {
   // Reset to Live tab and clear sessions when item is deselected.
   // Auto-switch to History tab if the item has past sessions but no active session.
   useEffect(() => {
-    if (!selectedItemId) {
+    if (!selectedItemId || !workflowId) {
       setItemSessions([]);
       setStreamTab('live');
       setPendingHistorySessionId(null);
@@ -450,10 +451,16 @@ export function WorkflowDetailRoute() {
     const prepostActive =
       prepostSelection !== null && prepostSelection.itemId === selectedItemId;
     if (!pendingHistorySessionId && !prepostActive) setStreamTab('live');
-    void fetch(`/api/items/${encodeURIComponent(selectedItemId)}/sessions`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((d: { sessions?: ItemSession[] }) => {
-        const sessions = d.sessions ?? [];
+    // Pull from the shared timelineCache so the inline list expansion and the
+    // History tab share one fetch per item. The /timeline response carries
+    // every field HistoryPane needs — filter to `kind === 'session'` and
+    // reverse to preserve the legacy DESC (newest-first) list order.
+    void fetchItemTimeline(workflowId, selectedItemId)
+      .then((rows) => {
+        const sessions = (rows ?? [])
+          .filter((r): r is ItemTimelineSessionRow => r.kind === 'session')
+          .slice()
+          .reverse();
         setItemSessions(sessions);
         // Auto-switch to History when the item has past sessions but no active
         // or recently-ended session in view.

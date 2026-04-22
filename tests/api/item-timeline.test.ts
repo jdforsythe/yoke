@@ -202,9 +202,46 @@ describe('GET /api/workflows/:workflowId/items/:itemId/timeline — ordering', (
     expect(statusCode).toBe(200);
     const rows = (body as { rows: ItemTimelineRow[] }).rows;
     expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ kind: 'session', id: s1 });
+    // Assert every field HistoryPane reads off a session row: id, phase,
+    // status, startedAt, endedAt, exitCode. These replace the old
+    // item-sessions.test.ts coverage now that `/sessions` is retired and
+    // HistoryPane consumes timeline session rows directly.
+    expect(rows[0]).toMatchObject({
+      kind: 'session',
+      id: s1,
+      phase: 'implement',
+      status: 'ok',
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: '2026-01-01T00:30:00Z',
+      exitCode: 0,
+    });
     expect(rows[1]).toMatchObject({ kind: 'prepost', id: String(postId) });
     expect(rows[2]).toMatchObject({ kind: 'session', id: s2, parentSessionId: s1 });
+  });
+
+  it('returns null endedAt and exitCode for an in-progress session', async () => {
+    const wfId = insertWorkflow();
+    const itemId = insertItem(wfId);
+    insertSession(wfId, itemId, {
+      id: 'sess-live',
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: null,
+      exitCode: null,
+      status: 'in_progress',
+    });
+
+    const { statusCode, body } = await get(
+      `/api/workflows/${wfId}/items/${itemId}/timeline`,
+    );
+
+    expect(statusCode).toBe(200);
+    const rows = (body as { rows: ItemTimelineRow[] }).rows as Array<
+      Extract<ItemTimelineRow, { kind: 'session' }>
+    >;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].endedAt).toBeNull();
+    expect(rows[0].exitCode).toBeNull();
+    expect(rows[0].status).toBe('in_progress');
   });
 
   it('computes attempt as the 1-based index within a (item, phase) cohort', async () => {
