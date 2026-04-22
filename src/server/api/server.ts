@@ -28,9 +28,19 @@ import {
 } from './ws.js';
 import { IdempotencyStore } from './idempotency.js';
 import type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
+import type {
+  ItemTimelineRow,
+  ItemTimelinePrepostRow,
+} from '../../shared/types/timeline.js';
 
 // Re-export so consumers can import from a single server entry point.
 export type { WorkflowRow, WorkflowStatus } from '../../shared/types/workflow.js';
+export type {
+  ItemTimelineRow,
+  ItemTimelineSessionRow,
+  ItemTimelinePrepostRow,
+  ItemTimelineResponse,
+} from '../../shared/types/timeline.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -123,6 +133,56 @@ function mapItemSession(row: DbItemSession) {
     endedAt: row.ended_at,
     exitCode: row.exit_code,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Item timeline helpers (GET /api/workflows/:id/items/:itemId/timeline)
+// ---------------------------------------------------------------------------
+
+interface DbTimelineSessionRow {
+  id: string;
+  phase: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  exit_code: number | null;
+  parent_session_id: string | null;
+}
+
+interface DbTimelinePrepostRow {
+  id: number;
+  when_phase: 'pre' | 'post';
+  command_name: string;
+  phase: string;
+  started_at: string;
+  ended_at: string | null;
+  exit_code: number | null;
+  action_taken: string | null;
+  stdout_path: string | null;
+  stderr_path: string | null;
+}
+
+/**
+ * Parse the `prepost_runs.action_taken` JSON column into a shaped object.
+ * Returns null if the column is null, empty, or malformed — the endpoint
+ * treats any parse failure as "no action recorded" rather than 500, since
+ * a malformed row should not break the rest of the timeline.
+ */
+function parseActionTaken(raw: string | null): ItemTimelinePrepostRow['actionTaken'] {
+  if (raw == null || raw === '') return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed == null || typeof parsed !== 'object') return null;
+    const obj = parsed as Record<string, unknown>;
+    const out: NonNullable<ItemTimelinePrepostRow['actionTaken']> = {};
+    if (typeof obj.goto === 'string') out.goto = obj.goto;
+    if (typeof obj.retry === 'boolean') out.retry = obj.retry;
+    if (typeof obj.fail === 'boolean') out.fail = obj.fail;
+    if (typeof obj.continue === 'boolean') out.continue = obj.continue;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 interface DbUsageRow {
@@ -726,6 +786,105 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
         .all(id) as DbItemSession[];
 
       return reply.send({ sessions: sessions.map(mapItemSession) });
+    },
+  );
+
+  // GET /api/workflows/:workflowId/items/:itemId/timeline
+  // Returns a chronologically merged list of sessions + prepost_runs for the
+  // item, ascending by started_at, tie-broken by row id (lexicographic).
+  // 404 when workflow or item is unknown, or item belongs to a different workflow.
+  fastify.get(
+    '/api/workflows/:workflowId/items/:itemId/timeline',
+    async (
+      req: FastifyRequest<{ Params: { workflowId: string; itemId: string } }>,
+      reply: FastifyReply,
+    ) => {
+      const { workflowId, itemId } = req.params;
+      const reader = db.reader();
+
+      const wf = reader
+        .prepare('SELECT id FROM workflows WHERE id = ?')
+        .get(workflowId) as { id: string } | undefined;
+      if (!wf) return notFound(reply, 'workflow not found');
+
+      const item = reader
+        .prepare('SELECT id FROM items WHERE id = ? AND workflow_id = ?')
+        .get(itemId, workflowId) as { id: string } | undefined;
+      // Cross-workflow access returns 404 — do not leak existence.
+      if (!item) return notFound(reply, 'item not found');
+
+      const sessionRows = reader
+        .prepare(
+          `SELECT id, phase, status, started_at, ended_at, exit_code, parent_session_id
+           FROM sessions
+           WHERE item_id = ?
+           ORDER BY started_at ASC, id ASC`,
+        )
+        .all(itemId) as DbTimelineSessionRow[];
+
+      const prepostRows = reader
+        .prepare(
+          `SELECT id, when_phase, command_name, phase, started_at, ended_at,
+                  exit_code, action_taken, stdout_path, stderr_path
+           FROM prepost_runs
+           WHERE item_id = ?
+           ORDER BY started_at ASC, id ASC`,
+        )
+        .all(itemId) as DbTimelinePrepostRow[];
+
+      // `attempt` is derived (not stored) — it is the 1-based index of a session
+      // within its (item_id, phase) cohort ordered by started_at. We could use
+      // items.retry_count (see src/server/pipeline/retry-items.ts:99) but that's
+      // a single counter per item and cannot disambiguate multi-phase retries,
+      // so we count prior sessions for the same phase here.
+      const attemptByPhase = new Map<string, number>();
+      const sessionRowsMapped: ItemTimelineRow[] = sessionRows.map((r) => {
+        const next = (attemptByPhase.get(r.phase) ?? 0) + 1;
+        attemptByPhase.set(r.phase, next);
+        return {
+          kind: 'session',
+          id: r.id,
+          phase: r.phase,
+          attempt: next,
+          status: r.status,
+          startedAt: r.started_at,
+          endedAt: r.ended_at,
+          exitCode: r.exit_code,
+          parentSessionId: r.parent_session_id,
+        };
+      });
+
+      const prepostRowsMapped: ItemTimelineRow[] = prepostRows.map((r) => {
+        // prepost_runs has no `status` column — derive from exit_code
+        // (null/0 = ok, non-zero = fail) per docs/design/schemas/sqlite-schema.sql:173-189.
+        const status: 'ok' | 'fail' = r.exit_code == null || r.exit_code === 0 ? 'ok' : 'fail';
+        return {
+          kind: 'prepost',
+          id: String(r.id),
+          whenPhase: r.when_phase,
+          commandName: r.command_name,
+          phase: r.phase,
+          status,
+          exitCode: r.exit_code,
+          actionTaken: parseActionTaken(r.action_taken),
+          startedAt: r.started_at,
+          endedAt: r.ended_at,
+          stdoutPath: r.stdout_path,
+          stderrPath: r.stderr_path,
+        };
+      });
+
+      const rows: ItemTimelineRow[] = [...sessionRowsMapped, ...prepostRowsMapped].sort((a, b) => {
+        if (a.startedAt < b.startedAt) return -1;
+        if (a.startedAt > b.startedAt) return 1;
+        // Stable tie-breaker — lexicographic id compare is sufficient when the
+        // timestamps are equal and no higher-resolution signal is available.
+        if (a.id < b.id) return -1;
+        if (a.id > b.id) return 1;
+        return 0;
+      });
+
+      return reply.send({ rows });
     },
   );
 
