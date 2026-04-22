@@ -146,22 +146,6 @@ describe('WorkflowsListResponse $def', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ItemSession
-// ---------------------------------------------------------------------------
-
-describe('ItemSession $def', () => {
-  it('requires camelCase fields (not snake_case)', () => {
-    const required = schema.$defs.ItemSession?.required ?? [];
-    expect(required).toContain('startedAt');
-    expect(required).toContain('endedAt');
-    expect(required).toContain('exitCode');
-    expect(required).not.toContain('started_at');
-    expect(required).not.toContain('ended_at');
-    expect(required).not.toContain('exit_code');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // TimelineResponse
 // ---------------------------------------------------------------------------
 

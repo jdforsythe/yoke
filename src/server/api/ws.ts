@@ -338,6 +338,7 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
       const pipeline = JSON.parse(pipelineRow.pipeline) as {
         stages?: Array<{
           id: string;
+          description?: string;
           run: 'once' | 'per-item';
           phases: string[];
           needs_approval?: boolean;
@@ -354,6 +355,10 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
         }
         return {
           id: s.id,
+          // Emit `null` (not `undefined`) so downstream clients see a concrete
+          // absent-value marker in JSON. The optional `description?` in config
+          // becomes `string | null` on the wire.
+          description: s.description ?? null,
           run: s.run,
           phases: s.phases,
           status: computeStageStatus(items, s.id),

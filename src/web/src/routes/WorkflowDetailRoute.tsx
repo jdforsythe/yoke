@@ -6,7 +6,7 @@
  *   - CrashRecoveryBanner (when recoveryState is set)
  *   - AttentionBanner (pending attention items)
  *   - GithubButton + workflow header
- *   - FeatureBoard (item cards, grouped by category)
+ *   - FeatureBoard (item cards, grouped by stage)
  *   - LiveStreamPane (active session output, virtualized)
  *   - HistoryPane (past session logs for selected item)
  *   - ControlMatrix (available manual actions)
@@ -30,8 +30,11 @@ import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
+import { fetchItemTimeline, invalidateItemTimeline } from '@/components/FeatureBoard/timelineCache';
 import { LiveStreamPane } from '@/components/LiveStream/LiveStreamPane';
-import { HistoryPane, type ItemSession } from '@/components/LiveStream/HistoryPane';
+import { HistoryPane } from '@/components/LiveStream/HistoryPane';
+import type { ItemTimelineSessionRow } from '@shared/types/timeline';
+import { PrepostOutputPane } from '@/components/LiveStream/PrepostOutputPane';
 import { ReviewPanel } from '@/components/ReviewPanel/ReviewPanel';
 import { ControlMatrix } from '@/components/ControlMatrix/ControlMatrix';
 import type {
@@ -112,12 +115,59 @@ export function WorkflowDetailRoute() {
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  // Phase 5: mirror FeatureBoard's expanded item set so the WS frame handlers
+  // below can decide whether a session-lifecycle frame warrants invalidating
+  // the timeline cache. Kept as a ref (not state) because every toggle would
+  // otherwise re-fire the WS subscription effect below (which keys on
+  // workflowId). A ref is correct: the frame handlers close over a stable
+  // mutable box, and we do not need re-renders driven by expanded-set changes
+  // in the route itself — FeatureBoard owns rendering.
+  const expandedItemsRef = useRef<ReadonlySet<string>>(new Set());
+  // Phase 5: ref snapshot of itemActiveSession for use inside WS frame
+  // handlers. session.ended carries only sessionId, so we need to look up
+  // the itemId; doing so inside a setState updater is fragile (strict mode
+  // re-runs updaters), so we read from this ref which mirrors state
+  // synchronously via the effect below.
+  const itemActiveSessionRef = useRef<Map<string, ActiveSession>>(new Map());
+  // Per-item timeline invalidation counter. When a session-lifecycle frame
+  // arrives for an expanded item, we invalidate the module-level timeline
+  // cache AND bump this counter. FeatureBoard watches the map and drops its
+  // render-mirror for any itemId whose count increased, which re-fires the
+  // existing lazy fetch effect. The setState identity change (new Map) is
+  // what React uses to diff; individual count values are signals, not data.
+  const [timelineInvalidations, setTimelineInvalidations] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
+  const bumpTimelineInvalidation = useCallback((itemId: string) => {
+    setTimelineInvalidations((prev) => {
+      const next = new Map(prev);
+      next.set(itemId, (prev.get(itemId) ?? 0) + 1);
+      return next;
+    });
+  }, []);
   // Track whether the snapshot has arrived so the timeout ref can be cleared.
   const snapshotArrivedRef = useRef(false);
 
   // History tab state — tab and past sessions for the currently selected item.
-  const [streamTab, setStreamTab] = useState<'live' | 'history'>('live');
-  const [itemSessions, setItemSessions] = useState<ItemSession[]>([]);
+  const [streamTab, setStreamTab] = useState<'live' | 'history' | 'prepost'>('live');
+  const [itemSessions, setItemSessions] = useState<ItemTimelineSessionRow[]>([]);
+  // When the user clicks a session row inside an item's inline timeline
+  // (FeatureBoard), we switch the right pane to History and seed HistoryPane's
+  // selection. Cleared when the user deselects or changes item.
+  const [pendingHistorySessionId, setPendingHistorySessionId] = useState<string | null>(null);
+  // F4: when the user clicks a prepost row with a captured output, the right
+  // pane flips to a dedicated PrepostOutputPane for that row. Cleared on
+  // item deselection / change.
+  const [prepostSelection, setPrepostSelection] = useState<
+    | {
+        itemId: string;
+        prepostId: string;
+        stream: 'stdout' | 'stderr';
+        commandName: string;
+      }
+    | null
+  >(null);
 
   // Sync attention count whenever pendingAttention changes — covers snapshot,
   // workflow.update patches, and real-time notice frame additions.
@@ -126,6 +176,13 @@ export function WorkflowDetailRoute() {
   useEffect(() => {
     setAttentionCount(pendingAttentionArr?.length ?? 0);
   }, [pendingAttentionArr]);
+
+  // Phase 5: keep the activeSession ref in sync with state for use inside
+  // WS handlers. session.ended needs sessionId → itemId reverse lookup, and
+  // doing it from a ref avoids tying the WS subscription effect to state.
+  useEffect(() => {
+    itemActiveSessionRef.current = state.itemActiveSession;
+  }, [state.itemActiveSession]);
 
   // sendControl wrapper so ControlMatrix doesn't import the WS module directly.
   // 'retry' uses POST /api/workflows/:id/retry — the WS control executor only
@@ -300,6 +357,13 @@ export function WorkflowDetailRoute() {
               itemEndedSession: endedMap,
             };
           });
+          // Phase 5: if the item is currently expanded in the board, drop its
+          // cached timeline entry so the inline list reflects the new session.
+          // Collapsed items are untouched — we do not prefetch.
+          if (expandedItemsRef.current.has(p.itemId)) {
+            invalidateItemTimeline(workflowId, p.itemId);
+            bumpTimelineInvalidation(p.itemId);
+          }
         }
         dispatch(frame);
       }),
@@ -308,6 +372,18 @@ export function WorkflowDetailRoute() {
     offs.push(
       client.on('session.ended', (frame: ServerFrame) => {
         const p = frame.payload as SessionEndedPayload;
+        // Phase 5: session.ended carries only sessionId. We recover the
+        // itemId from the live itemActiveSession map via the ref snapshot
+        // BEFORE setState mutates it, so the invalidation sees the correct
+        // item even if the updater runs twice under strict mode.
+        const currentActive = itemActiveSessionRef.current;
+        let endedItemId: string | null = null;
+        for (const [itemId, sess] of currentActive) {
+          if (sess.sessionId === p.sessionId) {
+            endedItemId = itemId;
+            break;
+          }
+        }
         setState((prev) => {
           const { map, clearedItemId } = removeBySessionId(prev.itemActiveSession, p.sessionId);
           const endedMap =
@@ -316,6 +392,10 @@ export function WorkflowDetailRoute() {
               : prev.itemEndedSession;
           return { ...prev, itemActiveSession: map, itemEndedSession: endedMap };
         });
+        if (endedItemId !== null && expandedItemsRef.current.has(endedItemId)) {
+          invalidateItemTimeline(workflowId, endedItemId);
+          bumpTimelineInvalidation(endedItemId);
+        }
         dispatch(frame);
       }),
     );
@@ -356,16 +436,31 @@ export function WorkflowDetailRoute() {
   // Reset to Live tab and clear sessions when item is deselected.
   // Auto-switch to History tab if the item has past sessions but no active session.
   useEffect(() => {
-    if (!selectedItemId) {
+    if (!selectedItemId || !workflowId) {
       setItemSessions([]);
       setStreamTab('live');
+      setPendingHistorySessionId(null);
+      setPrepostSelection(null);
       return;
     }
-    setStreamTab('live');
-    void fetch(`/api/items/${encodeURIComponent(selectedItemId)}/sessions`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((d: { sessions?: ItemSession[] }) => {
-        const sessions = d.sessions ?? [];
+    // Don't stomp a pending timeline-session-click that just set the tab to
+    // history and provided an initialSessionId. If pendingHistorySessionId
+    // is set for THIS item the flow is: FeatureBoard → setSelectedItemId +
+    // setStreamTab('history') + setPendingHistorySessionId, all in one click.
+    // Same exemption for a pending prepost selection on this item.
+    const prepostActive =
+      prepostSelection !== null && prepostSelection.itemId === selectedItemId;
+    if (!pendingHistorySessionId && !prepostActive) setStreamTab('live');
+    // Pull from the shared timelineCache so the inline list expansion and the
+    // History tab share one fetch per item. The /timeline response carries
+    // every field HistoryPane needs — filter to `kind === 'session'` and
+    // reverse to preserve the legacy DESC (newest-first) list order.
+    void fetchItemTimeline(workflowId, selectedItemId)
+      .then((rows) => {
+        const sessions = (rows ?? [])
+          .filter((r): r is ItemTimelineSessionRow => r.kind === 'session')
+          .slice()
+          .reverse();
         setItemSessions(sessions);
         // Auto-switch to History when the item has past sessions but no active
         // or recently-ended session in view.
@@ -498,7 +593,37 @@ export function WorkflowDetailRoute() {
             items={Array.from(items.values())}
             activeSessionId={activeSession?.sessionId ?? null}
             selectedItemId={selectedItemId}
-            onSelectItem={setSelectedItemId}
+            onSelectItem={(itemId) => {
+              // Plain card click clears any pending timeline-session-click so
+              // HistoryPane doesn't try to preselect a stale session from a
+              // different item's inline timeline. Same for prepost selection.
+              setPendingHistorySessionId(null);
+              setPrepostSelection(null);
+              setSelectedItemId(itemId);
+            }}
+            onSelectTimelineSession={(itemId, sessionId) => {
+              // Sequence matters: set selection first so the sessions-fetch
+              // effect runs for the right item, then flip to history and seed
+              // the initial-session id HistoryPane will honour on mount.
+              setSelectedItemId(itemId);
+              setPendingHistorySessionId(sessionId);
+              setPrepostSelection(null);
+              setStreamTab('history');
+            }}
+            onSelectTimelinePrepost={(itemId, sel) => {
+              // F4: user clicked a captured-output prepost row. Flip the
+              // right pane to the PrepostOutputPane. The selection key is
+              // { itemId, prepostId, stream } so re-clicking the same row
+              // is a no-op (PrepostOutputPane caches by prepostId:stream).
+              setSelectedItemId(itemId);
+              setPendingHistorySessionId(null);
+              setPrepostSelection({ itemId, ...sel });
+              setStreamTab('prepost');
+            }}
+            timelineInvalidations={timelineInvalidations}
+            onExpandedChange={(expanded) => {
+              expandedItemsRef.current = expanded;
+            }}
           />
         </div>
 
@@ -535,13 +660,28 @@ export function WorkflowDetailRoute() {
             </div>
           )}
 
-          {streamTab === 'history' && selectedItemId ? (
+          {streamTab === 'prepost' &&
+          selectedItemId &&
+          prepostSelection &&
+          prepostSelection.itemId === selectedItemId ? (
+            /* F4: captured prepost stdout/stderr viewer. */
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <PrepostOutputPane
+                workflowId={workflowId!}
+                itemId={selectedItemId}
+                prepostId={prepostSelection.prepostId}
+                stream={prepostSelection.stream}
+                commandName={prepostSelection.commandName}
+              />
+            </div>
+          ) : streamTab === 'history' && selectedItemId ? (
             /* History pane — live WS subscription stays intact */
             <div className="flex-1 min-h-0 overflow-hidden">
               <HistoryPane
                 itemId={selectedItemId}
                 workflowId={workflowId!}
                 sessions={itemSessions}
+                initialSessionId={pendingHistorySessionId}
               />
             </div>
           ) : controlSession ? (

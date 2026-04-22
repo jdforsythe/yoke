@@ -817,7 +817,7 @@ test('FeatureBoard renders items grouped by stage', async ({ page }) => {
 
   await expect(page.getByText('Alpha Feature')).toBeVisible();
   await expect(page.getByText('Beta Feature')).toBeVisible();
-  // Stage group header (data-testid avoids matching hidden <option> in category dropdown)
+  // Stage group header (data-testid avoids matching hidden <option> in stage dropdown)
   await expect(page.getByTestId('stage-header').filter({ hasText: 'stage-1' })).toBeVisible();
 });
 
@@ -1150,7 +1150,7 @@ test('FeatureBoard status filter hides non-matching items (AC-5)', async ({ page
   await expect(page.getByText('Beta Feature')).not.toBeVisible();
 });
 
-test('FeatureBoard category filter hides non-matching stage groups (AC-5)', async ({ page }) => {
+test('FeatureBoard stage filter hides non-matching stage groups (AC-5)', async ({ page }) => {
   await setupWs(page, (ws) => {
     ws.send(
       snapshotFrame({
@@ -1182,7 +1182,7 @@ test('FeatureBoard category filter hides non-matching stage groups (AC-5)', asyn
   await expect(page.getByText('Stage A Feature')).toBeVisible();
   await expect(page.getByText('Stage B Feature')).toBeVisible();
 
-  await page.getByRole('combobox', { name: 'Filter by category' }).selectOption('stage-a');
+  await page.getByRole('combobox', { name: 'Filter by stage' }).selectOption('stage-a');
 
   await expect(page.getByText('Stage A Feature')).toBeVisible();
   await expect(page.getByText('Stage B Feature')).not.toBeVisible();

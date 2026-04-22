@@ -27,6 +27,8 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createInterface as createReadline } from 'node:readline';
 import type { ActionValue, PrePostCommand } from '../../shared/types/config.js';
 import type { SessionLogWriter } from '../session-log/writer.js';
@@ -65,6 +67,19 @@ export interface PrePostRunRecord {
    * NOT persisted to SQLite — writePrepostRun() in the engine ignores this field.
    */
   output: string;
+  /**
+   * Absolute path to the captured stdout file, or null if no output directory
+   * was provided or the process failed to spawn and produced no bytes.
+   * Persisted to `prepost_runs.stdout_path` by writePrepostRun() in the engine.
+   * Contents are capped at OUTPUT_CAPTURE_LIMIT bytes per the truncation policy
+   * documented at the file open site in _runOneCommand().
+   */
+  stdoutPath: string | null;
+  /**
+   * Absolute path to the captured stderr file, or null (see stdoutPath).
+   * Persisted to `prepost_runs.stderr_path`.
+   */
+  stderrPath: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +141,26 @@ export interface RunCommandsOpts {
    * Mirrors the env injection contract of JigProcessManager.
    */
   env?: Record<string, string>;
+  /**
+   * Absolute path to the directory where per-command stdout/stderr capture
+   * files should be written. Typically produced via
+   * makePrepostOutputDir({ configDir, workflowId }) from session-log/writer.ts
+   * so captures share the same ~/.yoke/<fingerprint>/ tree as session logs.
+   *
+   * When omitted, the runner still executes commands normally but returns
+   * { stdoutPath: null, stderrPath: null } on every record — useful in tests
+   * that only care about action resolution, and for the unusual case where
+   * the caller has not yet set up the output tree.
+   *
+   * File-naming policy (Option B, chosen over per-row UUIDs): files are named
+   * `<startedAtIso>-<when>-<sanitizedCommandName>.stdout.log` / `.stderr.log`,
+   * where the ISO timestamp is rendered with ':' → '-' to stay filename-safe
+   * and the command name is coerced to [A-Za-z0-9_-]+ to prevent path
+   * injection. Uniqueness within (workflowId, item) is achieved via the
+   * millisecond-precision timestamp; callers can expect at most one run per
+   * command per millisecond.
+   */
+  outputDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +205,88 @@ export async function runCommands(opts: RunCommandsOpts): Promise<RunCommandsRes
 }
 
 // ---------------------------------------------------------------------------
+// Output-file naming helpers (see RunCommandsOpts.outputDir for policy)
+// ---------------------------------------------------------------------------
+
+/**
+ * Coerce an arbitrary command name to a filename-safe token: ASCII letters,
+ * digits, underscore, and hyphen.  Anything else collapses to '_'.  Empty
+ * results fall back to 'cmd' so we never emit a zero-length stem.
+ */
+function _sanitizeCommandName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  return cleaned.length > 0 ? cleaned : 'cmd';
+}
+
+/**
+ * Build `{stdoutPath, stderrPath}` for a given command within an output dir.
+ * See RunCommandsOpts.outputDir for the naming policy (Option B, timestamp-
+ * based).  Colons in the ISO timestamp are replaced with '-' so the filename
+ * is portable across filesystems (Windows, in particular, rejects ':' in
+ * filenames).
+ */
+function _makeOutputPaths(
+  outputDir: string,
+  startedAtIso: string,
+  when: 'pre' | 'post',
+  commandName: string,
+): { stdoutPath: string; stderrPath: string } {
+  const safeTs = startedAtIso.replace(/:/g, '-');
+  const safeName = _sanitizeCommandName(commandName);
+  const stem = `${safeTs}-${when}-${safeName}`;
+  return {
+    stdoutPath: path.join(outputDir, `${stem}.stdout.log`),
+    stderrPath: path.join(outputDir, `${stem}.stderr.log`),
+  };
+}
+
+/**
+ * Open a write-stream that accepts writes until OUTPUT_CAPTURE_LIMIT bytes
+ * have been committed, after which further writes are silently dropped (the
+ * underlying pipe is NOT backpressured — we keep reading from the child to
+ * avoid deadlock; we just stop persisting past the cap).
+ *
+ * Truncation policy: each file is capped at OUTPUT_CAPTURE_LIMIT bytes, the
+ * same cap as the in-memory `output` buffer.  This prevents a pathological
+ * prepost command from consuming unbounded disk space.  Files that hit the
+ * cap are left truncated — there is no trailing marker; callers that need to
+ * know whether truncation occurred should compare file size against the cap.
+ *
+ * TODO: retention / rotation policy — prepost output files are never pruned
+ * by this module.  A separate maintenance task (to be implemented later)
+ * should sweep ~/.yoke/<fingerprint>/prepost/ and apply the same retention
+ * policy used for session logs.  Out of scope for F3.
+ */
+function _openCappedWriteStream(filePath: string): {
+  write: (chunk: Buffer | string) => void;
+  close: () => Promise<void>;
+  bytesWritten: () => number;
+} {
+  const stream = fs.createWriteStream(filePath, { flags: 'w', encoding: 'utf8' });
+  // Swallow errors: if the disk write fails, we keep reading from the child to
+  // avoid deadlocking stdio; the in-memory `output` capture still gets the
+  // bytes for fresh_with_failure_summary context.
+  stream.on('error', () => {});
+  let written = 0;
+  return {
+    write: (chunk: Buffer | string): void => {
+      if (written >= OUTPUT_CAPTURE_LIMIT) return;
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      const remaining = OUTPUT_CAPTURE_LIMIT - written;
+      const slice = buf.length > remaining ? buf.subarray(0, remaining) : buf;
+      stream.write(slice);
+      written += slice.length;
+    },
+    close: async (): Promise<void> => {
+      await new Promise<void>((resolve) => {
+        stream.end(() => resolve());
+      });
+    },
+    bytesWritten: () => written,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Internal single-command runner
 // ---------------------------------------------------------------------------
 
@@ -188,7 +305,7 @@ async function _runOneCommand(
   cmd: PrePostCommand,
   opts: RunCommandsOpts,
 ): Promise<OneCommandResult> {
-  const { worktreePath, logWriter, when, env: callerEnv } = opts;
+  const { worktreePath, logWriter, when, env: callerEnv, outputDir } = opts;
   const timeoutMs = (cmd.timeout_s ?? DEFAULT_TIMEOUT_S) * 1_000;
   const startTs = Date.now();
   const startedAt = new Date(startTs).toISOString();
@@ -196,6 +313,58 @@ async function _runOneCommand(
   // Bounded combined output capture (stdout+stderr interleaved as emitted).
   // Populated throughout the promise below; read after await to build the record.
   let outputBuf = '';
+
+  // Per-stream capped on-disk capture (see _openCappedWriteStream doc block for
+  // truncation + retention policy).  Opened lazily after mkdirp succeeds; if
+  // outputDir is omitted we leave both null and the record's paths stay null.
+  let stdoutStream: ReturnType<typeof _openCappedWriteStream> | null = null;
+  let stderrStream: ReturnType<typeof _openCappedWriteStream> | null = null;
+  let plannedStdoutPath: string | null = null;
+  let plannedStderrPath: string | null = null;
+  if (outputDir) {
+    const paths = _makeOutputPaths(outputDir, startedAt, when, cmd.name);
+    plannedStdoutPath = paths.stdoutPath;
+    plannedStderrPath = paths.stderrPath;
+    try {
+      await fs.promises.mkdir(outputDir, { recursive: true });
+      stdoutStream = _openCappedWriteStream(paths.stdoutPath);
+      stderrStream = _openCappedWriteStream(paths.stderrPath);
+    } catch {
+      // mkdir / open failure: proceed without on-disk capture. The record's
+      // paths will resolve to null in the finaliser below.
+      stdoutStream = null;
+      stderrStream = null;
+      plannedStdoutPath = null;
+      plannedStderrPath = null;
+    }
+  }
+
+  /** Flush + close both capture streams.  Safe to call multiple times. */
+  const closeOutputStreams = async (): Promise<void> => {
+    const s1 = stdoutStream;
+    const s2 = stderrStream;
+    stdoutStream = null;
+    stderrStream = null;
+    if (s1) await s1.close();
+    if (s2) await s2.close();
+  };
+
+  /**
+   * Remove any on-disk files the runner opened but never wrote to — used on
+   * spawn-failure paths to avoid leaving zero-byte orphans behind.  Failures
+   * here are swallowed (unlink is best-effort).
+   */
+  const cleanupEmptyOutputFiles = async (): Promise<void> => {
+    for (const p of [plannedStdoutPath, plannedStderrPath]) {
+      if (!p) continue;
+      try {
+        const st = await fs.promises.stat(p);
+        if (st.size === 0) await fs.promises.unlink(p);
+      } catch {
+        // File missing / inaccessible — nothing to clean up.
+      }
+    }
+  };
 
   // Serialised write queue — ensures frames arrive in emission order.
   let _writeQueue: Promise<void> = Promise.resolve();
@@ -213,6 +382,8 @@ async function _runOneCommand(
   // Guard: a pre/post command must have at least one element in its run array.
   const [command, ...args] = cmd.run;
   if (!command) {
+    await closeOutputStreams();
+    await cleanupEmptyOutputFiles();
     return {
       kind: 'spawn_failed',
       command: cmd.name,
@@ -226,6 +397,8 @@ async function _runOneCommand(
         exitCode: null,
         actionTaken: null,
         output: '',
+        stdoutPath: null,
+        stderrPath: null,
       },
     };
   }
@@ -251,6 +424,8 @@ async function _runOneCommand(
     });
   } catch (err) {
     // Synchronous spawn failure — only happens if command is not a string, etc.
+    await closeOutputStreams();
+    await cleanupEmptyOutputFiles();
     return {
       kind: 'spawn_failed',
       command: cmd.name,
@@ -264,6 +439,8 @@ async function _runOneCommand(
         exitCode: null,
         actionTaken: null,
         output: '',
+        stdoutPath: null,
+        stderrPath: null,
       },
     };
   }
@@ -307,7 +484,14 @@ async function _runOneCommand(
       settle({ type: 'timeout' });
     }, timeoutMs);
 
-    // stdout: line-buffered, one frame per line.
+    // stdout: raw 'data' listener feeds the on-disk capture (byte-accurate),
+    // while a readline layered on top emits line-oriented JSONL frames.
+    // We read from BOTH — Node.js multiplexes 'data' events across all
+    // listeners, so the child pipe does not block as long as at least one
+    // consumer is draining.
+    child.stdout!.on('data', (chunk: Buffer) => {
+      stdoutStream?.write(chunk);
+    });
     const rl = createReadline({ input: child.stdout!, crlfDelay: Infinity });
     rl.on('line', (line) => {
       writeFrame({ type: 'prepost.command.stdout', name: cmd.name, when, text: line });
@@ -318,6 +502,7 @@ async function _runOneCommand(
     // stderr: buffered by line for cleaner frames; remainder flushed on close.
     let stderrBuf = '';
     child.stderr!.on('data', (chunk: Buffer) => {
+      stderrStream?.write(chunk);
       stderrBuf += chunk.toString('utf8');
       const lines = stderrBuf.split('\n');
       stderrBuf = lines.pop() ?? '';
@@ -354,6 +539,21 @@ async function _runOneCommand(
   await _writeQueue;
 
   if (outcome.type === 'spawn_error') {
+    // Capture byte counts BEFORE closing — closeOutputStreams() nulls the
+    // stream references.
+    const stdoutBytes = stdoutStream?.bytesWritten() ?? 0;
+    const stderrBytes = stderrStream?.bytesWritten() ?? 0;
+    await closeOutputStreams();
+    // Spawn-error: only surface path if the stream actually received bytes
+    // (ENOENT on the binary never writes anything, but e.g. EACCES mid-way
+    // through spawn setup could).
+    const spawnStdoutPath = plannedStdoutPath && stdoutBytes > 0 ? plannedStdoutPath : null;
+    const spawnStderrPath = plannedStderrPath && stderrBytes > 0 ? plannedStderrPath : null;
+    // Clean up zero-byte orphan files so spawn failures don't litter the
+    // output tree.
+    if (spawnStdoutPath === null && spawnStderrPath === null) {
+      await cleanupEmptyOutputFiles();
+    }
     return {
       kind: 'spawn_failed',
       command: cmd.name,
@@ -367,6 +567,8 @@ async function _runOneCommand(
         exitCode: null,
         actionTaken: null,
         output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
+        stdoutPath: spawnStdoutPath,
+        stderrPath: spawnStderrPath,
       },
     };
   }
@@ -384,6 +586,18 @@ async function _runOneCommand(
       timed_out: true,
     });
     await _writeQueue;
+    const stdoutBytesT = stdoutStream?.bytesWritten() ?? 0;
+    const stderrBytesT = stderrStream?.bytesWritten() ?? 0;
+    await closeOutputStreams();
+    // Timeout: the child ran (possibly with output) before being killed.
+    // Surface paths for any bytes that were captured; keep null otherwise
+    // and unlink the empty files so we don't accumulate stubs for e.g.
+    // commands that hang before producing a single byte.
+    const timeoutStdoutPath = plannedStdoutPath && stdoutBytesT > 0 ? plannedStdoutPath : null;
+    const timeoutStderrPath = plannedStderrPath && stderrBytesT > 0 ? plannedStderrPath : null;
+    if (timeoutStdoutPath === null && timeoutStderrPath === null) {
+      await cleanupEmptyOutputFiles();
+    }
     return {
       kind: 'timeout',
       command: cmd.name,
@@ -396,6 +610,8 @@ async function _runOneCommand(
         exitCode: null,
         actionTaken: null,
         output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
+        stdoutPath: timeoutStdoutPath,
+        stderrPath: timeoutStderrPath,
       },
     };
   }
@@ -410,6 +626,13 @@ async function _runOneCommand(
     elapsed_ms: elapsedMs,
   });
   await _writeQueue;
+  await closeOutputStreams();
+
+  // Successful-run policy: paths are non-null whenever outputDir was
+  // provided, even for commands that produced no bytes. Empty files are
+  // fine — F4's endpoint will serve them as `{ content: "" }` with a 200.
+  const exitStdoutPath = plannedStdoutPath;
+  const exitStderrPath = plannedStderrPath;
 
   const action = resolveAction(cmd.actions, exitCode);
   if (action === null) {
@@ -426,6 +649,8 @@ async function _runOneCommand(
         exitCode,
         actionTaken: null,
         output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
+        stdoutPath: exitStdoutPath,
+        stderrPath: exitStderrPath,
       },
     };
   }
@@ -439,6 +664,8 @@ async function _runOneCommand(
     exitCode,
     actionTaken: action,
     output: outputBuf.slice(0, OUTPUT_CAPTURE_LIMIT),
+    stdoutPath: exitStdoutPath,
+    stderrPath: exitStderrPath,
   };
 
   if (isContinue(action)) {
