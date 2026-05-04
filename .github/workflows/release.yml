@@ -30,19 +30,19 @@ jobs:
       contents: write       # for the GitHub Release
       id-token: write       # for npm provenance attestation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v4
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
-      # OIDC Trusted Publishing requires npm >= 11.5.1; Node 20 ships with
+      # OIDC Trusted Publishing requires npm >= 11.5.1; Node 22 ships with
       # npm 10. Upgrade in-place before publish.
       - name: Upgrade npm CLI for OIDC publishing
         run: npm install -g npm@latest

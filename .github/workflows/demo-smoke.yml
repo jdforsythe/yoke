@@ -1,0 +1,71 @@
+name: demo-smoke
+
+# Runs `make demo-shots` headless on every PR / push to master.
+# Catches regressions in the seeded-dashboard pipeline (graph layout,
+# template picker, GraphPane, capture spec wiring) before they ship.
+#
+# This is a smoke test, not visual regression: we only assert the
+# pipeline exits 0 and emits the expected PNGs. Bit-for-bit comparison
+# against committed images would be flaky (font rendering, ReactFlow
+# layout jitter). Pixel diffing can be layered on later.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  demo-shots:
+    name: make demo-shots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm --filter web exec playwright install --with-deps chromium
+
+      - name: Run make demo-shots
+        run: make demo-shots
+
+      - name: Verify expected screenshots exist
+        run: |
+          set -euo pipefail
+          expected=(
+            attention-banner.png
+            feature-board.png
+            github-button.png
+            graph.png
+            item-detail.png
+            live-stream.png
+            picker.png
+            workflow-list.png
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            path="docs/img/$f"
+            if [ ! -s "$path" ]; then
+              echo "::error::missing or empty: $path"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Upload generated screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: demo-shots
+          path: docs/img/*.png
+          retention-days: 7
