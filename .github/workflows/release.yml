@@ -48,8 +48,21 @@ jobs:
 
       # OIDC Trusted Publishing requires npm >= 11.5.1; Node 22 ships with
       # npm 10. Upgrade in-place before publish.
+      #
+      # Pinned to a specific version (not @latest) to dodge a self-replace
+      # race that surfaces intermittently as `Cannot find module
+      # 'promise-retry'`: when npm overwrites itself in /opt/hostedtoolcache
+      # mid-install, an in-flight require() can land between unlink and
+      # rewrite. Pinning + the workaround retry below keeps it deterministic.
+      # Bump this pin when there's a reason to (e.g. a newer OIDC behaviour);
+      # don't switch back to @latest.
       - name: Upgrade npm CLI for OIDC publishing
-        run: npm install -g npm@latest
+        run: |
+          set -euo pipefail
+          # Retry once if the self-replace race trips. The second attempt
+          # runs against a clean(er) tree because the first largely succeeded.
+          npm install -g npm@11.5.1 || npm install -g npm@11.5.1
+          npm --version
 
       - run: pnpm install --frozen-lockfile
 
