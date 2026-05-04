@@ -16,6 +16,9 @@ export default defineConfig({
   build: {
     outDir: '../../dist/web',
     emptyOutDir: true,
+    // The graph route lazy-loads elkjs (~1.5 MB) on demand; raise the
+    // warning ceiling so its async chunk doesn't trip the default 500 kB.
+    chunkSizeWarningLimit: 1800,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
@@ -24,6 +27,17 @@ export default defineConfig({
       output: {
         entryFileNames: ({ name }) =>
           name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js',
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('react-router')) return 'router';
+          if (id.includes('@tanstack')) return 'tanstack';
+          if (
+            id.includes('/node_modules/react/') ||
+            id.includes('/node_modules/react-dom/') ||
+            id.includes('/node_modules/scheduler/')
+          )
+            return 'react';
+        },
       },
     },
   },
