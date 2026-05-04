@@ -275,16 +275,15 @@ describe('AC-3: session_ok fault injection → crash recovery restart', () => {
     // Wait for the fault to fire: the session row should stay 'running'
     // (session_ok was NOT committed) but the item stays 'in_progress'.
     // The handle emits exit(0) immediately, so by the time we see the
-    // running session, the fault has already fired.
-    await pollUntil(
-      () => {
-        const items = readAllItems(workflowId);
-        const sessions = readRunningSessionCount(workflowId);
-        // Fault fired: item still in_progress, session still 'running' (not ended).
-        return items[0]?.status === 'in_progress' && sessions === 1;
-      },
-      { timeoutMs: 3000 },
-    );
+    // running session, the fault has already fired. This is a stable
+    // steady-state, not a transient window — use the default timeout
+    // (5000ms) to stay tolerant of slow CI runners under suite contention.
+    await pollUntil(() => {
+      const items = readAllItems(workflowId);
+      const sessions = readRunningSessionCount(workflowId);
+      // Fault fired: item still in_progress, session still 'running' (not ended).
+      return items[0]?.status === 'in_progress' && sessions === 1;
+    });
 
     // Stop the first scheduler.  It does NOT clean up the stale session row.
     await scheduler1.stop();
@@ -332,14 +331,12 @@ describe('feat-pipeline-hardening: stale sessions ended during crash recovery', 
 
     // Wait for session to be created with 'running' status.
     await pollUntil(() => readRunningSessionCount(workflowId) > 0);
-    // Wait for the fault to fire.
-    await pollUntil(
-      () => {
-        const items = readAllItems(workflowId);
-        return items[0]?.status === 'in_progress' && readRunningSessionCount(workflowId) === 1;
-      },
-      { timeoutMs: 3000 },
-    );
+    // Wait for the fault to fire. Steady state, not a transient — default
+    // 5000ms timeout keeps us tolerant of slow CI runners.
+    await pollUntil(() => {
+      const items = readAllItems(workflowId);
+      return items[0]?.status === 'in_progress' && readRunningSessionCount(workflowId) === 1;
+    });
     await scheduler1.stop();
 
     // Capture the session id for verification.
