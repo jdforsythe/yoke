@@ -1,0 +1,58 @@
+version: "1"
+
+template:
+  name: one-shot
+  description: "Single-phase, single-prompt, single-artifact run. The fastest way to point Claude at a focused task and walk away. Best for: one CLI tool, one script, one document — no review loop, no multi-feature decomposition."
+
+pipeline:
+  stages:
+    - id: build
+      description: "Run-once builder. Reads docs/idea/one-shot-brief.md, produces the artifact, runs the smoke test."
+      run: once
+      phases:
+        - build
+
+phases:
+  build:
+    description: "Generic builder phase. Reads the brief, writes code or content, runs the smoke gate."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/build.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: run-tests
+        # NOTE: swap `pnpm test` for your stack's test command (npm test,
+        # cargo test, pytest -x, go test ./..., etc.). One-shot still gates
+        # on a passing test run so a failed build never silently "completes."
+        run: ["pnpm", "test"]
+        timeout_s: 300
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: one-shot/
+  bootstrap:
+    commands:
+      - "pnpm install"
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

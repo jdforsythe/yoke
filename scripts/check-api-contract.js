@@ -2,7 +2,7 @@
 /**
  * API contract check — boots a real Yoke server on a random port, fetches
  * every documented HTTP endpoint, and validates each response against the
- * JSON Schema in docs/design/schemas/api-responses.schema.json.
+ * JSON Schema in schemas/api-responses.schema.json.
  *
  * Exit 0  — all endpoint shapes match.
  * Exit 1  — one or more shapes drifted, or the server failed to start.
@@ -32,7 +32,7 @@ import addFormats from 'ajv-formats';
 import { startServer } from '../src/cli/start.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = path.resolve(__dirname, '../docs/design/schemas/api-responses.schema.json');
+const SCHEMA_PATH = path.resolve(__dirname, '../schemas/api-responses.schema.json');
 
 // Minimal template accepted by loadTemplate — prompt_template is never read
 // because noScheduler:true skips all agent runs.

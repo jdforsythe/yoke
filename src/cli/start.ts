@@ -54,6 +54,27 @@ const execFileAsync = promisify(execFile);
  * Thrown by startServer when config.configDir is not inside a git repository.
  * The commander action catches this and exits non-zero with a clear message.
  */
+/**
+ * Thrown by selectStartupTemplate when multiple templates exist and no
+ * --template flag was passed (and no `default` template is present to
+ * pick automatically). The commander action catches this and exits non-zero
+ * with a list of the candidate template names.
+ */
+export class NoTemplateSelectedError extends Error {
+  readonly available: string[];
+
+  constructor(available: string[]) {
+    const names = available.join(', ');
+    super(
+      `multiple templates found in .yoke/templates/ (${names}); ` +
+      `pass --template <name> to choose, or rename one to 'default.yml'.`,
+    );
+    this.name = 'NoTemplateSelectedError';
+    this.available = available;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class GitRepoRequiredError extends Error {
   readonly configDir: string;
   readonly gitCommand: string;
@@ -98,6 +119,29 @@ function migrationsDir(): string {
 }
 
 /**
+ * Best-effort path to the bundled dashboard assets. Returns the first
+ * candidate that contains an index.html, or undefined when no built UI is
+ * present (server skips static hosting).
+ */
+function resolveBundledWebRoot(): string | undefined {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // After tsc build: dist/cli/start.js → dist/web/
+    path.resolve(here, '..', 'web'),
+    // Dev (tsx) layout: src/cli/start.ts → dist/web/ (if a build was run)
+    path.resolve(here, '..', '..', 'dist', 'web'),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(path.join(c, 'index.html'))) return c;
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
+
+/**
  * Build a production GitHelper that runs git commands inside `repoRoot`.
  */
 function makeGitHelper(repoRoot: string): GitHelper {
@@ -129,10 +173,19 @@ export interface StartOptions {
   /**
    * Repo root containing the .yoke/ folder.
    * Default: process.cwd()
-   * t-10 will add a --template flag to select a named template; for now
-   * startServer always loads the 'default' template.
    */
   configDir?: string;
+  /**
+   * Which template to bind the scheduler to (looked up at
+   * `<configDir>/.yoke/templates/<template>.yml`).
+   *
+   * If omitted, selectStartupTemplate picks one:
+   *   - 0 templates       → ConfigLoadError(not_found)
+   *   - 1 template        → that one
+   *   - >1 with default   → 'default'
+   *   - >1, no default    → NoTemplateSelectedError listing the candidates
+   */
+  template?: string;
   /** Server port. Default: 7777 */
   port?: number;
   /**
@@ -165,6 +218,48 @@ export interface StartHandle {
 }
 
 /**
+ * Pick the template the scheduler should bind to.
+ *
+ *   - `templateOpt` provided → use it as-is (loadTemplate may still throw
+ *     not_found if the file is missing).
+ *   - 0 templates discovered → throw ConfigLoadError(not_found) pointing
+ *     the user at `yoke setup` / `yoke init`.
+ *   - exactly 1 template → use it.
+ *   - >1 templates with one named `default` → pick `default`.
+ *   - >1 templates and no `default` → NoTemplateSelectedError.
+ *
+ * Exported for unit tests.
+ */
+export function selectStartupTemplate(configDir: string, templateOpt?: string): string {
+  if (templateOpt !== undefined && templateOpt !== '') {
+    return templateOpt;
+  }
+
+  const available = listTemplates(configDir).map((t) => t.name);
+
+  if (available.length === 0) {
+    throw new ConfigLoadError({
+      kind: 'not_found',
+      path: path.join(configDir, '.yoke', 'templates'),
+      message:
+        `No templates found in ${path.join(configDir, '.yoke', 'templates')}.\n` +
+        `Run 'yoke setup' for a guided walkthrough, or 'yoke init --template <name>' ` +
+        `to scaffold one of the bundled starters (one-shot, plan-build, multi-reviewer, …).`,
+    });
+  }
+
+  if (available.length === 1) {
+    return available[0];
+  }
+
+  if (available.includes('default')) {
+    return 'default';
+  }
+
+  throw new NoTemplateSelectedError(available);
+}
+
+/**
  * Validate config, open DB, run migrations, start Fastify + Scheduler.
  * Returns a handle for clean shutdown. Throws on config validation failure.
  * Exported for integration tests.
@@ -174,9 +269,11 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   const port = opts.port ?? 7777;
   const gitCheck = opts._gitCheck ?? defaultGitRepoCheck;
 
-  // Load + validate the 'default' template — throws ConfigLoadError on failure.
-  // t-10 will wire a --template flag so the caller can select a named template.
-  const config = loadTemplate(configDir, 'default');
+  // Pick which template the scheduler binds to. Throws ConfigLoadError or
+  // NoTemplateSelectedError if the choice is ambiguous or there are no
+  // templates at all.
+  const templateName = selectStartupTemplate(configDir, opts.template);
+  const config = loadTemplate(configDir, templateName);
 
   // Guard: config.configDir must be inside a git repository.
   // WorktreeManager requires a real git repo and will throw uninformative
@@ -200,7 +297,15 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
   // can compute the expected output root for path-traversal validation. The
   // resolved configDir from loadTemplate() is authoritative (it applies any
   // $dir / realpath normalisation).
-  const callbacks: ServerCallbacks = { configDir: config.configDir };
+  const callbacks: ServerCallbacks = {
+    configDir: config.configDir,
+    // Point @fastify/static at the bundled dashboard. Both layouts work:
+    //   • dist/cli/start.js → ../web         (built tarball)
+    //   • src/cli/start.ts  → ../../dist/web (dev via tsx, only after build)
+    // resolveWebRoot in server.ts silently skips invalid paths, so dev
+    // sessions that haven't run the web build keep working with bin/yoke-dev.
+    webRoot: resolveBundledWebRoot(),
+  };
   const { fastify, state } = await createServer(db, callbacks);
   await fastify.listen({ host: '127.0.0.1', port });
 
@@ -519,15 +624,26 @@ export async function startServer(opts: StartOptions = {}): Promise<StartHandle>
 export function register(program: Command): void {
   program
     .command('start')
-    .description('Start the Yoke pipeline engine')
+    .description('Start the Yoke pipeline engine and dashboard server.')
     .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
     .option('-p, --port <number>', 'Server port', '7777')
+    .option(
+      '-t, --template <name>',
+      'Template name (file under .yoke/templates/<name>.yml). ' +
+      'Defaults to the only template present, or "default" if multiple exist.',
+    )
     .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
     // --config was removed in the templates refactor (t-03/t-10). Templates are
     // now discovered automatically under .yoke/templates/. Keeping the option
     // registered so Commander can produce a clear error instead of "unknown option".
     .option('--config <file>', '[removed] use --config-dir instead')
-    .action(async (opts: { configDir: string; port: string; scheduler: boolean; config?: string }) => {
+    .addHelpText('after', `
+Examples:
+  yoke start                           # auto-pick template
+  yoke start --template plan-build     # bind scheduler to plan-build.yml
+  yoke start --port 8080
+`)
+    .action(async (opts: { configDir: string; port: string; template?: string; scheduler: boolean; config?: string }) => {
       if (opts.config !== undefined) {
         console.error(
           'Error: --config is no longer supported.\n' +
@@ -544,10 +660,14 @@ export function register(program: Command): void {
 
       let handle: StartHandle;
       try {
-        handle = await startServer({ configDir, port, noScheduler });
+        handle = await startServer({ configDir, port, template: opts.template, noScheduler });
       } catch (err) {
         if (err instanceof ConfigLoadError) {
           console.error(`Configuration error: ${err.message}`);
+          process.exit(1);
+        }
+        if (err instanceof NoTemplateSelectedError) {
+          console.error(`Template selection required: ${err.message}`);
           process.exit(1);
         }
         if (err instanceof GitRepoRequiredError) {
@@ -557,7 +677,10 @@ export function register(program: Command): void {
         throw err;
       }
 
-      console.log(`Yoke server running at ${handle.url}`);
+      console.log('');
+      console.log(`  Yoke dashboard: ${handle.url}`);
+      console.log('  Press Ctrl+C to stop.');
+      console.log('');
       if (noScheduler) {
         console.log('Scheduler disabled (--no-scheduler): no items will advance.');
       }

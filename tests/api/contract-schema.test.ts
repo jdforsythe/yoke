@@ -1,5 +1,5 @@
 /**
- * Asserts that docs/design/schemas/api-responses.schema.json stays in sync
+ * Asserts that schemas/api-responses.schema.json stays in sync
  * with the TypeScript types in src/shared/types/.
  *
  * These tests catch the most common drift pattern: renaming a TypeScript field
@@ -23,7 +23,7 @@ import { WORKFLOW_STATUS_VALUES } from '../../src/shared/types/workflow.js';
 import type { WorkflowRow } from '../../src/shared/types/workflow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = path.resolve(__dirname, '../../docs/design/schemas/api-responses.schema.json');
+const SCHEMA_PATH = path.resolve(__dirname, '../../schemas/api-responses.schema.json');
 const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8')) as Record<string, unknown> & {
   $id: string;
   $defs: Record<string, { required?: string[]; properties?: Record<string, unknown>; enum?: string[]; items?: unknown }>;

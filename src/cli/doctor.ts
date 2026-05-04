@@ -1,26 +1,29 @@
 /**
  * yoke doctor — pre-flight checks for the Yoke environment.
  *
- * Checks:
+ * Checks (in order, all surfaced even if earlier ones fail):
  *   1. Node.js >= 20
  *   2. SQLite accessible (open an in-memory DB with better-sqlite3)
  *   3. git >= 2.20
- *   4. .yoke.yml present and valid (loadConfig)
- *
- * For each check prints a PASS / FAIL row with actionable remediation text
- * on failure (RC: "not just 'failed'").
+ *   4. claude CLI on PATH
+ *   5. configDir is inside a git repository
+ *   6. At least one .yoke/templates/*.yml exists, AND each one passes AJV
+ *      validation, AND every prompt_template + scripted post: run path that
+ *      it references actually exists on disk.
  *
  * Exit code: 0 if all checks pass, 1 if any check fails.
  *
- * No shell-injection risk: git check uses execFileSync (no shell: true) and
- * passes no user-supplied arguments.
+ * No shell-injection risk: child processes use execFileSync (no shell: true)
+ * and pass no user-supplied arguments.
  */
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { loadTemplate } from '../server/config/loader.js';
+import { listTemplates, loadTemplate } from '../server/config/loader.js';
 import { ConfigLoadError } from '../server/config/errors.js';
+import type { ResolvedConfig } from '../shared/types/config.js';
 
 // ---------------------------------------------------------------------------
 // Check result type
@@ -41,7 +44,7 @@ export interface DoctorCheck {
 
 /** 1. Node.js version >= 20 */
 export function checkNode(): DoctorCheck {
-  const raw = process.versions.node; // e.g. "20.11.0"
+  const raw = process.versions.node;
   const major = parseInt(raw.split('.')[0], 10);
   if (major >= 20) {
     return { name: 'Node.js >= 20', passed: true, message: `Node.js ${raw}` };
@@ -59,7 +62,6 @@ export function checkNode(): DoctorCheck {
 /** 2. SQLite accessible via better-sqlite3 */
 export async function checkSqlite(): Promise<DoctorCheck> {
   try {
-    // Import the module directly to verify the native addon loads.
     const Database = (await import('better-sqlite3')).default;
     const db = new Database(':memory:');
     db.exec('SELECT 1');
@@ -83,17 +85,11 @@ export async function checkSqlite(): Promise<DoctorCheck> {
   }
 }
 
-/** Injectable executor type for testability. */
 export type GitExecutor = () => string;
-
-/** Default executor: runs git --version with no shell (no injection risk). */
 const defaultGitExecutor: GitExecutor = () =>
   execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
 
-/** Injectable executor for the git-repository check. Receives cwd; throws on failure. */
 export type GitRepoExecutor = (cwd: string) => void;
-
-/** Default executor: runs git rev-parse --show-toplevel in cwd. Throws if not a git repo. */
 const defaultGitRepoExecutor: GitRepoExecutor = (cwd: string) => {
   execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' });
 };
@@ -115,7 +111,6 @@ export function checkGit(executor: GitExecutor = defaultGitExecutor): DoctorChec
     };
   }
 
-  // "git version 2.39.3" → match[1]=2, match[2]=39
   const match = rawVersion.match(/(\d+)\.(\d+)/);
   if (!match) {
     return {
@@ -145,7 +140,33 @@ export function checkGit(executor: GitExecutor = defaultGitExecutor): DoctorChec
   };
 }
 
-/** 4. git repository at configDir */
+/** 4. claude CLI on PATH (Claude Code). */
+export type ClaudeExecutor = () => string;
+const defaultClaudeExecutor: ClaudeExecutor = () =>
+  execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim();
+
+export function checkClaude(executor: ClaudeExecutor = defaultClaudeExecutor): DoctorCheck {
+  try {
+    const ver = executor();
+    return {
+      name: 'claude CLI on PATH',
+      passed: true,
+      message: ver || 'claude --version exited 0',
+    };
+  } catch {
+    return {
+      name: 'claude CLI on PATH',
+      passed: false,
+      message: 'claude not found in PATH',
+      remediation:
+        `Yoke phases shell out to the Claude Code CLI.\n` +
+        `Install Claude Code: https://docs.claude.com/en/docs/claude-code/setup\n` +
+        `Then run 'claude --version' to confirm.`,
+    };
+  }
+}
+
+/** 5. git repository at configDir */
 export function checkGitRepo(
   configDir: string,
   executor: GitRepoExecutor = defaultGitRepoExecutor,
@@ -171,59 +192,169 @@ export function checkGitRepo(
   }
 }
 
-/** 5. .yoke/templates/default.yml valid */
-export function checkConfig(configDir: string): DoctorCheck {
-  const templateName = 'default';
-  const templatePath = `${configDir}/.yoke/templates/${templateName}.yml`;
+// ---------------------------------------------------------------------------
+// Template + reference checks
+// ---------------------------------------------------------------------------
+
+/**
+ * 6a. List templates in .yoke/templates/ — at least one must exist for
+ * `yoke start` to do anything.
+ */
+export function checkTemplatesPresent(configDir: string): DoctorCheck {
+  let names: string[] = [];
   try {
-    loadTemplate(configDir, templateName);
-    return {
-      name: '.yoke/templates valid',
-      passed: true,
-      message: `${templatePath} loaded and validated`,
-    };
+    names = listTemplates(configDir).map((t) => t.name);
   } catch (err) {
     if (err instanceof ConfigLoadError) {
-      let remediation: string;
-      switch (err.detail.kind) {
-        case 'not_found':
-          remediation = `Create ${templatePath} by running: yoke init`;
-          break;
-        case 'migration_error':
-          remediation =
-            `Move ${configDir}/.yoke.yml to ${configDir}/.yoke/templates/default.yml\n` +
-            `and rename the top-level 'project:' key to 'template:'.`;
-          break;
-        case 'parse_error':
-          remediation =
-            `Fix YAML syntax in ${templatePath}.\n` +
-            `Check for indentation errors or unquoted special characters.`;
-          break;
-        case 'version_error':
-          remediation = `Set version: "1" (a quoted string) at the top of ${templatePath}.`;
-          break;
-        case 'validation_error':
-          remediation =
-            `Fix the schema violations listed above in ${templatePath}.\n` +
-            `Refer to docs/design/schemas/yoke-config.schema.json for the full schema.`;
-          break;
-        default:
-          remediation = `Review ${templatePath} and fix the reported error.`;
-      }
       return {
-        name: '.yoke/templates valid',
+        name: 'templates discovered',
         passed: false,
         message: err.message,
-        remediation,
+        remediation:
+          `Move ${configDir}/.yoke.yml to ${configDir}/.yoke/templates/<name>.yml\n` +
+          `(see CHANGELOG for the format change).`,
       };
     }
     return {
-      name: '.yoke/templates valid',
+      name: 'templates discovered',
       passed: false,
-      message: `Unexpected error: ${(err as Error).message}`,
-      remediation: `Check ${templatePath} for issues.`,
+      message: `unexpected error: ${(err as Error).message}`,
     };
   }
+
+  if (names.length === 0) {
+    return {
+      name: 'templates discovered',
+      passed: false,
+      message: `no .yml files found in ${path.join(configDir, '.yoke', 'templates')}`,
+      remediation:
+        `Create one with: yoke init --template one-shot\n` +
+        `Or run the guided walkthrough: yoke setup`,
+    };
+  }
+
+  return {
+    name: 'templates discovered',
+    passed: true,
+    message: `${names.length} template(s): ${names.join(', ')}`,
+  };
+}
+
+/**
+ * 6b. For each template: AJV-validate, then verify every prompt_template
+ * file exists, and every scripted post: run path that looks like a local
+ * file (./scripts/foo.js, prompts/bar.md, …) actually resolves.
+ */
+export function checkTemplatesValid(configDir: string): DoctorCheck[] {
+  let summaries: { name: string }[];
+  try {
+    summaries = listTemplates(configDir).map((t) => ({ name: t.name }));
+  } catch {
+    return []; // checkTemplatesPresent already reported this.
+  }
+
+  const results: DoctorCheck[] = [];
+  for (const { name } of summaries) {
+    const checkName = `template '${name}'`;
+    let cfg: ResolvedConfig;
+    try {
+      cfg = loadTemplate(configDir, name);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.push({
+        name: checkName,
+        passed: false,
+        message: msg,
+        remediation: `Fix the schema violations above. See schemas/yoke-config.schema.json.`,
+      });
+      continue;
+    }
+
+    const missing: string[] = [];
+
+    // Prompt templates — already absolute after resolveConfig.
+    for (const [phaseKey, phase] of Object.entries(cfg.phases)) {
+      const promptPath = phase.prompt_template;
+      if (!fs.existsSync(promptPath)) {
+        missing.push(`phases.${phaseKey}.prompt_template → ${promptPath}`);
+      }
+    }
+
+    // Scripted post: run paths.
+    for (const [phaseKey, phase] of Object.entries(cfg.phases)) {
+      const post = phase.post ?? [];
+      for (const cmd of post) {
+        const localFile = looksLikeLocalScriptArg(cmd.run);
+        if (!localFile) continue;
+        const abs = path.isAbsolute(localFile)
+          ? localFile
+          : path.resolve(configDir, localFile);
+        if (!fs.existsSync(abs)) {
+          missing.push(`phases.${phaseKey}.post[${cmd.name}].run → ${localFile}`);
+        }
+      }
+    }
+
+    if (missing.length > 0) {
+      results.push({
+        name: checkName,
+        passed: false,
+        message: `${missing.length} missing reference(s)`,
+        remediation: missing.map((m) => `missing: ${m}`).join('\n'),
+      });
+    } else {
+      results.push({
+        name: checkName,
+        passed: true,
+        message: 'schema valid; all referenced prompts and scripts exist',
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * Return the local script path that `runArgs` references, or null if the
+ * command is a binary lookup (e.g. ["pnpm", "test"]) or uses a directory
+ * argument (e.g. ["node", "--test", "test/"]) we can't validate at static
+ * time.
+ *
+ * Heuristic — both branches require the candidate to *look* like a script
+ * file (i.e. end in a known executable extension) so we don't flag flag
+ * arguments or directory targets:
+ *   - argv[0] is node/bash/sh → next non-flag positional that has a script
+ *     extension is the candidate. If that arg is preceded by another
+ *     `--option` (e.g. `node --test test/`) skip it: it is the option's
+ *     value, not a script path.
+ *   - argv[0] itself contains a `/` and ends in a script extension.
+ */
+const SCRIPT_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.sh', '.py', '.rb'];
+function hasScriptExtension(p: string): boolean {
+  const lower = p.toLowerCase();
+  return SCRIPT_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function looksLikeLocalScriptArg(runArgs: ReadonlyArray<string>): string | null {
+  if (runArgs.length === 0) return null;
+  const head = runArgs[0];
+  if (head === 'node' || head === 'bash' || head === 'sh') {
+    for (let i = 1; i < runArgs.length; i++) {
+      const a = runArgs[i];
+      if (a.startsWith('-')) continue;
+      // Previous arg was a `--flag` — this positional is the flag's value
+      // (e.g. `node --test test/`), not a script. Skip.
+      const prev = runArgs[i - 1];
+      if (prev !== undefined && prev.startsWith('--') && !prev.includes('=')) {
+        continue;
+      }
+      return hasScriptExtension(a) ? a : null;
+    }
+    return null;
+  }
+  if (head.includes('/') && !path.isAbsolute(head) && hasScriptExtension(head)) {
+    return head;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,32 +362,37 @@ export function checkConfig(configDir: string): DoctorCheck {
 // ---------------------------------------------------------------------------
 
 export interface RunChecksOptions {
-  /** Repo root containing the .yoke/ folder. Default: cwd */
   configDir?: string;
   cwd?: string;
 }
 
-/** Run all five doctor checks and return results. */
 export async function runChecks(opts: RunChecksOptions = {}): Promise<DoctorCheck[]> {
   const cwd = opts.cwd ?? process.cwd();
   const configDir = opts.configDir ?? cwd;
 
   const sqliteCheck = await checkSqlite();
+  const templatesPresent = checkTemplatesPresent(configDir);
 
-  return [
+  const checks: DoctorCheck[] = [
     checkNode(),
     sqliteCheck,
     checkGit(),
+    checkClaude(),
     checkGitRepo(cwd),
-    checkConfig(configDir),
+    templatesPresent,
   ];
+
+  if (templatesPresent.passed) {
+    checks.push(...checkTemplatesValid(configDir));
+  }
+
+  return checks;
 }
 
 // ---------------------------------------------------------------------------
 // Printer
 // ---------------------------------------------------------------------------
 
-/** Format a list of DoctorCheck results as a human-readable table. */
 export function formatDoctorOutput(checks: DoctorCheck[]): string {
   const lines: string[] = [];
   for (const c of checks) {
@@ -279,14 +415,17 @@ export function formatDoctorOutput(checks: DoctorCheck[]): string {
 export function register(program: Command): void {
   program
     .command('doctor')
-    .description('Check Node >= 20, SQLite, git >= 2.20, and .yoke.yml validity')
+    .description('Diagnose Yoke environment: Node, SQLite, git, claude, templates.')
     .option('-d, --config-dir <path>', 'Repo root containing .yoke/ folder', '.')
+    .addHelpText('after', `
+Examples:
+  yoke doctor
+  yoke doctor --config-dir /path/to/project
+`)
     .action(async (opts: { configDir: string }) => {
       const configDir = path.resolve(opts.configDir);
       const checks = await runChecks({ configDir });
-
       console.log(formatDoctorOutput(checks));
-
       const allPassed = checks.every((c) => c.passed);
       if (!allPassed) {
         console.log('\nSome checks failed. See remediation steps above.');

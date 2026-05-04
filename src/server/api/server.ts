@@ -17,8 +17,10 @@
  */
 
 import * as path from 'path';
+import { existsSync, statSync } from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import fastifyWebsocket, { type SocketStream } from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import type { DbPool } from '../storage/db.js';
 import { readArtifactFile, readLogPage } from '../session-log/reader.js';
 import { makePrepostOutputDir } from '../session-log/writer.js';
@@ -403,6 +405,15 @@ export interface ServerCallbacks {
    * and the guard agree on the same tree.
    */
   homeDir?: string;
+  /**
+   * Absolute path to the directory containing the bundled web assets
+   * (typically `<package-root>/dist/web`). When the directory exists, the
+   * server serves static files from it with an SPA fallback to index.html
+   * for any non-API GET. When omitted (or the directory does not exist),
+   * static serving is skipped — useful in tests and during the dev flow
+   * where Vite serves the UI on its own port.
+   */
+  webRoot?: string;
 }
 
 /**
@@ -881,7 +892,7 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
 
       const prepostRowsMapped: ItemTimelineRow[] = prepostRows.map((r) => {
         // prepost_runs has no `status` column — derive from exit_code
-        // (null/0 = ok, non-zero = fail) per docs/design/schemas/sqlite-schema.sql:173-189.
+        // (null/0 = ok, non-zero = fail).
         const status: 'ok' | 'fail' = r.exit_code == null || r.exit_code === 0 ? 'ok' : 'fail';
         return {
           kind: 'prepost',
@@ -1232,7 +1243,70 @@ export async function createServer(db: DbPool, callbacks: ServerCallbacks = {}):
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Static dashboard hosting + SPA fallback
+  //
+  // When callbacks.webRoot points at a directory containing a built dashboard
+  // (Vite output: index.html + assets/), the server hosts those files at /
+  // and falls back to index.html for any non-API GET that hits the
+  // not-found handler. API and WS routes still respond first because they
+  // are registered above.
+  // -------------------------------------------------------------------------
+  const webRoot = resolveWebRoot(callbacks.webRoot);
+  if (webRoot) {
+    await fastify.register(fastifyStatic, {
+      root: webRoot,
+      prefix: '/',
+      // decorateReply must stay true so the SPA fallback can use
+      // reply.sendFile('index.html') below.
+      decorateReply: true,
+      // Disable wildcard so @fastify/static doesn't collide with API and
+      // WebSocket routes; we wire the SPA fallback via setNotFoundHandler.
+      wildcard: false,
+    });
+
+    fastify.setNotFoundHandler((req, reply) => {
+      const url = req.raw.url ?? '';
+      const accept = req.headers.accept ?? '';
+      // Never SPA-fallback for API, /stream, or non-GET requests; let the
+      // client see the real 404. JSON clients (Accept: application/json)
+      // also get the JSON 404 instead of the index page.
+      if (
+        req.method !== 'GET' ||
+        url.startsWith('/api/') ||
+        url.startsWith('/stream') ||
+        accept.includes('application/json')
+      ) {
+        return reply.status(404).send({ error: 'not found' });
+      }
+      return reply.sendFile('index.html');
+    });
+  }
+
   return { fastify, state: { seqStore, backfillBuffer, idempotency, registry } };
+}
+
+/**
+ * Decide whether to host static assets.
+ *
+ * Only honors the caller-supplied webRoot. start.ts (production) computes
+ * the path from the package install location; tests and dev pass nothing,
+ * so static serving is skipped and Vite handles the UI on its own port.
+ */
+function resolveWebRoot(explicit: string | undefined): string | null {
+  if (!explicit) return null;
+  try {
+    if (
+      existsSync(explicit) &&
+      statSync(explicit).isDirectory() &&
+      existsSync(path.join(explicit, 'index.html'))
+    ) {
+      return explicit;
+    }
+  } catch {
+    // fall through
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

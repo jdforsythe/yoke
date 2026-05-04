@@ -1,0 +1,56 @@
+{
+  "project": "content-pipeline",
+  "created": "2026-05-03T00:00:00Z",
+  "source": "docs/idea/content-pipeline-brief.md",
+  "features": [
+    {
+      "id": "ch-introduction",
+      "category": "front-matter",
+      "priority": 1,
+      "depends_on": [],
+      "description": "Opens the book with the running example and names the through-line. Audience touchpoint: the moment a reader picks this up — what changed in their world that made them open it.",
+      "acceptance_criteria": [
+        "Opens with a one-paragraph hook that introduces the running example.",
+        "Names the through-line explicitly in the close.",
+        "Length between 1500 and 3000 words."
+      ],
+      "review_criteria": [
+        "Voice matches docs/idea/content-pipeline-brief.md §Voice.",
+        "No headings deeper than ###.",
+        "No jargon introduced without a one-line definition."
+      ]
+    },
+    {
+      "id": "ch-the-core-idea",
+      "category": "body",
+      "priority": 2,
+      "depends_on": ["ch-introduction"],
+      "description": "Develops the core idea announced in chapter 1. Uses the same running example and adds a second concrete case to show the idea generalising.",
+      "acceptance_criteria": [
+        "Reuses the running example from ch-introduction.",
+        "Introduces a second concrete case.",
+        "Closes with one reflection question for the reader."
+      ],
+      "review_criteria": [
+        "Voice consistent with chapter 1.",
+        "No new running example introduced (this chapter develops, not pivots)."
+      ]
+    },
+    {
+      "id": "ch-applying-it",
+      "category": "body",
+      "priority": 3,
+      "depends_on": ["ch-the-core-idea"],
+      "description": "Walks the reader through applying the core idea to a problem of their own. Includes a 5-step exercise the reader can do in 20 minutes.",
+      "acceptance_criteria": [
+        "Includes a numbered 5-step exercise.",
+        "Each step has a one-sentence why-this-step explanation.",
+        "Closes with a takeaway the reader can quote at someone."
+      ],
+      "review_criteria": [
+        "Voice consistent with prior chapters.",
+        "No code examples (this is a non-coding pipeline)."
+      ]
+    }
+  ]
+}

@@ -32,7 +32,7 @@ import type { RawConfig, ResolvedConfig } from '../../shared/types/config.js';
 // ---------------------------------------------------------------------------
 
 const SCHEMA_PATH = fileURLToPath(
-  new URL('../../../docs/design/schemas/yoke-config.schema.json', import.meta.url),
+  new URL('../../../schemas/yoke-config.schema.json', import.meta.url),
 );
 
 const SCHEMA_JSON = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8')) as AnySchema;

@@ -1,0 +1,72 @@
+version: "1"
+
+template:
+  name: scenario-a
+  description: "E2E test fixture — hello-world greenfield. run:once planner writes features.json; run:per-item implementer writes source files. No post commands."
+
+pipeline:
+  stages:
+    - id: planning
+      description: "Run-once planner. Writes docs/idea/features.json with two hard-coded features."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implementer. Writes source files for each feature."
+      run: per-item
+      items_from: docs/idea/features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      phases:
+        - implement
+
+phases:
+  plan:
+    description: "Write the pre-baked features.json to docs/idea/features.json verbatim."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--strict-mcp-config"
+      - "--mcp-config"
+      - '{"mcpServers":{}}'
+      - "--disable-slash-commands"
+      - "--model"
+      - "claude-haiku-4-5"
+      - "--effort"
+      - "low"
+      - "--max-budget-usd"
+      - "0.10"
+    prompt_template: prompts/plan.md
+    max_outer_retries: 0
+
+  implement:
+    description: "Write each feature's target_files verbatim."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--strict-mcp-config"
+      - "--mcp-config"
+      - '{"mcpServers":{}}'
+      - "--disable-slash-commands"
+      - "--model"
+      - "claude-haiku-4-5"
+      - "--effort"
+      - "low"
+      - "--max-budget-usd"
+      - "0.10"
+    prompt_template: prompts/implement.md
+    max_outer_retries: 0
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: scenario-a/
