@@ -1,0 +1,46 @@
+version: "1"
+
+template:
+  name: plan-build-review
+  description: "Plan features, then implement+review each on a loop"
+
+pipeline:
+  stages:
+    - id: plan
+      description: "Run-once planner. Produces docs/idea/features.json."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implement+review loop."
+      run: per-item
+      items_from: docs/idea/features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.title"
+        description: "$.description"
+      phases:
+        - implement
+        - review
+
+phases:
+  plan:
+    description: "Plan the feature set."
+    command: echo
+    args: ["demo: plan"]
+    prompt_template: prompts/plan.md
+
+  implement:
+    description: "Implement one feature."
+    command: echo
+    args: ["demo: implement"]
+    prompt_template: prompts/implement.md
+
+  review:
+    description: "Review the implementation."
+    command: echo
+    args: ["demo: review"]
+    prompt_template: prompts/review.md
