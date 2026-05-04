@@ -17,7 +17,7 @@ Set TypingSpeed 40ms
 Set PlaybackSpeed 1.0
 
 Hide
-Type "cd $(mktemp -d /tmp/yoke-tour-XXXXXX) && git init -q -b main && git config user.email v@v && git config user.name v && git commit -q --allow-empty -m b && clear"
+Type `export PATH=$PWD/bin:$PATH && cd $(mktemp -d /tmp/yoke-tour-XXXXXX) && git init -q -b main && git config user.email v@v && git config user.name v && git commit -q --allow-empty -m b && clear`
 Enter
 Sleep 600ms
 Show
