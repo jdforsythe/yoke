@@ -72,8 +72,22 @@ jobs:
       # permission above lets npm exchange a GitHub OIDC token for a
       # short-lived publish credential — provided npmjs.com has a trusted
       # publisher configured for this package + repo + workflow filename.
-      - name: Publish to npm (OIDC)
-        run: npm publish --access public --provenance
+      #
+      # Idempotency guard: if the version is already on the registry (e.g.
+      # the very first release was published manually to bootstrap the
+      # trusted-publisher config), skip the publish step instead of failing.
+      # This keeps the workflow re-runnable and lets v0.1.0 still produce a
+      # GitHub Release in the next step.
+      - name: Publish to npm (OIDC, skip if already published)
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "${PKG}@${VER}" version >/dev/null 2>&1; then
+            echo "::notice::${PKG}@${VER} is already on the registry — skipping publish."
+          else
+            npm publish --access public --provenance
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
