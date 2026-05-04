@@ -1,0 +1,63 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+# Version is resolved from labels on merged PRs. Default bump is patch, so an
+# unlabeled PR still produces a valid draft.
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking'
+  minor:
+    labels:
+      - 'minor'
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'patch'
+      - 'fix'
+      - 'bug'
+      - 'chore'
+      - 'docs'
+      - 'documentation'
+      - 'ci'
+      - 'dependencies'
+  default: patch
+
+categories:
+  - title: 'Breaking Changes'
+    labels:
+      - 'breaking'
+      - 'major'
+  - title: 'Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+      - 'minor'
+  - title: 'Bug Fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'ci'
+      - 'dependencies'
+  - title: 'Documentation'
+    labels:
+      - 'docs'
+      - 'documentation'
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-title-escapes: '\<*_&'
+exclude-labels:
+  - 'skip-changelog'
+  - 'no-release'
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

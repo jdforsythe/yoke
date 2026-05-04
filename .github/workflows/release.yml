@@ -1,9 +1,10 @@
 name: release
 
-# Triggered by pushing a v*.*.* tag. Verifies the tag matches package.json,
-# runs the full quality gate (typecheck + tests + build), publishes to npm
-# via OIDC Trusted Publishing (no token, no MFA bypass), and creates a
-# GitHub Release with auto-generated notes.
+# Triggered by pushing a v*.*.* tag — typically by publishing the draft
+# release that release-drafter maintains. Sets package.json to the tag
+# version, runs the full quality gate (typecheck + tests + build), publishes
+# to npm via OIDC Trusted Publishing (no token, no MFA bypass), and updates
+# the GitHub Release (preserving release-drafter's curated notes).
 #
 # One-time setup before the first run — configure the package's trusted
 # publisher on npmjs.com:
@@ -13,7 +14,10 @@ name: release
 #   • Workflow filename:  release.yml
 #   • Environment:        (leave empty unless you add one to this workflow)
 #
-# Trigger:
+# Normal trigger: publish the draft release in the GitHub UI. GitHub creates
+# the tag at master HEAD and fires the push:tag event below.
+#
+# Manual trigger (bypassing the draft):
 #   git tag -a v0.1.0 -m "Yoke v0.1.0"
 #   git push origin v0.1.0
 
@@ -49,15 +53,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Verify tag matches package.json version
+      # The tag is the source of truth for the release version. With the
+      # release-drafter flow, package.json on master still has the previous
+      # version when the draft is published, so we write the tag's version
+      # into package.json in-workspace (no commit) so `npm publish` picks it
+      # up. This step is a no-op when the two already match (e.g. a manual
+      # tag push after a version-bump PR).
+      - name: Set package.json version from tag
         run: |
-          PKG=$(node -p "require('./package.json').version")
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
           if [ "$PKG" != "$TAG" ]; then
-            echo "::error::Tag $TAG does not match package.json version $PKG"
-            exit 1
+            echo "Bumping package.json from $PKG to $TAG (in-workspace, not committed)"
+            npm version "$TAG" --no-git-tag-version --allow-same-version
+          else
+            echo "package.json already at $TAG"
           fi
-          echo "Releasing version $PKG"
+          echo "Releasing version $TAG"
 
       - name: Typecheck
         run: pnpm typecheck
@@ -89,10 +102,15 @@ jobs:
             npm publish --access public --provenance
           fi
 
-      - name: Create GitHub Release
+      # When the draft is published, the Release already exists with
+      # release-drafter's curated body. softprops/action-gh-release@v2
+      # updates the existing release in that case; we deliberately omit
+      # `body` and `generate_release_notes` so drafter's notes are preserved.
+      # On a manual tag-push (no pre-existing release), this creates a new
+      # Release with an empty body — fine for the bypass path.
+      - name: Ensure GitHub Release exists for tag
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          generate_release_notes: true
           fail_on_unmatched_files: false
