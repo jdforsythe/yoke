@@ -1,5 +1,5 @@
 {
-  "name": "yoke",
+  "name": "@jdforsythe/yoke",
   "version": "0.1.0",
   "description": "Autopilot for Claude Code: run multi-stage AI pipelines defined in .yoke/templates/<name>.yml with a live web dashboard.",
   "license": "MIT",

@@ -22,7 +22,7 @@ runs it overnight.
 ## Quick start (30 seconds)
 
 ```sh
-npm install -g yoke
+npm install -g @jdforsythe/yoke
 cd ~/code/my-project        # any git repo
 yoke setup                  # answer five questions
 yoke start                  # opens http://127.0.0.1:7777

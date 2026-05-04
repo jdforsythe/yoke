@@ -2,11 +2,16 @@ name: release
 
 # Triggered by pushing a v*.*.* tag. Verifies the tag matches package.json,
 # runs the full quality gate (typecheck + tests + build), publishes to npm
-# with provenance, and creates a GitHub Release with auto-generated notes.
+# via OIDC Trusted Publishing (no token, no MFA bypass), and creates a
+# GitHub Release with auto-generated notes.
 #
-# One-time setup before the first run:
-#   1. Generate an npm Automation token: https://www.npmjs.com/settings/<you>/tokens
-#   2. Add it as a repo secret named NPM_TOKEN.
+# One-time setup before the first run — configure the package's trusted
+# publisher on npmjs.com:
+#   https://www.npmjs.com/settings/<scope-or-user>/publishing-access
+#   • Repository owner:   jdforsythe
+#   • Repository name:    yoke
+#   • Workflow filename:  release.yml
+#   • Environment:        (leave empty unless you add one to this workflow)
 #
 # Trigger:
 #   git tag -a v0.1.0 -m "Yoke v0.1.0"
@@ -37,6 +42,11 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
+      # OIDC Trusted Publishing requires npm >= 11.5.1; Node 20 ships with
+      # npm 10. Upgrade in-place before publish.
+      - name: Upgrade npm CLI for OIDC publishing
+        run: npm install -g npm@latest
+
       - run: pnpm install --frozen-lockfile
 
       - name: Verify tag matches package.json version
@@ -58,10 +68,26 @@ jobs:
       - name: Build (server + web + assets)
         run: pnpm run build
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # OIDC Trusted Publishing: no NODE_AUTH_TOKEN. The id-token: write
+      # permission above lets npm exchange a GitHub OIDC token for a
+      # short-lived publish credential — provided npmjs.com has a trusted
+      # publisher configured for this package + repo + workflow filename.
+      #
+      # Idempotency guard: if the version is already on the registry (e.g.
+      # the very first release was published manually to bootstrap the
+      # trusted-publisher config), skip the publish step instead of failing.
+      # This keeps the workflow re-runnable and lets v0.1.0 still produce a
+      # GitHub Release in the next step.
+      - name: Publish to npm (OIDC, skip if already published)
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "${PKG}@${VER}" version >/dev/null 2>&1; then
+            echo "::notice::${PKG}@${VER} is already on the registry — skipping publish."
+          else
+            npm publish --access public --provenance
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

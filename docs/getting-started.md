@@ -11,7 +11,7 @@ installed and authenticated. If not, see [install.md](install.md) first.
 ## 1. Install
 
 ```sh
-npm install -g yoke
+npm install -g @jdforsythe/yoke
 yoke --version
 ```
 
