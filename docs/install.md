@@ -28,7 +28,7 @@ the **manual** path uses a tarball; the **dev** path is for hacking on Yoke itse
 ## Path A — npm (recommended, when available)
 
 ```sh
-npm install -g yoke
+npm install -g @jdforsythe/yoke
 yoke --version
 ```
 

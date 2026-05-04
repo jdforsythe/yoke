@@ -24,7 +24,7 @@ function findRepoRoot() {
     if (existsSync(candidate)) {
       try {
         const pkg = JSON.parse(readFileSync(candidate, 'utf8'));
-        if (pkg.name === 'yoke') return dir;
+        if (pkg.name === '@jdforsythe/yoke') return dir;
       } catch {
         // ignore parse errors and keep walking
       }
