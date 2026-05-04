@@ -8,14 +8,69 @@ small YAML file you own.
 Think of it as `make` for autonomous coding sessions. You declare the pipeline, Yoke
 runs it overnight.
 
-```
-┌──────────┐   ┌─────────────┐   ┌──────────┐   ┌────────┐   ┌──────┐
-│ plan.md  │──▶│ features.json│──▶│implement │──▶│ review │──▶│  PR  │
-└──────────┘   └─────────────┘   └──────────┘   └────────┘   └──────┘
-                       loop on FAIL ⤴
-```
+![Workflow graph](docs/img/graph.png)
 
-![yoke CLI tour](docs/img/yoke-cli-tour.gif)
+*A live workflow as Yoke renders it: a `plan` stage that emits features, then a
+`build` stage running implement+review per feature in parallel worktrees. Green =
+complete, indigo = phase, the badge in the top right tracks an open PR.*
+
+---
+
+## The dashboard is the product
+
+Yoke is a server + a browser dashboard. You start it once with `yoke start`, and
+everything else happens at `http://127.0.0.1:7777`. Pick a template, click Run,
+watch agents work in real time, click into any item to see its session log, hit
+Resume when something needs your attention.
+
+### Pick a template
+![Template picker](docs/img/picker.png)
+
+Every `.yoke/templates/*.yml` file shows up as a card. Click one, name the run,
+go.
+
+### Watch agents work in real time
+![Live agent stream](docs/img/live-stream.png)
+
+Stream-json output from each running session — assistant text, tool calls,
+thinking blocks, usage — all virtualized so a 10,000-line transcript stays
+smooth. The same view backs `per-item` stages: every feature gets its own
+streaming pane.
+
+### See the whole pipeline as a graph
+![Graph view](docs/img/graph.png)
+
+Stages, items, phases, sessions, and pre/post commands as a hierarchical graph.
+Click any node for a summary in the right pane. Useful for catching `depends_on`
+mistakes before you launch.
+
+### Track per-item progress on the feature board
+![Feature board](docs/img/feature-board.png)
+
+When a stage runs `per-item`, every item gets a card with its current phase,
+status, and inline session timeline. The "Workflow paused" banner shows when
+you've paused execution — Yoke remembers exactly where it stopped and resumes
+on click.
+
+### Drill into one item
+![Item detail](docs/img/item-detail.png)
+
+Open any item to see its data payload, every session attempt, and the full
+streaming output. Retries appear inline — you can see the failure, the action
+the harness took (`goto implement`), and the next attempt right under it.
+
+### Get pulled in only when needed
+![Attention banner](docs/img/attention-banner.png)
+
+When a phase needs you — bootstrap failure, retry-limit hit, manual approval —
+Yoke surfaces a banner with the reason. Click Resume and it picks up from
+exactly where it left off.
+
+### Auto-PR when the workflow finishes
+![GitHub PR button](docs/img/github-button.png)
+
+Configured with a GitHub remote, Yoke pushes the worktree branch and opens the
+PR for you when the run completes. The header tracks PR state live.
 
 ---
 
@@ -33,11 +88,9 @@ yoke start                  # opens http://127.0.0.1:7777
 > or grab a tarball with `npm pack`. See [docs/install.md](docs/install.md) for the
 > current options.
 
-That's it. The dashboard prints a URL, you open it, you pick a template, you click
-Run. Yoke spawns Claude in a fresh git worktree and streams its output to your
-browser. When the workflow finishes, Yoke pushes the branch and opens a PR.
-
 For a guided five-minute walkthrough, see **[docs/getting-started.md](docs/getting-started.md)**.
+
+![yoke CLI tour](docs/img/yoke-cli-tour.gif)
 
 ---
 
@@ -149,28 +202,6 @@ Full flag listings are in [docs/install.md](docs/install.md) and the per-command
 
 ---
 
-## The dashboard
-
-Open the URL Yoke prints and you get:
-
-- **Template picker** — every `.yoke/templates/*.yml` file as a card.
-  ![Template picker](docs/img/picker.png)
-- **Workflow list + live stream** — every stage and item, plus real-time agent
-  output (text, tool calls, thinking blocks) as Claude works.
-  ![Live workflow view](docs/img/live-stream.png)
-- **Per-item session pane** — click into any item to see its full session log
-  with tool calls, prompts, and harness state.
-  ![Item detail](docs/img/item-detail.png)
-- **Feature board** — per-item status when a stage runs `per-item`.
-- **Review panel** — specialized view for phases that launch reviewer subagents.
-- **Control matrix** — Cancel / Pause / Continue / Retry, scoped to the current item.
-- **Attention banner** — surfaces awaiting-user prompts and bootstrap failures.
-- **GitHub button** — open the auto-created PR or trigger PR creation manually.
-
-Full tour: [docs/dashboard.md](docs/dashboard.md).
-
----
-
 ## Where to go next
 
 - **[Five-minute first workflow](docs/getting-started.md)**
@@ -178,6 +209,7 @@ Full tour: [docs/dashboard.md](docs/dashboard.md).
 - **[Configuration reference](docs/configuration.md)** — every key in the template
 - **[Templates guide](docs/templates.md)** — anatomy and pipeline shapes
 - **[Prompts guide](docs/prompts.md)** — variables and writing style
+- **[Dashboard tour](docs/dashboard.md)** — every panel, every keyboard shortcut
 - **[Recipe gallery](docs/recipes/)** — copy-pasteable workflows
 - **[Troubleshooting](docs/troubleshooting.md)** and **[FAQ](docs/faq.md)**
 
