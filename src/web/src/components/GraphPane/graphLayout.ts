@@ -399,11 +399,12 @@ function _toRfNodes(
       data: { graphNode: n } satisfies GraphNodeData,
     };
 
-    if (n.kind === 'stage' || n.kind === 'item') {
-      base.style = { width: pos.width, height: pos.height };
-    } else {
-      base.style = { width: pos.width, height: pos.height };
-    }
+    base.style = { width: pos.width, height: pos.height };
+    // xyflow v12 MiniMap reads node.width/node.height directly (not from
+    // style) when computing the mini overview. Without these, nodes
+    // disappear from the minimap when they live inside a subflow parent.
+    base.width = pos.width;
+    base.height = pos.height;
 
     if (parent) {
       base.parentId = parent;

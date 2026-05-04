@@ -83,6 +83,18 @@ function buildEventStream(input: DeriveInput): GraphEvent[] {
     itemsByStage.set(it.stageId, list);
   }
 
+  // Once-stages don't get item nodes in the graph, so any session/prepost row
+  // in storage that carries an itemId for a once-stage would otherwise produce
+  // a runtime phase node parented to a non-existent item — leaving the phase
+  // orphaned at layout time and causing ELK to throw "Referenced shape does
+  // not exist" for edges referencing it. Normalize itemId to null here so the
+  // runtime phase id collapses onto the configured `phase:<stage>:_:<phase>`.
+  const onceStages = new Set(
+    input.pipeline.stages.filter((s) => s.run === 'once').map((s) => s.id),
+  );
+  const normalizeItemId = (stageId: string, itemId: string | null): string | null =>
+    onceStages.has(stageId) ? null : itemId;
+
   for (const stage of input.pipeline.stages) {
     if (stage.run !== 'per-item') continue;
     const rows = itemsByStage.get(stage.id);
@@ -110,7 +122,7 @@ function buildEventStream(input: DeriveInput): GraphEvent[] {
       event: {
         kind: 'session_started',
         stageId: s.stage,
-        itemId: s.itemId,
+        itemId: normalizeItemId(s.stage, s.itemId),
         phase: s.phase,
         sessionId: s.id,
         attempt: s.attempt,
@@ -141,7 +153,7 @@ function buildEventStream(input: DeriveInput): GraphEvent[] {
       event: {
         kind: 'prepost_ended',
         stageId: p.stage,
-        itemId: p.itemId,
+        itemId: normalizeItemId(p.stage, p.itemId),
         phase: p.phase,
         when: p.when,
         commandName: p.commandName,

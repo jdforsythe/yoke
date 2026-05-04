@@ -187,8 +187,25 @@ function GraphPaneInner({
         proOptions={{ hideAttribution: true }}
       >
         <Background />
-        <Controls />
-        <MiniMap pannable zoomable />
+        <Controls className="!bg-zinc-800 !border !border-zinc-700 [&_button]:!bg-zinc-800 [&_button]:!text-zinc-200 [&_button]:!border-zinc-700 [&_button:hover]:!bg-zinc-700" />
+        <MiniMap
+          pannable
+          zoomable
+          bgColor="#18181b"
+          maskColor="rgba(0,0,0,0.5)"
+          nodeColor={(node) => {
+            switch (node.type) {
+              case 'stage': return '#27272a';
+              case 'item': return '#3f3f46';
+              case 'phase': return '#6366f1';
+              case 'session': return '#22c55e';
+              case 'prepost': return '#eab308';
+              default: return '#71717a';
+            }
+          }}
+          nodeStrokeColor="#a1a1aa"
+          nodeStrokeWidth={2}
+        />
       </ReactFlow>
     </div>
   );
