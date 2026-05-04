@@ -16,7 +16,7 @@
  * parallel per-item sessions never bleed into each other.
  */
 
-import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { getClient } from '@/ws/client';
 import { dispatch, dispatchTextDelta, reset, subscribe as subscribeRenderStore, getSessionBlocksSnapshot } from '@/store/renderStore';
@@ -31,7 +31,9 @@ import { PausedBanner } from '@/components/PausedBanner/PausedBanner';
 import { AttentionBanner } from '@/components/AttentionBanner/AttentionBanner';
 import { GithubButton } from '@/components/GithubButton/GithubButton';
 import { FeatureBoard, invalidateItemData, clearItemDataCache } from '@/components/FeatureBoard/FeatureBoard';
-import { GraphPane } from '@/components/GraphPane';
+const GraphPane = lazy(() =>
+  import('@/components/GraphPane').then((m) => ({ default: m.GraphPane })),
+);
 import { NodeSummaryPanel } from '@/components/GraphPane/NodeSummaryPanel';
 import { useWorkflowGraph } from '@/store/graphStore';
 import type { GraphNode, SessionGraphNode, PhaseGraphNode } from '../../../shared/types/graph';
@@ -684,12 +686,14 @@ export function WorkflowDetailRoute() {
       {activeView === 'graph' ? (
         <div className="flex flex-1 min-h-0">
           <div className="flex-1 min-w-0">
-            <GraphPane
-              workflowId={workflowId!}
-              onSelectSession={handleGraphSelectSession}
-              onSelectGraphNode={handleGraphSelectNode}
-              selectedGraphNodeId={selectedGraphNode?.id ?? null}
-            />
+            <Suspense fallback={<div className="p-4 text-sm text-zinc-400">Loading graph…</div>}>
+              <GraphPane
+                workflowId={workflowId!}
+                onSelectSession={handleGraphSelectSession}
+                onSelectGraphNode={handleGraphSelectNode}
+                selectedGraphNodeId={selectedGraphNode?.id ?? null}
+              />
+            </Suspense>
           </div>
           {selectedGraphNode && workflowGraph && (
             <div className="w-96 shrink-0 border-l border-gray-700 overflow-hidden flex flex-col">

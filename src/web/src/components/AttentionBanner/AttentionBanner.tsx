@@ -106,6 +106,7 @@ export function AttentionBanner({ workflowId, items, deepLinkedAttentionId }: Pr
 
   return (
     <div
+      data-testid="attention-banner"
       role="region"
       aria-label="Attention required"
       className="shrink-0 border-b border-amber-800/50"

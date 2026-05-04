@@ -1,0 +1,46 @@
+version: "1"
+
+template:
+  name: multi-reviewer
+  description: "Implement, then three reviewer subagents in parallel"
+
+pipeline:
+  stages:
+    - id: plan
+      description: "Plan the work."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Implement, then fan out to three reviewer subagents."
+      run: per-item
+      items_from: docs/idea/features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_display:
+        title: "$.title"
+      phases:
+        - implement
+        - reviewers
+
+phases:
+  plan:
+    description: "Plan the feature set."
+    command: echo
+    args: ["demo: plan"]
+    prompt_template: prompts/plan.md
+
+  implement:
+    description: "Implement one feature."
+    command: echo
+    args: ["demo: implement"]
+    prompt_template: prompts/implement.md
+
+  reviewers:
+    description: "Spawn three reviewer subagents (security, perf, style) in parallel via Task tool."
+    command: echo
+    args: ["demo: multi-reviewer"]
+    prompt_template: prompts/multi_reviewer.md
+    ui:
+      renderer: review

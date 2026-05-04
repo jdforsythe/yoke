@@ -1,0 +1,45 @@
+version: "1"
+
+template:
+  name: marketing-pipeline
+  description: "Five ad variants per persona with brand-voice review"
+
+pipeline:
+  stages:
+    - id: personas
+      description: "Define the personas to target."
+      run: once
+      phases:
+        - define_personas
+
+    - id: variants
+      description: "For each persona, draft five ad variants and brand-review them."
+      run: per-item
+      items_from: docs/idea/personas.json
+      items_list: "$.personas"
+      items_id: "$.id"
+      items_display:
+        title: "$.name"
+        subtitle: "$.segment"
+      phases:
+        - draft_variants
+        - brand_review
+
+phases:
+  define_personas:
+    description: "List target personas."
+    command: echo
+    args: ["demo: define personas"]
+    prompt_template: prompts/personas.md
+
+  draft_variants:
+    description: "Draft five ad variants for one persona."
+    command: echo
+    args: ["demo: draft variants"]
+    prompt_template: prompts/variants.md
+
+  brand_review:
+    description: "Review variants for brand voice."
+    command: echo
+    args: ["demo: brand review"]
+    prompt_template: prompts/brand_review.md

@@ -1,0 +1,27 @@
+version: "1"
+
+template:
+  name: one-shot
+  description: "Build it in one session, then run tests"
+
+pipeline:
+  stages:
+    - id: build
+      description: "Single agent session implements the whole change."
+      run: once
+      phases:
+        - implement
+        - test
+
+phases:
+  implement:
+    description: "Write the code in one shot."
+    command: echo
+    args: ["demo: implement"]
+    prompt_template: prompts/implement.md
+
+  test:
+    description: "Run the test suite and report results."
+    command: echo
+    args: ["demo: test"]
+    prompt_template: prompts/test.md

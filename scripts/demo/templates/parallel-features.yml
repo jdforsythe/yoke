@@ -1,0 +1,41 @@
+version: "1"
+
+template:
+  name: parallel-features
+  description: "Run independent features in parallel worktrees"
+
+pipeline:
+  stages:
+    - id: plan
+      description: "Plan independent features that can run in parallel."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implementer; independent items run concurrently."
+      run: per-item
+      items_from: docs/idea/features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_display:
+        title: "$.title"
+      phases:
+        - implement
+
+phases:
+  plan:
+    description: "Decompose into parallelisable features."
+    command: echo
+    args: ["demo: plan"]
+    prompt_template: prompts/plan.md
+
+  implement:
+    description: "Implement one feature in its own worktree."
+    command: echo
+    args: ["demo: implement"]
+    prompt_template: prompts/implement.md
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: parallel/
