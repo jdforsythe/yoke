@@ -1,0 +1,34 @@
+name: release-drafter
+
+# Maintains a single draft GitHub Release that accumulates merged PRs since
+# the last published release. Publishing the draft via the GitHub UI creates
+# the v*.*.* tag, which triggers release.yml.
+#
+# Version is resolved from PR labels (see .github/release-drafter.yml).
+# Default bump is patch, so unlabeled PRs still produce a valid draft.
+
+on:
+  push:
+    branches: [master]
+  # Refresh the draft when a PR's labels change so the resolved version and
+  # category placement update without waiting for the next merge.
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  update_release_draft:
+    name: Update draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # to create/update the draft release
+      pull-requests: write  # to read PR labels for version resolution
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
