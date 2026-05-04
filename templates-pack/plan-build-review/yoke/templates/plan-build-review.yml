@@ -1,0 +1,145 @@
+version: "1"
+
+template:
+  name: plan-build-review
+  description: "Plan once, then per feature: implement → review → loop back on FAIL. The recommended default for any work you wouldn't merge unread. Plan emits docs/idea/plan-build-review-features.json; each feature flows through implement + review with PASS/FAIL gating via review-verdict.json."
+
+pipeline:
+  stages:
+    - id: planning
+      description: "Run-once planner. Reads docs/idea/plan-build-review-brief.md, writes docs/idea/plan-build-review-features.json."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implement + review with FAIL → goto implement (max 3 revisits)."
+      run: per-item
+      items_from: docs/idea/plan-build-review-features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
+        description: "$.description"
+      phases:
+        - implement
+        - review
+
+phases:
+  plan:
+    description: "Decompose docs/idea/plan-build-review-brief.md into a topologically-ordered features manifest."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/plan.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-features-json
+        run: ["node", "scripts/check-features-json.js", "docs/idea/plan-build-review-features.json"]
+        timeout_s: 30
+        actions:
+          "0": continue
+          "1":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+          "2":
+            goto: plan
+            max_revisits: 3
+          "*": stop-and-ask
+
+  implement:
+    description: "Build a single feature, append a handoff entry, run the project tests."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/implement.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+      - name: run-tests
+        # NOTE: swap `pnpm test` for your stack: `npm test`, `cargo test`,
+        # `pytest -x`, `go test ./...`. A failed run triggers a fresh retry
+        # with the failure summary.
+        run: ["pnpm", "test"]
+        timeout_s: 300
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  review:
+    description: "Read-only verdict against AC/RC. Writes review-verdict.json; FAIL routes back to implement."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/review.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+      - name: check-verdict
+        run: ["node", "scripts/check-review-verdict.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "1":
+            goto: implement
+            max_revisits: 3
+          "*": stop-and-ask
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: plan-build-review/
+  bootstrap:
+    commands:
+      - "pnpm install"
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

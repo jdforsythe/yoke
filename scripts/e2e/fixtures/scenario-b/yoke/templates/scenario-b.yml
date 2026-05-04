@@ -1,0 +1,110 @@
+version: "1"
+
+template:
+  name: scenario-b
+  description: "E2E scenario B: planning + per-item build with post-test + once submit. Exercises post: actions and a final submit stage."
+
+pipeline:
+  stages:
+    - id: planning
+      description: "Run-once planner. Writes docs/idea/feature-b.json with two pre-baked features."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implement. Runs node --test after each feature; halts on test failure."
+      run: per-item
+      items_from: docs/idea/feature-b.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      phases:
+        - implement
+
+    - id: submit
+      description: "Run-once submit stage. Writes a fake PR summary file; no network calls."
+      run: once
+      phases:
+        - submit_pr
+
+phases:
+  plan:
+    description: "Copy the pre-baked feature manifest verbatim to docs/idea/feature-b.json."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--strict-mcp-config"
+      - "--mcp-config"
+      - '{"mcpServers":{}}'
+      - "--disable-slash-commands"
+      - "--model"
+      - "claude-haiku-4-5"
+      - "--effort"
+      - "low"
+      - "--max-budget-usd"
+      - "0.10"
+    prompt_template: prompts/plan.md
+    max_outer_retries: 0
+
+  implement:
+    description: "Write the files listed in target_files for the current feature. Run tests after."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--strict-mcp-config"
+      - "--mcp-config"
+      - '{"mcpServers":{}}'
+      - "--disable-slash-commands"
+      - "--model"
+      - "claude-haiku-4-5"
+      - "--effort"
+      - "low"
+      - "--max-budget-usd"
+      - "0.10"
+    prompt_template: prompts/implement.md
+    max_outer_retries: 0
+    post:
+      - name: run-tests
+        # Bare `node --test` auto-discovers *.test.js under cwd (verified on
+        # Node 22). Avoids glob-handling differences between shells. cwd is
+        # the worktree, which contains test/ after the seed copy.
+        run: ["node", "--test"]
+        timeout_s: 60
+        actions:
+          "0": continue
+          "*": stop-and-ask
+
+  submit_pr:
+    description: "Write artifacts/pr-summary.txt with a fixed fake PR line. No gh, no git push."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--strict-mcp-config"
+      - "--mcp-config"
+      - '{"mcpServers":{}}'
+      - "--disable-slash-commands"
+      - "--model"
+      - "claude-haiku-4-5"
+      - "--effort"
+      - "low"
+      - "--max-budget-usd"
+      - "0.10"
+    prompt_template: prompts/submit-pr.md
+    max_outer_retries: 0
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: scenario-b/

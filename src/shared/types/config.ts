@@ -1,7 +1,7 @@
 /**
  * TypeScript types for .yoke.yml configuration.
  *
- * Derived from docs/design/schemas/yoke-config.schema.json (JSON Schema draft-2020-12).
+ * Derived from schemas/yoke-config.schema.json (JSON Schema draft-2020-12).
  * Version "1" is the only supported version.
  *
  * Two forms:
@@ -22,7 +22,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Action grammar (mirrors docs/design/schemas/pre-post-action-grammar.md)
+// Action grammar (mirrors schemas/pre-post-action-grammar.md)
 // ---------------------------------------------------------------------------
 
 export type RetryMode =

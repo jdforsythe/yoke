@@ -21,7 +21,7 @@
  * A single spawned agent session for the item. `attempt` is a 1-based index
  * computed by ordering sessions for the (item_id, phase) tuple by
  * started_at ascending; it is not stored as a column on the `sessions`
- * table (see docs/design/schemas/sqlite-schema.sql:79-111).
+ * table.
  */
 export interface ItemTimelineSessionRow {
   kind: 'session';

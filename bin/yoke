@@ -1,5 +1,41 @@
-#!/usr/bin/env bash
-# Yoke CLI entry point — runs the TypeScript source via tsx.
-# Works via: ./bin/yoke, npm link, or npx yoke.
-exec "$(dirname "$0")/../node_modules/.bin/tsx" \
-  "$(dirname "$0")/../src/cli/index.ts" "$@"
+#!/usr/bin/env node
+// Yoke CLI entry point.
+//
+// Production (after `npm i -g yoke` or running from a published tarball):
+//   loads the prebuilt JS at ../dist/cli/index.js.
+//
+// Local development:
+//   contributors typically run via `pnpm exec tsx src/cli/index.ts` or
+//   `bin/yoke-dev`. Running `bin/yoke` from a checkout still works as long
+//   as `pnpm run build:server` has been run at least once. If the prebuilt
+//   bundle is missing this script falls back to tsx so `bin/yoke --help`
+//   keeps working in a fresh checkout.
+
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const distEntry = path.resolve(here, '..', 'dist', 'cli', 'index.js');
+const srcEntry = path.resolve(here, '..', 'src', 'cli', 'index.ts');
+
+if (existsSync(distEntry)) {
+  await import(distEntry);
+} else if (existsSync(srcEntry)) {
+  // Dev fallback: spawn tsx synchronously so the parent process exits with
+  // the child's status (matches the pre-build behavior of bin/yoke).
+  const tsxBin = path.resolve(here, '..', 'node_modules', '.bin', 'tsx');
+  const result = spawnSync(tsxBin, [srcEntry, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+  });
+  process.exit(result.status ?? 1);
+} else {
+  console.error(
+    'yoke: could not find ' + distEntry + ' or ' + srcEntry + '.\n' +
+    'If you are developing yoke, run "pnpm run build:server" first.\n' +
+    'If you installed yoke from a tarball, the bundle was incomplete — ' +
+    'reinstall with "npm install -g yoke".',
+  );
+  process.exit(1);
+}

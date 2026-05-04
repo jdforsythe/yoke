@@ -76,7 +76,7 @@ describe('yoke init', () => {
     if (result.ok) return;
 
     expect(result.error.code).toBe('already_exists');
-    expect(result.error.path).toBe(defaultYml);
+    expect(result.error.details?.[0]).toBe(defaultYml);
     expect(result.error.message).toContain('already exists');
     expect(result.error.message).toContain('never overwrites');
   });

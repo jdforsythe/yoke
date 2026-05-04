@@ -1,0 +1,145 @@
+version: "1"
+
+template:
+  name: brainstorm-plan-build-review
+  description: "Brainstorm-seeded plan + per-feature implement + review. The user writes a free-form docs/brainstorm.md; the planner decomposes it into docs/brainstorm-features.json; each feature flows through implement + review with FAIL → goto implement. Mirrors the in-repo brainstorm.yml so it can be dropped in unchanged."
+
+pipeline:
+  stages:
+    - id: plan
+      description: "Run-once planner. Reads docs/brainstorm.md, writes docs/brainstorm-features.json as the manifest for the build stage."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implement + review for each feature the planner emitted. Items seed lazily from docs/brainstorm-features.json when this stage becomes ready."
+      run: per-item
+      items_from: docs/brainstorm-features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
+        description: "$.description"
+      phases:
+        - implement
+        - review
+
+phases:
+  plan:
+    description: "Decompose docs/brainstorm.md into a topologically-ordered features manifest. No code written."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/brainstorm-plan.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-features-json
+        run: ["node", "scripts/check-features-json.js", "docs/brainstorm-features.json"]
+        timeout_s: 15
+        actions:
+          "0": continue
+          "2":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  implement:
+    description: "Generic senior-engineer implement phase. Writes code + tests, runs the full suite, commits in small batches."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/brainstorm-implement.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+      - name: run-tests
+        # NOTE: swap `pnpm test` for your stack: `npm test`, `cargo test`,
+        # `pytest -x`, `go test ./...`.
+        run: ["pnpm", "test"]
+        timeout_s: 300
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  review:
+    description: "Read-only verdict on AC/RC with file:line citations. Writes review-verdict.json; FAIL routes back to implement."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/brainstorm-review.md
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+      - name: check-verdict
+        run: ["node", "scripts/check-review-verdict.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "1":
+            goto: implement
+            max_revisits: 3
+          "*": continue
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: brainstorm/
+  bootstrap:
+    commands:
+      - "pnpm install"
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

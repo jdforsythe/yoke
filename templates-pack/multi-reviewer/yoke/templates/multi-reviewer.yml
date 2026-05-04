@@ -1,0 +1,153 @@
+version: "1"
+
+template:
+  name: multi-reviewer
+  description: "Plan + per-feature implement + multi-angle adversarial review. The review phase fans out to 3 Claude Code subagents (correctness, security, simplicity) via the Task tool; each writes reviews/<item-id>/<angle>.json. A synthesizer post-command computes overall PASS/FAIL and routes FAIL back to implement. Best for: high-stakes code where one reviewer is not enough."
+
+pipeline:
+  stages:
+    - id: planning
+      description: "Run-once planner. Reads docs/idea/multi-reviewer-brief.md, writes docs/idea/multi-reviewer-features.json."
+      run: once
+      phases:
+        - plan
+
+    - id: build
+      description: "Per-item implement + multi-angle review with FAIL → goto implement (max 3 revisits)."
+      run: per-item
+      items_from: docs/idea/multi-reviewer-features.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
+        description: "$.description"
+      phases:
+        - implement
+        - review
+
+phases:
+  plan:
+    description: "Decompose docs/idea/multi-reviewer-brief.md into a topologically-ordered features manifest."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/plan.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-features-json
+        run: ["node", "scripts/check-features-json.js", "docs/idea/multi-reviewer-features.json"]
+        timeout_s: 30
+        actions:
+          "0": continue
+          "1":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+          "2":
+            goto: plan
+            max_revisits: 3
+          "*": stop-and-ask
+
+  implement:
+    description: "Build a single feature. Tests must pass before review."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/implement.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+      - name: run-tests
+        # NOTE: swap `pnpm test` for your stack: `npm test`, `cargo test`,
+        # `pytest -x`, `go test ./...`.
+        run: ["pnpm", "test"]
+        timeout_s: 300
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  review:
+    description: "Review-lead phase: launches 3 reviewer subagents (correctness, security, simplicity) via the Task tool. Each writes reviews/<item-id>/<angle>.json."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/review.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    ui:
+      renderer: review
+    post:
+      - name: synthesize-verdict
+        # Reads reviews/<item-id>/{correctness,security,simplicity}.json,
+        # writes review-verdict.json with overall PASS/FAIL. Exits 0 on PASS,
+        # 1 on FAIL, 2 on missing/malformed reviewer output.
+        run: ["node", "scripts/synthesize-verdict.js"]
+        timeout_s: 15
+        actions:
+          "0": continue
+          "1":
+            goto: implement
+            max_revisits: 3
+          "2":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+          "*": stop-and-ask
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: multi-reviewer/
+  bootstrap:
+    commands:
+      - "pnpm install"
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

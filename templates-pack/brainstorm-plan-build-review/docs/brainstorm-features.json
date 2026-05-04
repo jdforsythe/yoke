@@ -1,0 +1,10 @@
+{
+  "project": "brainstorm-plan-build-review",
+  "created": "2026-05-03T00:00:00Z",
+  "source": "docs/brainstorm.md",
+  "needs_more_planning": true,
+  "open_questions": [
+    "Replace this seed manifest by editing docs/brainstorm.md and re-running the planner. The post-gate routes back to the planner whenever needs_more_planning is true."
+  ],
+  "features": []
+}

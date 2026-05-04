@@ -1,0 +1,10 @@
+{
+  "project": "plan-build-review",
+  "created": "2026-05-03T00:00:00Z",
+  "source": "docs/idea/plan-build-review-brief.md",
+  "needs_more_planning": true,
+  "open_questions": [
+    "Replace this seed manifest by either (a) editing docs/idea/plan-build-review-brief.md and re-running the planner, or (b) writing the features array by hand and removing needs_more_planning."
+  ],
+  "features": []
+}

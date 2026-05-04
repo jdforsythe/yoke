@@ -1,0 +1,58 @@
+{
+  "project": "marketing-pipeline",
+  "created": "2026-05-03T00:00:00Z",
+  "source": "docs/idea/marketing-pipeline-brief.md",
+  "features": [
+    {
+      "id": "persona-busy-founder",
+      "category": "primary",
+      "priority": 1,
+      "depends_on": [],
+      "description": "First-time non-technical founder running a 5-person seed-stage company. Pain: cannot afford full-time growth marketer. Channels: LinkedIn, Twitter/X, founder Slack groups. Pickup vocabulary: 'GTM', 'product-led', 'distribution'. Will pay for tools that compress a week of work into a day. Brand wants the CTA to land on the free-tier signup.",
+      "acceptance_criteria": [
+        "All 5 variants name a concrete time-saving outcome.",
+        "At least one variant uses founder-vocabulary (GTM, distribution, product-led).",
+        "CTA in every variant points to the free-tier signup."
+      ],
+      "review_criteria": [
+        "Tone matches docs/idea/marketing-pipeline-brief.md §Voice (direct, peer-to-peer).",
+        "No fake testimonials or invented stats.",
+        "No urgency-led variants that imply a fake deadline."
+      ]
+    },
+    {
+      "id": "persona-engineer-evaluator",
+      "category": "primary",
+      "priority": 2,
+      "depends_on": [],
+      "description": "Senior engineer at a 50–500 person company evaluating a tool to recommend internally. Pain: needs to be able to defend the choice to a skeptical CTO. Channels: HN, technical newsletters, GitHub trending. Pickup vocabulary: 'self-host', 'open source', 'no vendor lock-in'. Brand wants the CTA to land on the docs index.",
+      "acceptance_criteria": [
+        "All 5 variants name a concrete technical differentiator.",
+        "At least one variant uses 'self-host' or 'open source' explicitly.",
+        "CTA in every variant points to the docs index."
+      ],
+      "review_criteria": [
+        "Tone matches §Voice (precise, low marketing speak).",
+        "No claims about scale or performance without a number.",
+        "No emoji-heavy variants (engineer-evaluator audience reads them as cringe)."
+      ]
+    },
+    {
+      "id": "persona-team-lead",
+      "category": "primary",
+      "priority": 3,
+      "depends_on": [],
+      "description": "Engineering team lead at a 10-person team rolling the tool out to their reports. Pain: needs onboarding to be 30 minutes max. Channels: engineering-leadership newsletters, lead-engineer Slack communities. Pickup vocabulary: 'onboarding', 'team adoption', 'rollout'. Brand wants the CTA to land on the team-tier pricing page.",
+      "acceptance_criteria": [
+        "All 5 variants name a concrete team-rollout outcome.",
+        "At least one variant addresses the 30-minute onboarding pain directly.",
+        "CTA in every variant points to the team-tier pricing page."
+      ],
+      "review_criteria": [
+        "Tone matches §Voice (warm, peer-to-peer).",
+        "No assumptions about team size beyond '10-person team'.",
+        "No variants that overpromise free seats."
+      ]
+    }
+  ]
+}

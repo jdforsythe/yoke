@@ -1,0 +1,102 @@
+version: "1"
+
+template:
+  name: marketing-pipeline
+  description: "Per-persona ad variant generation with a brand-voice reviewer. The seed manifest at docs/idea/marketing-pipeline-personas.json lists target personas; for each, the writer generates 5 variants and the brand-voice reviewer gates PASS/FAIL. Best for: launch campaigns, paid-ad copy, lifecycle email subject lines."
+
+pipeline:
+  stages:
+    - id: campaign
+      description: "Per-persona variant generation + brand-voice review with FAIL → goto write."
+      run: per-item
+      items_from: docs/idea/marketing-pipeline-personas.json
+      items_list: "$.features"
+      items_id: "$.id"
+      items_depends_on: "$.depends_on"
+      items_display:
+        title: "$.id"
+        subtitle: "$.category"
+        description: "$.description"
+      phases:
+        - write
+        - brand_check
+
+phases:
+  write:
+    description: "Generate 5 ad variants for one persona. Writes copy/<persona-id>/variant-{1..5}.md."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/write.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+      - name: check-variants-nonempty
+        # Domain "tests" gate: assert all 5 variant files exist and are non-empty.
+        run: ["node", "scripts/check-variants-nonempty.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*":
+            retry:
+              mode: fresh_with_failure_summary
+              max: 2
+
+  brand_check:
+    description: "Brand-voice reviewer. Reads the 5 variants, writes review-verdict.json. FAIL routes back to write."
+    command: claude
+    args:
+      - "-p"
+      - "--output-format"
+      - "stream-json"
+      - "--verbose"
+      - "--dangerously-skip-permissions"
+      - "--model"
+      - "claude-sonnet-4-6"
+    prompt_template: prompts/brand-check.md
+    max_outer_retries: 2
+    retry_ladder:
+      - continue
+      - fresh_with_failure_summary
+      - awaiting_user
+    post:
+      - name: check-handoff
+        run: ["node", "scripts/check-handoff-json.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "*": continue
+      - name: check-verdict
+        run: ["node", "scripts/check-review-verdict.js"]
+        timeout_s: 10
+        actions:
+          "0": continue
+          "1":
+            goto: write
+            max_revisits: 3
+          "*": stop-and-ask
+
+worktrees:
+  base_dir: .worktrees
+  branch_prefix: marketing-pipeline/
+
+runtime:
+  keep_awake: true
+
+rate_limit:
+  handling: passive

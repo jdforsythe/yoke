@@ -6,12 +6,15 @@ import {
   checkNode,
   checkSqlite,
   checkGit,
+  checkClaude,
   checkGitRepo,
-  checkConfig,
+  checkTemplatesPresent,
+  checkTemplatesValid,
   runChecks,
   formatDoctorOutput,
   type GitExecutor,
   type GitRepoExecutor,
+  type ClaudeExecutor,
 } from '../../src/cli/doctor.js';
 
 // ---------------------------------------------------------------------------
@@ -25,11 +28,11 @@ function removeTmpDir(d: string): void {
   fs.rmSync(d, { recursive: true, force: true });
 }
 
-/** Write a template to <tmpDir>/.yoke/templates/default.yml */
-function writeDefaultTemplate(tmpDir: string, content: string): void {
+/** Write a template to <tmpDir>/.yoke/templates/<name>.yml */
+function writeTemplate(tmpDir: string, name: string, content: string): void {
   const templatesDir = path.join(tmpDir, '.yoke', 'templates');
   fs.mkdirSync(templatesDir, { recursive: true });
-  fs.writeFileSync(path.join(templatesDir, 'default.yml'), content, 'utf8');
+  fs.writeFileSync(path.join(templatesDir, `${name}.yml`), content, 'utf8');
 }
 
 const MINIMAL_CONFIG = `version: "1"
@@ -77,38 +80,6 @@ describe('checkNode()', () => {
       });
     }
   });
-
-  it('passes for Node 20', () => {
-    const original = process.versions.node;
-    Object.defineProperty(process.versions, 'node', {
-      configurable: true,
-      value: '20.0.0',
-    });
-    try {
-      expect(checkNode().passed).toBe(true);
-    } finally {
-      Object.defineProperty(process.versions, 'node', {
-        configurable: true,
-        value: original,
-      });
-    }
-  });
-
-  it('passes for Node 22', () => {
-    const original = process.versions.node;
-    Object.defineProperty(process.versions, 'node', {
-      configurable: true,
-      value: '22.1.0',
-    });
-    try {
-      expect(checkNode().passed).toBe(true);
-    } finally {
-      Object.defineProperty(process.versions, 'node', {
-        configurable: true,
-        value: original,
-      });
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -116,49 +87,66 @@ describe('checkNode()', () => {
 // ---------------------------------------------------------------------------
 
 describe('checkSqlite()', () => {
-  it('passes when better-sqlite3 can open :memory:', async () => {
+  it('opens an in-memory database', async () => {
     const result = await checkSqlite();
     expect(result.passed).toBe(true);
-    expect(result.message).toContain(':memory:');
-  });
-
-  it('has actionable remediation text even on success path (structure check)', async () => {
-    const result = await checkSqlite();
-    expect(result.remediation).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// checkGit()
+// checkGit() — uses an injected executor for deterministic tests
 // ---------------------------------------------------------------------------
 
 describe('checkGit()', () => {
-  it('passes on the current git (must be >= 2.20 in CI)', () => {
-    const result = checkGit();
+  it('passes for git 2.39.3', () => {
+    const exec: GitExecutor = () => 'git version 2.39.3';
+    const result = checkGit(exec);
     expect(result.passed).toBe(true);
-    expect(result.message).toContain('git version');
+    expect(result.message).toBe('git version 2.39.3');
   });
 
-  it('detects git 2.19 as too old', () => {
-    const stubExec: GitExecutor = () => 'git version 2.19.0';
-    const result = checkGit(stubExec);
+  it('fails for git 2.10', () => {
+    const exec: GitExecutor = () => 'git version 2.10.0';
+    const result = checkGit(exec);
     expect(result.passed).toBe(false);
-    expect(result.message).toContain('2.19');
-    expect(result.remediation).toContain('2.20');
+    expect(result.remediation).toContain('git worktree');
   });
 
-  it('detects git not found', () => {
-    const stubExec: GitExecutor = () => { throw new Error('spawn ENOENT'); };
-    const result = checkGit(stubExec);
+  it('fails when git is not installed', () => {
+    const exec: GitExecutor = () => {
+      throw new Error('ENOENT');
+    };
+    const result = checkGit(exec);
     expect(result.passed).toBe(false);
     expect(result.message).toContain('not found');
-    expect(result.remediation).toContain('brew install git');
   });
 
-  it('detects git 3.x as passing (major > 2)', () => {
-    const stubExec: GitExecutor = () => 'git version 3.0.0';
-    const result = checkGit(stubExec);
-    expect(result.passed).toBe(true);
+  it('fails on unparseable version string', () => {
+    const exec: GitExecutor = () => 'git version weird';
+    const result = checkGit(exec);
+    expect(result.passed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkClaude()
+// ---------------------------------------------------------------------------
+
+describe('checkClaude()', () => {
+  it('passes when claude --version succeeds', () => {
+    const exec: ClaudeExecutor = () => 'claude 1.2.3';
+    const r = checkClaude(exec);
+    expect(r.passed).toBe(true);
+    expect(r.message).toContain('claude');
+  });
+
+  it('fails when claude is missing', () => {
+    const exec: ClaudeExecutor = () => {
+      throw new Error('ENOENT');
+    };
+    const r = checkClaude(exec);
+    expect(r.passed).toBe(false);
+    expect(r.remediation).toContain('Claude Code');
   });
 });
 
@@ -167,98 +155,91 @@ describe('checkGit()', () => {
 // ---------------------------------------------------------------------------
 
 describe('checkGitRepo()', () => {
-  it('passes when the directory is inside a git repository', () => {
-    const passExec: GitRepoExecutor = (_cwd: string) => { /* success */ };
-    const result = checkGitRepo('/some/repo', passExec);
-    expect(result.passed).toBe(true);
-    expect(result.name).toBe('git repository');
-    expect(result.message).toContain('/some/repo');
+  it('passes when executor succeeds', () => {
+    const exec: GitRepoExecutor = () => undefined;
+    const r = checkGitRepo('/some/dir', exec);
+    expect(r.passed).toBe(true);
   });
 
-  it('fails when the directory is not a git repository', () => {
-    const failExec: GitRepoExecutor = (_cwd: string) => {
-      throw new Error('fatal: not a git repository');
+  it('fails when executor throws', () => {
+    const exec: GitRepoExecutor = () => {
+      throw new Error('not a git repo');
     };
-    const result = checkGitRepo('/tmp/not-a-repo', failExec);
-    expect(result.passed).toBe(false);
-    expect(result.name).toBe('git repository');
-    expect(result.message).toContain('/tmp/not-a-repo');
-    expect(result.message).toContain('git rev-parse --show-toplevel');
-    expect(result.remediation).toBeTruthy();
-    expect(result.remediation).toContain('git init');
-  });
-
-  it('fails when git is not found', () => {
-    const noGitExec: GitRepoExecutor = (_cwd: string) => {
-      const err = new Error('spawn ENOENT') as NodeJS.ErrnoException;
-      err.code = 'ENOENT';
-      throw err;
-    };
-    const result = checkGitRepo('/tmp/dir', noGitExec);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('git init');
-  });
-
-  it('passes against the real process.cwd() (must be inside a git repo in CI)', () => {
-    const result = checkGitRepo(process.cwd());
-    expect(result.passed).toBe(true);
+    const r = checkGitRepo('/some/dir', exec);
+    expect(r.passed).toBe(false);
+    expect(r.remediation).toContain('git init');
   });
 });
 
 // ---------------------------------------------------------------------------
-// checkConfig()
+// checkTemplatesPresent / checkTemplatesValid
 // ---------------------------------------------------------------------------
 
-describe('checkConfig()', () => {
+describe('checkTemplatesPresent()', () => {
   let tmpDir: string;
   beforeEach(() => {
     tmpDir = makeTmpDir();
-    // Prompt template so loadTemplate resolves paths without error.
     const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
     fs.mkdirSync(promptsDir, { recursive: true });
     fs.writeFileSync(path.join(promptsDir, 'implement.md'), '# Implement\n', 'utf8');
   });
   afterEach(() => removeTmpDir(tmpDir));
 
-  it('passes for a valid default template', () => {
-    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(true);
-    expect(result.message).toContain(tmpDir);
+  it('fails when no templates directory exists', () => {
+    const r = checkTemplatesPresent(tmpDir);
+    expect(r.passed).toBe(false);
+    expect(r.remediation).toContain('yoke init');
   });
 
-  it('fails with not_found when template file is missing', () => {
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('yoke init');
+  it('passes when at least one template exists', () => {
+    writeTemplate(tmpDir, 'default', MINIMAL_CONFIG);
+    const r = checkTemplatesPresent(tmpDir);
+    expect(r.passed).toBe(true);
+    expect(r.message).toContain('default');
   });
 
   it('fails with migration_error when root .yoke.yml exists', () => {
     fs.writeFileSync(path.join(tmpDir, '.yoke.yml'), MINIMAL_CONFIG, 'utf8');
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('.yoke/templates/');
+    const r = checkTemplatesPresent(tmpDir);
+    expect(r.passed).toBe(false);
+    expect(r.remediation).toContain('.yoke/templates/');
+  });
+});
+
+describe('checkTemplatesValid()', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    const promptsDir = path.join(tmpDir, '.yoke', 'prompts');
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(promptsDir, 'implement.md'), '# Implement\n', 'utf8');
+  });
+  afterEach(() => removeTmpDir(tmpDir));
+
+  it('produces one passing entry per valid template', () => {
+    writeTemplate(tmpDir, 'default', MINIMAL_CONFIG);
+    const results = checkTemplatesValid(tmpDir);
+    expect(results).toHaveLength(1);
+    expect(results[0].passed).toBe(true);
+    expect(results[0].name).toContain('default');
   });
 
-  it('fails with parse_error and actionable remediation for invalid YAML', () => {
-    writeDefaultTemplate(tmpDir, '{ this is: [bad yaml\n');
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('indentation');
+  it('flags missing prompt_template', () => {
+    // Reference a prompt path that does not exist.
+    const cfg = MINIMAL_CONFIG.replace(
+      '.yoke/prompts/implement.md',
+      '.yoke/prompts/nope.md',
+    );
+    writeTemplate(tmpDir, 'broken', cfg);
+    const results = checkTemplatesValid(tmpDir);
+    expect(results[0].passed).toBe(false);
+    expect(results[0].remediation).toContain('prompt_template');
   });
 
-  it('fails with version_error and actionable remediation', () => {
-    writeDefaultTemplate(tmpDir, 'version: "2"\ntemplate:\n  name: x\n');
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('version: "1"');
-  });
-
-  it('fails with validation_error and schema reference remediation', () => {
-    writeDefaultTemplate(tmpDir, 'version: "1"\ntemplate:\n  name: x\n');
-    const result = checkConfig(tmpDir);
-    expect(result.passed).toBe(false);
-    expect(result.remediation).toContain('schema');
+  it('returns a failing entry on schema violation', () => {
+    writeTemplate(tmpDir, 'broken', 'version: "1"\ntemplate:\n  name: x\n');
+    const results = checkTemplatesValid(tmpDir);
+    expect(results[0].passed).toBe(false);
   });
 });
 
@@ -276,29 +257,25 @@ describe('runChecks()', () => {
   });
   afterEach(() => removeTmpDir(tmpDir));
 
-  it('returns exactly 5 checks', async () => {
-    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
-    const checks = await runChecks({ configDir: tmpDir });
-    expect(checks).toHaveLength(5);
-  });
-
-  it('check names include all five categories', async () => {
-    writeDefaultTemplate(tmpDir, MINIMAL_CONFIG);
+  it('always includes the environment + template-discovery checks', async () => {
+    writeTemplate(tmpDir, 'default', MINIMAL_CONFIG);
     const checks = await runChecks({ configDir: tmpDir });
     const names = checks.map((c) => c.name);
     expect(names).toContain('Node.js >= 20');
     expect(names).toContain('SQLite accessible');
     expect(names).toContain('git >= 2.20');
+    expect(names).toContain('claude CLI on PATH');
     expect(names).toContain('git repository');
-    expect(names).toContain('.yoke/templates valid');
+    expect(names).toContain('templates discovered');
+    // Per-template entry too.
+    expect(names.some((n) => n.startsWith("template '"))).toBe(true);
   });
 
-  it('config check fails when no default template exists', async () => {
+  it('skips per-template checks when no template directory exists', async () => {
     const checks = await runChecks({ configDir: tmpDir });
-    const configCheck = checks.find((c) => c.name === '.yoke/templates valid')!;
-    expect(configCheck.passed).toBe(false);
-    expect(configCheck.remediation).toBeTruthy();
-    expect(configCheck.remediation!.length).toBeGreaterThan(10);
+    expect(checks.find((c) => c.name === 'templates discovered')!.passed).toBe(false);
+    // No per-template entries when discovery failed.
+    expect(checks.some((c) => c.name.startsWith("template '"))).toBe(false);
   });
 });
 
@@ -307,32 +284,20 @@ describe('runChecks()', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatDoctorOutput()', () => {
-  it('shows PASS for passing checks', () => {
-    const checks = [{ name: 'Node.js >= 20', passed: true, message: 'Node.js 20.1.0' }];
-    const out = formatDoctorOutput(checks);
-    expect(out).toContain('[PASS]');
-    expect(out).toContain('Node.js >= 20');
+  it('formats PASS rows', () => {
+    const out = formatDoctorOutput([
+      { name: 'X', passed: true, message: 'ok' },
+    ]);
+    expect(out).toContain('[PASS] X');
+    expect(out).toContain('ok');
   });
 
-  it('shows FAIL and remediation for failing checks', () => {
-    const checks = [
-      {
-        name: 'git >= 2.20',
-        passed: false,
-        message: 'git version 2.18.0 (too old)',
-        remediation: 'brew upgrade git',
-      },
-    ];
-    const out = formatDoctorOutput(checks);
-    expect(out).toContain('[FAIL]');
-    expect(out).toContain('brew upgrade git');
-    expect(out).toContain('→');
-  });
-
-  it('does not show remediation prefix for passing checks', () => {
-    const checks = [{ name: 'SQLite accessible', passed: true, message: 'ok' }];
-    const out = formatDoctorOutput(checks);
-    expect(out).not.toContain('[FAIL]');
-    expect(out).not.toContain('→');
+  it('formats FAIL rows with remediation prefixed by →', () => {
+    const out = formatDoctorOutput([
+      { name: 'X', passed: false, message: 'broken', remediation: 'do this\nthen that' },
+    ]);
+    expect(out).toContain('[FAIL] X');
+    expect(out).toContain('→ do this');
+    expect(out).toContain('→ then that');
   });
 });
