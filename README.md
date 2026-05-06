@@ -23,6 +23,11 @@ everything else happens at `http://127.0.0.1:7777`. Pick a template, click Run,
 watch agents work in real time, click into any item to see its session log, hit
 Resume when something needs your attention.
 
+![Workflow list](docs/img/workflow-list.png)
+
+*The workflow list is the home screen — every run you've kicked off, with status
+badges that update live as stages advance.*
+
 ### Pick a template
 ![Template picker](docs/img/picker.png)
 
@@ -82,11 +87,6 @@ cd ~/code/my-project        # any git repo
 yoke setup                  # answer five questions
 yoke start                  # opens http://127.0.0.1:7777
 ```
-
-> **Note:** the npm release is in flight — track [issue #1](https://github.com/jdforsythe/yoke/issues/1)
-> for v0.1.0. Today you can clone the repo and run `pnpm install && pnpm run build && bin/yoke`,
-> or grab a tarball with `npm pack`. See [docs/install.md](docs/install.md) for the
-> current options.
 
 For a guided five-minute walkthrough, see **[docs/getting-started.md](docs/getting-started.md)**.
 

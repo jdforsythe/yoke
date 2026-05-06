@@ -1,11 +1,13 @@
 # Configuration reference
 
 Every Yoke template is a single YAML file at `.yoke/templates/<name>.yml`. The schema
-that validates it lives at [`schemas/yoke-config.schema.json`](../schemas/yoke-config.schema.json)
-(or `docs/design/schemas/yoke-config.schema.json` until the schema move lands).
+that validates it lives at [`schemas/yoke-config.schema.json`](../schemas/yoke-config.schema.json).
 
 This page is the human-readable companion. If something here disagrees with the
 schema, the schema wins — and please file a bug.
+
+For one-line definitions of the words below (template, stage, phase, item,
+session, worktree, attention, hook contract), see the [glossary](glossary.md).
 
 > **Heads up:** every example below is a complete, schema-valid template you can paste
 > into `.yoke/templates/` and run `yoke doctor` against. We don't ship lorem-ipsum.

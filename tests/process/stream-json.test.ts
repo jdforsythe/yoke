@@ -474,6 +474,57 @@ describe('Arbitrary chunk sizes (RC-1)', () => {
     expect(events[0].type).toBe('stream.system_notice');
     expect(events[1].type).toBe('stream.usage');
   });
+
+  // -------------------------------------------------------------------------
+  // Truncated / EOF-without-newline behavior — documents what the parser
+  // does when claude exits mid-line (kill -9, OOM, network drop). The
+  // session classifier needs the partial line to surface as parse_error so
+  // it can flag the run instead of silently dropping data.
+  // -------------------------------------------------------------------------
+
+  it('flush() emits parse_error for a trailing partial line that is not valid JSON', () => {
+    const parser = new StreamJsonParser();
+    const events: StreamJsonEvent[] = [];
+    parser.on('parse_error', (ev) => events.push(ev));
+    parser.on('stream.system_notice', (ev) => events.push(ev));
+
+    // First a clean line, then a truncated line with NO trailing newline.
+    parser.feedChunk('{"type":"system","subtype":"init"}\n{"type":"assist');
+    parser.flush();
+
+    const noticeCount = events.filter((e) => e.type === 'stream.system_notice').length;
+    const parseErrors = events.filter((e): e is ParseErrorEvent => e.type === 'parse_error');
+    expect(noticeCount).toBe(1);
+    expect(parseErrors.length).toBe(1);
+    expect(parseErrors[0].line).toBe('{"type":"assist');
+  });
+
+  it('flush() processes a complete trailing line with no trailing newline', () => {
+    const parser = new StreamJsonParser();
+    const usages: StreamUsageEvent[] = [];
+    parser.on('stream.usage', (ev) => usages.push(ev));
+
+    const lastLine = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      usage: { input_tokens: 7, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    });
+    // No trailing \n — the whole line lives in the line buffer until flush().
+    parser.feedChunk(lastLine);
+    parser.flush();
+
+    expect(usages.length).toBe(1);
+    expect(usages[0].inputTokens).toBe(7);
+  });
+
+  it('flush() is a no-op when the line buffer is empty (idempotent)', () => {
+    const parser = new StreamJsonParser();
+    const events: StreamJsonEvent[] = [];
+    parser.on('parse_error', (ev) => events.push(ev));
+    parser.flush();
+    parser.flush();
+    expect(events.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

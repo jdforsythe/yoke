@@ -228,13 +228,15 @@ it specifically, add `"143": stop-and-ask`.
 
 ### Browser shows "Connection refused" or empty page
 
-- Check the terminal — `yoke start` should print `Yoke server running at
+- Check the terminal — `yoke start` should print `Yoke dashboard:
   http://127.0.0.1:7777`. If not, it failed to bind.
-- Today the production API at `:7777` doesn't yet serve the bundled UI. Until
-  the static-bundle work lands, run `bin/yoke-dev` from a Yoke checkout and
-  open `http://127.0.0.1:5173/` instead.
+- If port 7777 is in use, pass `--port <n>` (e.g. `yoke start --port 7800`).
+  The error message includes the offending port and the flag hint.
 - If the page loads but the workflow list is empty, you're connected to a
   different `.yoke/yoke.db` than you expected. Check `--config-dir`.
+- Yoke contributors hacking on the source tree can use `bin/yoke-dev` to run
+  the Vite dev server at `http://127.0.0.1:5173/` against an unbundled build.
+  End users don't need this; the npm package serves the bundled UI directly.
 
 ### Live stream pane is empty
 

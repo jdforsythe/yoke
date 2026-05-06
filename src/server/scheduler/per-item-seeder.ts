@@ -86,6 +86,73 @@ function evalScalar(expr: string, json: unknown): unknown {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/**
+ * Walk the within-stage dependency graph and return the first cycle as a list
+ * of stable IDs (e.g. `["A", "B", "A"]`), or `null` if the graph is acyclic.
+ *
+ * Iterative DFS with three colours:
+ *   white = unvisited, grey = on the current DFS stack, black = done.
+ * Hitting a grey neighbour means we've closed a back-edge — that's a cycle.
+ */
+function findDependencyCycle(
+  records: Array<{ stableId: string; rawDepsStableIds: string[] }>,
+): string[] | null {
+  const adj = new Map<string, string[]>();
+  for (const r of records) adj.set(r.stableId, r.rawDepsStableIds.slice());
+
+  const WHITE = 0, GREY = 1, BLACK = 2;
+  const colour = new Map<string, number>();
+  for (const id of adj.keys()) colour.set(id, WHITE);
+
+  const parent = new Map<string, string | null>();
+
+  function dfs(start: string): string[] | null {
+    const stack: Array<{ id: string; iter: number }> = [{ id: start, iter: 0 }];
+    colour.set(start, GREY);
+    parent.set(start, null);
+
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      if (top === undefined) break;
+      const neighbours = adj.get(top.id) ?? [];
+      if (top.iter >= neighbours.length) {
+        colour.set(top.id, BLACK);
+        stack.pop();
+        continue;
+      }
+      const next = neighbours[top.iter++];
+      if (next === undefined) continue;
+      const c = colour.get(next) ?? WHITE;
+      if (c === GREY) {
+        // Reconstruct the cycle: walk parents from top.id back to next.
+        const cycle: string[] = [next];
+        let cur: string | null = top.id;
+        while (cur !== null && cur !== next) {
+          cycle.push(cur);
+          cur = parent.get(cur) ?? null;
+        }
+        cycle.push(next);
+        cycle.reverse();
+        return cycle;
+      }
+      if (c === WHITE) {
+        colour.set(next, GREY);
+        parent.set(next, top.id);
+        stack.push({ id: next, iter: 0 });
+      }
+    }
+    return null;
+  }
+
+  for (const id of adj.keys()) {
+    if (colour.get(id) === WHITE) {
+      const found = dfs(id);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // seedPerItemStage — public API
 // ---------------------------------------------------------------------------
@@ -194,6 +261,16 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
       }
     }
 
+    // Self-cycle: an item cannot list itself in items_depends_on.  Without
+    // this guard the workflow would silently deadlock since the item never
+    // satisfies its own dependency.
+    if (rawDepsStableIds.includes(stableId)) {
+      return {
+        kind: 'error',
+        message: `Item '${stableId}' depends on itself via items_depends_on; remove the self-reference`,
+      };
+    }
+
     const rowId = crypto.randomUUID();
     stableIdToRowId.set(stableId, rowId);
     records.push({
@@ -202,6 +279,38 @@ export function seedPerItemStage(opts: SeedPerItemStageOpts): SeedResult {
       data: JSON.stringify(entry),
       rawDepsStableIds,
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 3b — validate within-stage dependency graph
+  //
+  // Catches two failure modes that would otherwise produce a silently stuck
+  // workflow:
+  //   • A dependency on a stable ID that doesn't appear in the manifest
+  //     (typo).  Today the deps are silently dropped after stableId→rowId
+  //     resolution; the user has no idea why their gate isn't waiting.
+  //   • A cycle (A → B → A) in items_depends_on.  Cycles never satisfy and
+  //     the workflow stalls forever.
+  // ---------------------------------------------------------------------------
+
+  for (const rec of records) {
+    for (const dep of rec.rawDepsStableIds) {
+      if (!stableIdToRowId.has(dep)) {
+        return {
+          kind: 'error',
+          message: `Item '${rec.stableId}' depends on unknown stable ID '${dep}'; ` +
+            `not found in this manifest`,
+        };
+      }
+    }
+  }
+
+  const cycle = findDependencyCycle(records);
+  if (cycle !== null) {
+    return {
+      kind: 'error',
+      message: `Cycle detected in items_depends_on: ${cycle.join(' → ')}`,
+    };
   }
 
   // ---------------------------------------------------------------------------

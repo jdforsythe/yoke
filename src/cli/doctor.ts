@@ -295,18 +295,41 @@ export function checkTemplatesValid(configDir: string): DoctorCheck[] {
       }
     }
 
+    // Pipeline-level static checks: every phase listed under a stage must
+    // exist in the top-level `phases:` map; stage IDs must be unique.  Both
+    // failures only manifest at runtime today (the workflow either skips the
+    // phase or the scheduler crashes mid-tick), so surfacing them here saves
+    // a real run.
+    const phaseKeys = new Set(Object.keys(cfg.phases));
+    const seenStageIds = new Set<string>();
+    for (const stage of cfg.pipeline.stages) {
+      if (seenStageIds.has(stage.id)) {
+        missing.push(`pipeline.stages: duplicate stage id '${stage.id}'`);
+      } else {
+        seenStageIds.add(stage.id);
+      }
+      for (const phaseKey of stage.phases) {
+        if (!phaseKeys.has(phaseKey)) {
+          missing.push(
+            `pipeline.stages[${stage.id}].phases: '${phaseKey}' is not declared ` +
+            `under top-level phases`,
+          );
+        }
+      }
+    }
+
     if (missing.length > 0) {
       results.push({
         name: checkName,
         passed: false,
-        message: `${missing.length} missing reference(s)`,
-        remediation: missing.map((m) => `missing: ${m}`).join('\n'),
+        message: `${missing.length} issue(s)`,
+        remediation: missing.map((m) => `• ${m}`).join('\n'),
       });
     } else {
       results.push({
         name: checkName,
         passed: true,
-        message: 'schema valid; all referenced prompts and scripts exist',
+        message: 'schema valid; pipeline references resolve; prompts and scripts exist',
       });
     }
   }

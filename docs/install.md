@@ -1,7 +1,8 @@
 # Installing Yoke
 
-Three install paths: the **npm** path is the recommended one once v0.1.0 is published;
-the **manual** path uses a tarball; the **dev** path is for hacking on Yoke itself.
+Three install paths: the **npm** path is the recommended one for most users;
+the **manual** path uses a tarball from a GitHub release; the **dev** path is for
+hacking on Yoke itself.
 
 ---
 
@@ -19,22 +20,17 @@ the **manual** path uses a tarball; the **dev** path is for hacking on Yoke itse
 
 - **macOS** — fully supported. `keep_awake: true` uses `caffeinate -i`.
 - **Linux** — fully supported. `keep_awake: true` uses `systemd-inhibit`.
-- **Windows** — not officially supported in v0.1.0. WSL2 should work; native PowerShell
-  is untested. The `keep_awake` option is a no-op on Windows. (See [§14 of the
-  pre-release todos](pre-public-release-todos.md) for the deferred-work list.)
+- **Windows** — not officially supported. WSL2 should work; native PowerShell
+  is untested. The `keep_awake` option is a no-op on Windows.
 
 ---
 
-## Path A — npm (recommended, when available)
+## Path A — npm (recommended)
 
 ```sh
 npm install -g @jdforsythe/yoke
 yoke --version
 ```
-
-> **Note:** The npm package is being prepared for v0.1.0. Until it lands, use Path B
-> (manual tarball from a release) or Path C (dev install). See the changelog for the
-> first release that publishes to npm.
 
 ---
 
@@ -48,14 +44,11 @@ npm install -g ./yoke-<version>.tgz
 yoke --version
 ```
 
-> **Note:** Releases will start at v0.1.0. No tagged release exists yet.
-
 ---
 
-## Path C — Dev install (current default)
+## Path C — Dev install
 
-This is the path you'll use until the published npm package lands, and the path Yoke
-contributors use day-to-day.
+This path is for Yoke contributors hacking on the source tree.
 
 ```sh
 git clone https://github.com/jdforsythe/yoke.git
@@ -73,9 +66,9 @@ You now have two ways to run:
 ./bin/yoke-dev start --config-dir /path/to/your/project
 ```
 
-`bin/yoke` is a thin shell wrapper that invokes `tsx` against `src/cli/index.ts` —
-fine for development. Once the v0.1.0 build pipeline lands, the published package
-will ship a compiled JS bin instead.
+`bin/yoke` is a thin shell wrapper that prefers the compiled `dist/cli/index.js`
+when present and falls back to running `tsx` against `src/cli/index.ts` for
+in-checkout development. The published npm package ships the compiled JS bin.
 
 If you'd like the CLI on your `$PATH`:
 

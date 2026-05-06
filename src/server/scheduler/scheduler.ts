@@ -1585,6 +1585,35 @@ export class Scheduler {
       return;
     }
 
+    // Cancel/spawn TOCTOU guard.  Between the in_progress transition and
+    // process spawn we yielded to the event loop, so a concurrent control
+    // event (cancel, pause, abandon) could have moved the item or workflow
+    // out from under us.  Re-read the canonical SQLite state and, if the
+    // item is no longer running or the workflow is paused/terminal, kill
+    // the freshly-spawned process before it can write anything.
+    const currentItem = this._readItem(item.id);
+    const currentWf = this.db.reader()
+      .prepare('SELECT status, paused_at FROM workflows WHERE id = ?')
+      .get(wf.id) as { status: string; paused_at: string | null } | undefined;
+
+    const itemMovedOn = !currentItem || currentItem.status !== 'in_progress';
+    const wfStopped = !currentWf
+      || currentWf.paused_at !== null
+      || (TERMINAL_WF_STATUSES as readonly string[]).includes(currentWf.status);
+
+    if (itemMovedOn || wfStopped) {
+      console.log(
+        `[scheduler] cancel/spawn race detected for item ${item.id} ` +
+        `(item=${currentItem?.status ?? 'gone'}, wf=${currentWf?.status ?? 'gone'}, ` +
+        `paused=${currentWf?.paused_at !== null}); killing fresh handle`,
+      );
+      void handle.cancel();
+      await logWriter.close();
+      endSession(this.db, sessionId, { exitCode: null });
+      this.inFlight.delete(item.id);
+      return;
+    }
+
     // Update PID/PGID now that we have the real process (RC-2: engine helper).
     updateSessionPid(this.db, sessionId, handle.pid, handle.pgid);
 

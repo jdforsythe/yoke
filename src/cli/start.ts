@@ -16,7 +16,7 @@
  *   RC: Handles ECONNREFUSED with a clear message (N/A here — start IS the server).
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -116,6 +116,31 @@ async function defaultGitRepoCheck(dir: string): Promise<void> {
 function migrationsDir(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, '../server/storage/migrations');
+}
+
+/**
+ * Open `url` in the user's default browser. Best-effort — never throws or
+ * blocks the server boot if the platform helper is missing or the spawn fails.
+ */
+function openInBrowser(url: string): void {
+  const cmd =
+    process.platform === 'darwin' ? 'open' :
+    process.platform === 'win32'  ? 'start' :
+                                    'xdg-open';
+  try {
+    // detached + unref so the child outlives us; ignore stdio so a missing
+    // helper (no xdg-open on a minimal Linux box) is silent.
+    const child = spawn(
+      cmd,
+      process.platform === 'win32' ? ['', url] : [url],
+      { detached: true, stdio: 'ignore', shell: process.platform === 'win32' },
+    );
+    child.unref();
+    child.on('error', () => { /* swallow ENOENT/EACCES; banner already prints URL */ });
+  } catch {
+    // Any failure (including ENOENT for the helper) is non-fatal — the user
+    // already sees the URL in the banner and can paste it manually.
+  }
 }
 
 /**
@@ -633,17 +658,19 @@ export function register(program: Command): void {
       'Defaults to the only template present, or "default" if multiple exist.',
     )
     .option('--no-scheduler', 'Dev-only: serve the API/WS from the existing DB without starting the scheduler (no items advance)')
+    .option('--no-browser', 'Do not auto-open the dashboard in a browser when the server is ready')
     // --config was removed in the templates refactor (t-03/t-10). Templates are
     // now discovered automatically under .yoke/templates/. Keeping the option
     // registered so Commander can produce a clear error instead of "unknown option".
     .option('--config <file>', '[removed] use --config-dir instead')
     .addHelpText('after', `
 Examples:
-  yoke start                           # auto-pick template
+  yoke start                           # auto-pick template, opens dashboard in browser
   yoke start --template plan-build     # bind scheduler to plan-build.yml
   yoke start --port 8080
+  yoke start --no-browser              # don't auto-open; print URL only
 `)
-    .action(async (opts: { configDir: string; port: string; template?: string; scheduler: boolean; config?: string }) => {
+    .action(async (opts: { configDir: string; port: string; template?: string; scheduler: boolean; browser: boolean; config?: string }) => {
       if (opts.config !== undefined) {
         console.error(
           'Error: --config is no longer supported.\n' +
@@ -657,6 +684,8 @@ Examples:
       const port = parseInt(opts.port, 10);
       // commander maps --no-scheduler to opts.scheduler === false
       const noScheduler = opts.scheduler === false;
+      // commander maps --no-browser to opts.browser === false
+      const noBrowser = opts.browser === false;
 
       let handle: StartHandle;
       try {
@@ -674,6 +703,16 @@ Examples:
           console.error(`Git repository required: ${err.message}`);
           process.exit(1);
         }
+        // Friendly EADDRINUSE: tell the user how to recover instead of dumping a stack.
+        const code = (err as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'EADDRINUSE') {
+          console.error(
+            `Error: port ${port} is already in use.\n` +
+            `Pick a different port with --port, e.g.:\n` +
+            `\n  yoke start --port ${port + 1}\n`,
+          );
+          process.exit(1);
+        }
         throw err;
       }
 
@@ -683,6 +722,13 @@ Examples:
       console.log('');
       if (noScheduler) {
         console.log('Scheduler disabled (--no-scheduler): no items will advance.');
+      }
+
+      // Auto-open the dashboard in the user's default browser unless suppressed.
+      // Skip in non-interactive environments (CI, piped stdin) so we don't
+      // surprise scripted users.
+      if (!noBrowser && process.stdout.isTTY && !process.env['CI']) {
+        openInBrowser(handle.url);
       }
 
       // Keep process alive. SIGINT / SIGTERM → graceful drain then shutdown.
