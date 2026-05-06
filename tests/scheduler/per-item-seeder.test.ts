@@ -640,3 +640,94 @@ describe('stable_id persisted for each seeded item (r3-04)', () => {
     expect(items[0]!.stable_id).toBe('feature-one');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dependency graph validation — self-cycle, missing dep, true cycle
+// ---------------------------------------------------------------------------
+
+describe('items_depends_on graph validation', () => {
+  it('rejects an item that depends on itself', () => {
+    writeManifest({
+      features: [{ id: 'feat-a', deps: ['feat-a'] }],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    const result = seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage({ items_depends_on: '$.deps' }),
+    });
+
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.message).toMatch(/depends on itself/);
+    // Placeholder is preserved for retry.
+    const items = readItems(workflowId);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.id).toBe(placeholderItemId);
+  });
+
+  it('rejects a dependency on an unknown stable ID (typo)', () => {
+    writeManifest({
+      features: [
+        { id: 'feat-a', deps: ['feat-typo'] },
+        { id: 'feat-b', deps: [] },
+      ],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    const result = seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage({ items_depends_on: '$.deps' }),
+    });
+
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.message).toMatch(/unknown stable ID 'feat-typo'/);
+  });
+
+  it('rejects a true cycle (A → B → A)', () => {
+    writeManifest({
+      features: [
+        { id: 'feat-a', deps: ['feat-b'] },
+        { id: 'feat-b', deps: ['feat-a'] },
+      ],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    const result = seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage({ items_depends_on: '$.deps' }),
+    });
+
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.message).toMatch(/Cycle detected/);
+  });
+
+  it('accepts a valid DAG (A, B → A, C → B)', () => {
+    writeManifest({
+      features: [
+        { id: 'feat-a', deps: [] },
+        { id: 'feat-b', deps: ['feat-a'] },
+        { id: 'feat-c', deps: ['feat-b'] },
+      ],
+    });
+    const { workflowId, placeholderItemId } = seedWorkflow({});
+
+    const result = seedPerItemStage({
+      db,
+      workflowId,
+      placeholderItemId,
+      worktreePath: tmpDir,
+      stage: makeStage({ items_depends_on: '$.deps' }),
+    });
+
+    expect(result).toEqual({ kind: 'seeded', count: 3 });
+  });
+});

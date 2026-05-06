@@ -15,10 +15,6 @@ npm install -g @jdforsythe/yoke
 yoke --version
 ```
 
-> **Note:** The npm package is in flight for the first public release. Until the
-> tarball is published, follow the **dev install** path in [install.md](install.md).
-> Everything below works the same way once you have a working `yoke` on your `$PATH`.
-
 ---
 
 ## 2. Pick a project
@@ -50,10 +46,10 @@ prompts, the gate scripts, and an items manifest for you.
 yoke setup
 ```
 
-> **Note:** The `yoke setup` CLI command is being wired up for v0.1.0. In the
-> meantime, open Claude Code in your project directory and paste the contents of
-> `skills/yoke-setup.md` from the Yoke install. The skill walks you through the
-> same five questions and writes the files.
+`yoke setup` drops you into a Claude Code session with the `yoke-setup` skill
+pre-loaded — Claude asks five questions and writes the template, prompts, and
+gate scripts for you. Requires `claude` on your `$PATH`; if it's missing, Yoke
+prints an install hint and exits non-zero.
 
 If you want to start by hand, `yoke init` drops a stub:
 
@@ -109,16 +105,11 @@ yoke start
 ```
 
 ```
-Yoke server running at http://127.0.0.1:7777
+Yoke dashboard: http://127.0.0.1:7777
 ```
 
 Open that URL in your browser. You'll land on the **Workflow list** with a
 **Templates** picker on the left. Your `default` template is one of the cards.
-
-> **Note:** Today the dashboard is served by the Vite dev server, not by the
-> production API. Until the static-bundle work lands, run `bin/yoke-dev` from a
-> Yoke checkout to get the UI on `http://127.0.0.1:5173/`. The API at `:7777`
-> works the same way.
 
 ---
 

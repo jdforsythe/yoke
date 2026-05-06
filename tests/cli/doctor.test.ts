@@ -241,6 +241,56 @@ describe('checkTemplatesValid()', () => {
     const results = checkTemplatesValid(tmpDir);
     expect(results[0].passed).toBe(false);
   });
+
+  it('flags a stage that references a phase not declared in top-level phases', () => {
+    // Stage lists `["implement","review"]` but only `implement` is declared,
+    // so `review` is a typo. The schema accepts this (arrays are open) — we
+    // catch it in doctor's pipeline pass.
+    const cfg = `version: "1"
+template:
+  name: typo-project
+pipeline:
+  stages:
+    - id: build
+      run: once
+      phases:
+        - implement
+        - review
+phases:
+  implement:
+    command: node
+    args: []
+    prompt_template: .yoke/prompts/implement.md
+`;
+    writeTemplate(tmpDir, 'typo', cfg);
+    const results = checkTemplatesValid(tmpDir);
+    expect(results[0].passed).toBe(false);
+    expect(results[0].remediation).toMatch(/'review' is not declared/);
+  });
+
+  it('flags duplicate stage IDs in the pipeline', () => {
+    const cfg = `version: "1"
+template:
+  name: dupe-project
+pipeline:
+  stages:
+    - id: build
+      run: once
+      phases: [implement]
+    - id: build
+      run: once
+      phases: [implement]
+phases:
+  implement:
+    command: node
+    args: []
+    prompt_template: .yoke/prompts/implement.md
+`;
+    writeTemplate(tmpDir, 'dupe', cfg);
+    const results = checkTemplatesValid(tmpDir);
+    expect(results[0].passed).toBe(false);
+    expect(results[0].remediation).toMatch(/duplicate stage id 'build'/);
+  });
 });
 
 // ---------------------------------------------------------------------------

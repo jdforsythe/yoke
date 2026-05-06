@@ -4,10 +4,13 @@
 app served from `127.0.0.1`. This is your control panel: pick a template, watch the
 agent, retry an item, open the PR.
 
-> **Note:** Today the dashboard is served by the Vite dev server (`bin/yoke-dev`,
-> port 5173). Once the static-bundle work for v0.1.0 lands, `yoke start` will serve
-> the bundled UI from the API port (default 7777). The surfaces and behaviors below
-> are identical either way.
+The dashboard is bundled into the npm package and served from the API port
+(default `7777`). Yoke contributors hacking on the source tree can use
+`bin/yoke-dev` to run the Vite dev server (port `5173`) against an unbundled
+build; the surfaces and behaviors are identical either way.
+
+> New to Yoke's vocabulary (workflow, stage, phase, item, session, attention)?
+> Skim the [glossary](glossary.md) first — it's a one-screen reference.
 
 ---
 

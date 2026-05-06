@@ -186,7 +186,18 @@ export class BackfillBuffer {
  * connections. createWsHandler() registers each new socket on connect.
  */
 export class WsClientRegistry {
+  /**
+   * Forward index: which workflows is each socket subscribed to.  Kept so
+   * we can clean up on close without scanning every workflow's subscriber set.
+   */
   private readonly clients = new Map<WebSocket, Set<string>>();
+
+  /**
+   * Reverse index: which sockets are subscribed to each workflow.  Used for
+   * the hot path — broadcast() — so it's O(subscribed clients) instead of
+   * O(total clients × subscriptions).
+   */
+  private readonly workflowSubscribers = new Map<string, Set<WebSocket>>();
 
   constructor(
     private readonly seqStore: SessionSeqStore,
@@ -200,18 +211,43 @@ export class WsClientRegistry {
   register(socket: WebSocket): void {
     this.clients.set(socket, new Set());
     socket.on('close', () => {
+      // Remove from every workflow subscriber set the socket was in,
+      // then drop the forward-index entry.
+      const subs = this.clients.get(socket);
+      if (subs) {
+        for (const workflowId of subs) {
+          const set = this.workflowSubscribers.get(workflowId);
+          if (set) {
+            set.delete(socket);
+            if (set.size === 0) this.workflowSubscribers.delete(workflowId);
+          }
+        }
+      }
       this.clients.delete(socket);
     });
   }
 
   /** Records that `socket` is subscribed to `workflowId`. */
   subscribe(socket: WebSocket, workflowId: string): void {
-    this.clients.get(socket)?.add(workflowId);
+    const subs = this.clients.get(socket);
+    if (!subs) return;
+    subs.add(workflowId);
+    let set = this.workflowSubscribers.get(workflowId);
+    if (!set) {
+      set = new Set();
+      this.workflowSubscribers.set(workflowId, set);
+    }
+    set.add(socket);
   }
 
   /** Records that `socket` is no longer subscribed to `workflowId`. */
   unsubscribe(socket: WebSocket, workflowId: string): void {
     this.clients.get(socket)?.delete(workflowId);
+    const set = this.workflowSubscribers.get(workflowId);
+    if (set) {
+      set.delete(socket);
+      if (set.size === 0) this.workflowSubscribers.delete(workflowId);
+    }
   }
 
   /**
@@ -221,6 +257,10 @@ export class WsClientRegistry {
    *   - Assigns the next monotonic seq from seqStore.
    *   - Pushes the frame into the backfillBuffer for reconnecting clients.
    * For workflow-scope frames (sessionId null): seq is 0.
+   *
+   * `workflow.index.update` is a global frame — every connected client gets
+   * it so the sidebar stays current regardless of which workflow detail page
+   * is open.
    */
   broadcast(
     workflowId: string,
@@ -239,13 +279,23 @@ export class WsClientRegistry {
       this.backfillBuffer.push(sessionId, frame);
     }
 
-    for (const [socket, subs] of this.clients) {
-      // workflow.index.update is sent to all connected clients so the sidebar
-      // stays up-to-date regardless of which workflow page the client is viewing.
-      const isSubscribed = subs.has(workflowId) || frameType === 'workflow.index.update';
-      if (isSubscribed && socket.readyState === socket.OPEN) {
-        socket.send(JSON.stringify(frame));
+    // Stringify once, not per socket — the same payload is shipped to every
+    // recipient so paying the JSON.stringify cost N times is wasted work.
+    const wire = JSON.stringify(frame);
+
+    if (frameType === 'workflow.index.update') {
+      // Global frame — fan out to every open socket.
+      for (const socket of this.clients.keys()) {
+        if (socket.readyState === socket.OPEN) socket.send(wire);
       }
+      return;
+    }
+
+    // Per-workflow frame — only iterate the subscribed sockets.
+    const set = this.workflowSubscribers.get(workflowId);
+    if (!set) return;
+    for (const socket of set) {
+      if (socket.readyState === socket.OPEN) socket.send(wire);
     }
   }
 
@@ -256,10 +306,9 @@ export class WsClientRegistry {
    */
   broadcastAll(frameType: ServerFrameType, payload: unknown): void {
     const frame = makeFrame(frameType, payload, { seq: 0 });
-    for (const [socket] of this.clients) {
-      if (socket.readyState === socket.OPEN) {
-        socket.send(JSON.stringify(frame));
-      }
+    const wire = JSON.stringify(frame);
+    for (const socket of this.clients.keys()) {
+      if (socket.readyState === socket.OPEN) socket.send(wire);
     }
   }
 
@@ -449,9 +498,24 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
     };
   });
 
+  // Attempt number is the 1-based ordinal of this session among all sessions
+  // for the same (workflow, item, phase) tuple, ordered by start time. We
+  // compute it inline with ROW_NUMBER() so a single round-trip returns active
+  // rows already labelled with their attempt count.
   const sessionRows = reader
     .prepare(
-      'SELECT id, item_id, phase, started_at, parent_session_id FROM sessions WHERE workflow_id = ? AND ended_at IS NULL ORDER BY started_at',
+      `SELECT id, item_id, phase, started_at, parent_session_id, attempt
+       FROM (
+         SELECT id, item_id, phase, started_at, parent_session_id, ended_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY workflow_id, COALESCE(item_id, ''), phase
+                  ORDER BY started_at
+                ) AS attempt
+         FROM sessions
+         WHERE workflow_id = ?
+       )
+       WHERE ended_at IS NULL
+       ORDER BY started_at`,
     )
     .all(workflowId) as Array<{
       id: string;
@@ -459,13 +523,14 @@ export function buildSnapshot(db: DbPool, workflowId: string): WorkflowSnapshotP
       phase: string;
       started_at: string;
       parent_session_id: string | null;
+      attempt: number;
     }>;
 
   const activeSessions: SessionProjection[] = sessionRows.map((s) => ({
     sessionId: s.id,
     itemId: s.item_id,
     phase: s.phase,
-    attempt: 0, // TODO: compute from events table when pipeline engine is integrated
+    attempt: s.attempt,
     startedAt: s.started_at,
     parentSessionId: s.parent_session_id,
   }));

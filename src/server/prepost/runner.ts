@@ -252,10 +252,11 @@ function _makeOutputPaths(
  * cap are left truncated — there is no trailing marker; callers that need to
  * know whether truncation occurred should compare file size against the cap.
  *
- * TODO: retention / rotation policy — prepost output files are never pruned
- * by this module.  A separate maintenance task (to be implemented later)
- * should sweep ~/.yoke/<fingerprint>/prepost/ and apply the same retention
- * policy used for session logs.  Out of scope for F3.
+ * Retention: prepost output files are not pruned automatically. They live
+ * under ~/.yoke/<fingerprint>/prepost/ and are bounded per-run by
+ * OUTPUT_CAPTURE_LIMIT, but accumulate across runs. Operators who need
+ * retention can sweep that directory between workflows; built-in retention is
+ * tracked as a follow-up enhancement.
  */
 function _openCappedWriteStream(filePath: string): {
   write: (chunk: Buffer | string) => void;
